@@ -108,12 +108,14 @@ function openLogFile(filePath) {
 function spawnDetachedCommand(command, args, { logFile, cwd = rootDir, env = {} } = {}) {
   const stdoutFd = openLogFile(logFile);
   const stderrFd = openLogFile(logFile);
+  const useShell = process.platform === "win32"
+    && !(path.isAbsolute(command) && path.extname(command).toLowerCase() === ".exe");
   const child = spawn(command, args, {
     cwd,
     env: { ...process.env, ...env },
     detached: true,
     stdio: ["ignore", stdoutFd, stderrFd],
-    shell: process.platform === "win32",
+    shell: useShell,
   });
   child.unref();
   return child.pid;
