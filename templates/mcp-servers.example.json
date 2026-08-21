@@ -1,0 +1,11 @@
+{
+  "servers": [
+    {
+      "name": "zhijiantime",
+      "command": "C:\\path\\to\\node.exe",
+      "args": [
+        "C:\\path\\to\\zhijiantime-mcp\\dist\\src\\index.js"
+      ]
+    }
+  ]
+}

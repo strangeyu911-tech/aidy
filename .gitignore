@@ -1,6 +1,7 @@
 node_modules/
 .DS_Store
 .env
+.mcp-servers.local.json
 .mcp.json
 .claude/settings.json
 .claude/settings.local.json

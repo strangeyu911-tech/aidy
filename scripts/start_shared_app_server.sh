@@ -31,11 +31,14 @@ while IFS= read -r line; do
 done < <(
   node -e '
     const helper = require(process.argv[1]);
-    const args = helper.buildCodexMcpConfigArgs(
+    const args = helper.buildCodexMcpConfigArgs([
       helper.resolveCodexProjectToolMcpServerConfig({
         cyberbossHome: process.env.CYBERBOSS_HOME || process.argv[2],
-      })
-    );
+      }),
+      ...helper.resolveAdditionalMcpServerConfigs({
+        filePath: process.env.CYBERBOSS_MCP_SERVERS_FILE,
+      }),
+    ]);
     for (const arg of args) {
       process.stdout.write(`${arg}\n`);
     }

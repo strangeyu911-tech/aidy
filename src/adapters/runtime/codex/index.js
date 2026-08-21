@@ -12,7 +12,10 @@ const {
 } = require("./message-utils");
 const { findModelByQuery } = require("./model-catalog");
 const { SessionStore } = require("./session-store");
-const { resolveCodexProjectToolMcpServerConfig } = require("./mcp-config");
+const {
+  resolveAdditionalMcpServerConfigs,
+  resolveCodexProjectToolMcpServerConfig,
+} = require("./mcp-config");
 
 function createCodexRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "codex" });
@@ -38,7 +41,10 @@ function createCodexRuntimeAdapter(config) {
         codexCommand: config.codexCommand,
         env: process.env,
         extraWritableRoots: [config.stateDir],
-        mcpServerConfig: resolveCodexProjectToolMcpServerConfig(),
+        mcpServerConfig: [
+          resolveCodexProjectToolMcpServerConfig(),
+          ...resolveAdditionalMcpServerConfigs({ filePath: config.codexMcpServersFile }),
+        ],
       });
     }
     return client;

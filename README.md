@@ -235,6 +235,18 @@ If you want the strongest "push" effect, do not immediately rewrite the persona 
 
 If you plan to use shared mode, set `CYBERBOSS_WORKSPACE_ROOT` before the first start so `shared:open` resolves the right thread for the right project.
 
+#### Optional local MCP servers
+
+Cyberboss can attach additional local STDIO MCP servers without changing its built-in tools. Leave this unset to keep the default behavior. To enable one or more external servers, point `CYBERBOSS_MCP_SERVERS_FILE` at a local JSON file:
+
+```dotenv
+CYBERBOSS_MCP_SERVERS_FILE=D:\\CyberBoss\\mcp-servers.local.json
+```
+
+Start from [templates/mcp-servers.example.json](./templates/mcp-servers.example.json). Each server needs a unique `name`, an executable `command`, and optional `args`. External MCP tools remain approval-gated; Cyberboss only auto-approves its own project tools. Keep credentials and machine-specific paths out of Git, and keep the local configuration file private.
+
+This makes integrations such as a private local task MCP optional. A useful boundary is: the task MCP owns planned work, while Cyberboss owns observed activity, reminders, and review.
+
 If you use a local Codex provider such as Ollama, prefer a small wrapper script instead of putting provider flags directly into `CYBERBOSS_CODEX_COMMAND`. Copy [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) to `${HOME}/.cyberboss/codex-local`, make it executable, and point Cyberboss at it:
 
 ```bash

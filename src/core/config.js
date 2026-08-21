@@ -64,6 +64,7 @@ function readConfig() {
     codexCommand: readTextEnv("CYBERBOSS_CODEX_COMMAND"),
     codexModel: readTextEnv("CYBERBOSS_CODEX_MODEL"),
     codexModelProvider: readTextEnv("CYBERBOSS_CODEX_MODEL_PROVIDER"),
+    codexMcpServersFile: readTextEnv("CYBERBOSS_MCP_SERVERS_FILE"),
     codexNativeImageInput: readOptionalBoolEnv("CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT"),
     visionMode: readTextEnv("CYBERBOSS_VISION_MODE") || "auto",
     visionProvider: readTextEnv("CYBERBOSS_VISION_PROVIDER") || "openai-compatible",
