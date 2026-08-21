@@ -33,7 +33,7 @@ async function runSystemCheckinPoller(config) {
     }
 
     const queued = queue.enqueue({
-      id: crypto.randomUUID(),
+      id: `checkin:${crypto.randomUUID()}`,
       accountId: account.accountId,
       senderId: target.senderId,
       workspaceRoot: target.workspaceRoot,

@@ -7,6 +7,7 @@ const {
   buildCodexMcpConfigArgs,
   resolveCodexProjectToolMcpServerConfig,
 } = require("../src/adapters/runtime/codex/mcp-config");
+const { normalizeWorkspaceRoot } = require("../src/core/workspace-path");
 
 try {
   require("dotenv").config({ path: path.join(process.cwd(), ".env") });
@@ -213,7 +214,7 @@ function resolveBoundThread(workspaceRoot) {
     .filter((binding) => !currentAccountId || normalizeText(binding?.accountId) === currentAccountId)
     .sort((left, right) => parseTimestamp(right?.updatedAt) - parseTimestamp(left?.updatedAt));
 
-  const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
+  const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
   const exact = bindings.find((binding) => getThreadId(binding, normalizedWorkspaceRoot, runtimeId));
   if (exact) {
     return {
@@ -223,11 +224,11 @@ function resolveBoundThread(workspaceRoot) {
   }
 
   const active = bindings.find((binding) => {
-    const activeWorkspaceRoot = normalizeText(binding?.activeWorkspaceRoot);
+    const activeWorkspaceRoot = normalizeWorkspaceRoot(binding?.activeWorkspaceRoot);
     return activeWorkspaceRoot && getThreadId(binding, activeWorkspaceRoot, runtimeId);
   });
   if (active) {
-    const activeWorkspaceRoot = normalizeText(active.activeWorkspaceRoot);
+    const activeWorkspaceRoot = normalizeWorkspaceRoot(active.activeWorkspaceRoot);
     return {
       threadId: getThreadId(active, activeWorkspaceRoot, runtimeId),
       workspaceRoot: activeWorkspaceRoot,
@@ -242,7 +243,15 @@ function getThreadId(binding, workspaceRoot, runtimeId = "") {
     return "";
   }
   const map = getThreadMapForRuntime(binding, runtimeId);
-  return normalizeText(map[workspaceRoot]);
+  const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
+  const exact = map[normalizedWorkspaceRoot];
+  if (exact) {
+    return normalizeText(exact);
+  }
+  const alias = Object.entries(map).find(([candidateRoot]) => (
+    normalizeWorkspaceRoot(candidateRoot) === normalizedWorkspaceRoot
+  ));
+  return normalizeText(alias?.[1]);
 }
 
 function getThreadMapForRuntime(binding, runtimeId) {

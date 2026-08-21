@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { normalizeModelCatalog } = require("./model-catalog");
 const { normalizeCommandTokens } = require("../shared/approval-command");
+const { normalizeWorkspaceRoot } = require("../../../core/workspace-path");
 
 class SessionStore {
   constructor({ filePath, runtimeId = "" }) {
@@ -21,7 +22,7 @@ class SessionStore {
       const raw = fs.readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && parsed.bindings) {
-        this.state = {
+        const normalized = normalizeSessionState({
           ...createEmptyState(),
           ...parsed,
           bindings: parsed.bindings || {},
@@ -31,7 +32,11 @@ class SessionStore {
             models: [],
             updatedAt: "",
           },
-        };
+        });
+        this.state = normalized.state;
+        if (normalized.changed) {
+          this.save();
+        }
       }
     } catch {
       this.state = createEmptyState();
@@ -54,7 +59,7 @@ class SessionStore {
   }
 
   getActiveWorkspaceRoot(bindingKey) {
-    return normalizeValue(this.state.bindings[bindingKey]?.activeWorkspaceRoot);
+    return normalizeWorkspaceRoot(this.state.bindings[bindingKey]?.activeWorkspaceRoot);
   }
 
   updateBinding(bindingKey, nextBinding) {
@@ -67,7 +72,7 @@ class SessionStore {
   }
 
   getThreadIdForWorkspace(bindingKey, workspaceRoot, runtimeId = this.runtimeId) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return "";
     }
@@ -80,7 +85,7 @@ class SessionStore {
   }
 
   setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, extra = {}, runtimeId = this.runtimeId) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return this.getBinding(bindingKey);
     }
@@ -113,7 +118,7 @@ class SessionStore {
   }
 
   getRuntimeParamsForWorkspace(bindingKey, workspaceRoot) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return { model: "", modelProvider: "" };
     }
@@ -128,7 +133,7 @@ class SessionStore {
   }
 
   setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, params = {}) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return this.getBinding(bindingKey);
     }
@@ -170,7 +175,7 @@ class SessionStore {
   }
 
   clearThreadIdForWorkspace(bindingKey, workspaceRoot, runtimeId = this.runtimeId) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return this.getBinding(bindingKey);
     }
@@ -197,7 +202,7 @@ class SessionStore {
   }
 
   setActiveWorkspaceRoot(bindingKey, workspaceRoot) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return this.getBinding(bindingKey);
     }
@@ -222,7 +227,7 @@ class SessionStore {
         if (normalizeValue(candidateThreadId) === normalizedThreadId) {
           return {
             bindingKey,
-            workspaceRoot: normalizeValue(workspaceRoot),
+          workspaceRoot: normalizeWorkspaceRoot(workspaceRoot),
           };
         }
       }
@@ -231,7 +236,7 @@ class SessionStore {
   }
 
   getApprovalCommandAllowlistForWorkspace(workspaceRoot) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return [];
     }
@@ -246,7 +251,7 @@ class SessionStore {
   }
 
   rememberApprovalPrefixForWorkspace(workspaceRoot, commandTokens) {
-    const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     const normalizedTokens = normalizeCommandTokens(commandTokens);
     if (!normalizedWorkspaceRoot || !normalizedTokens.length) {
       return this.getApprovalCommandAllowlistForWorkspace(workspaceRoot);
@@ -352,6 +357,88 @@ function createEmptyState() {
       updatedAt: "",
     },
   };
+}
+
+function normalizeSessionState(state) {
+  const before = JSON.stringify(state);
+  const normalized = {
+    ...state,
+    bindings: Object.fromEntries(
+      Object.entries(state.bindings || {}).map(([bindingKey, binding]) => [
+        bindingKey,
+        normalizeBinding(binding),
+      ])
+    ),
+    approvalCommandAllowlistByWorkspaceRoot: normalizeWorkspaceMap(
+      state.approvalCommandAllowlistByWorkspaceRoot,
+      (value) => Array.isArray(value) ? value : []
+    ),
+  };
+  return {
+    state: normalized,
+    changed: JSON.stringify(normalized) !== before,
+  };
+}
+
+function normalizeBinding(binding) {
+  const normalized = { ...(binding || {}) };
+  if (Object.prototype.hasOwnProperty.call(normalized, "activeWorkspaceRoot")) {
+    normalized.activeWorkspaceRoot = normalizeWorkspaceRoot(normalized.activeWorkspaceRoot);
+  }
+  if (normalized.threadIdByWorkspaceRootByRuntime && typeof normalized.threadIdByWorkspaceRootByRuntime === "object") {
+    normalized.threadIdByWorkspaceRootByRuntime = normalizeRuntimeWorkspaceMap(
+      normalized.threadIdByWorkspaceRootByRuntime,
+      (value) => normalizeThreadValue(value)
+    );
+  }
+  if (normalized.threadIdByWorkspaceRoot && typeof normalized.threadIdByWorkspaceRoot === "object") {
+    normalized.threadIdByWorkspaceRoot = normalizeWorkspaceMap(
+      normalized.threadIdByWorkspaceRoot,
+      (value) => normalizeThreadValue(value)
+    );
+  }
+  if (normalized.runtimeParamsByWorkspaceRootByRuntime && typeof normalized.runtimeParamsByWorkspaceRootByRuntime === "object") {
+    normalized.runtimeParamsByWorkspaceRootByRuntime = normalizeRuntimeWorkspaceMap(
+      normalized.runtimeParamsByWorkspaceRootByRuntime,
+      (value) => value && typeof value === "object" ? { ...value } : {}
+    );
+  }
+  if (normalized.codexParamsByWorkspaceRoot && typeof normalized.codexParamsByWorkspaceRoot === "object") {
+    normalized.codexParamsByWorkspaceRoot = normalizeWorkspaceMap(
+      normalized.codexParamsByWorkspaceRoot,
+      (value) => value && typeof value === "object" ? { ...value } : {}
+    );
+  }
+  return normalized;
+}
+
+function normalizeRuntimeWorkspaceMap(map, valueNormalizer) {
+  return Object.fromEntries(
+    Object.entries(map || {}).map(([runtimeId, workspaceMap]) => [
+      runtimeId,
+      normalizeWorkspaceMap(workspaceMap, valueNormalizer),
+    ])
+  );
+}
+
+function normalizeWorkspaceMap(map, valueNormalizer = (value) => value) {
+  if (!map || typeof map !== "object" || Array.isArray(map)) {
+    return {};
+  }
+  const entries = Object.entries(map);
+  const ordered = [
+    ...entries.filter(([key]) => normalizeWorkspaceRoot(key) === key.trim()),
+    ...entries.filter(([key]) => normalizeWorkspaceRoot(key) !== key.trim()),
+  ];
+  const normalized = {};
+  for (const [key, value] of ordered) {
+    const normalizedKey = normalizeWorkspaceRoot(key);
+    if (!normalizedKey || Object.prototype.hasOwnProperty.call(normalized, normalizedKey)) {
+      continue;
+    }
+    normalized[normalizedKey] = valueNormalizer(value);
+  }
+  return normalized;
 }
 
 function normalizeValue(value) {

@@ -31,6 +31,7 @@ const { SystemMessageQueueStore } = require("./system-message-queue-store");
 const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
 const { TurnGateStore } = require("./turn-gate-store");
+const { normalizeWorkspaceRoot } = require("./workspace-path");
 const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queue-store");
 const {
   matchesCommandPrefix,
@@ -168,7 +169,6 @@ class CyberbossApp {
           await Promise.all([
             this.flushDueReminders(account),
             this.flushPendingInboundMessages(),
-            this.flushPendingSystemMessages(),
             this.flushPendingTimelineScreenshots(account),
           ]);
           const response = await this.channelAdapter.getUpdates({
@@ -187,7 +187,7 @@ class CyberbossApp {
           await Promise.all([
             this.flushDueReminders(account),
             this.flushPendingInboundMessages(),
-            this.flushPendingSystemMessages(),
+            this.flushPendingSystemMessages({ skipCheckin: messages.length > 0 }),
             this.flushPendingTimelineScreenshots(account),
           ]);
         } catch (error) {
@@ -827,9 +827,13 @@ class CyberbossApp {
     return prepared;
   }
 
-  async flushPendingSystemMessages() {
+  async flushPendingSystemMessages({ skipCheckin = false } = {}) {
     const pendingMessages = this.systemMessageDispatcher?.drainPending() || [];
     for (const message of pendingMessages) {
+      if (skipCheckin && isCheckinSystemMessage(message)) {
+        this.systemMessageDispatcher.requeue(message);
+        continue;
+      }
       try {
         const dispatched = await this.dispatchSystemMessage(message);
         if (!dispatched) {
@@ -1980,6 +1984,10 @@ function normalizeIsoTime(value) {
   return new Date(parsed).toISOString();
 }
 
+function isCheckinSystemMessage(message) {
+  return typeof message?.id === "string" && message.id.startsWith("checkin:");
+}
+
 function matchesBuiltInCommandPrefix(commandTokens) {
   const normalized = normalizeCommandTokensForMatching(commandTokens);
   if (!normalized.length) {
@@ -2168,7 +2176,7 @@ function buildReminderSystemTrigger(reminder, config = {}) {
 
 function buildScopeKey(bindingKey, workspaceRoot) {
   const normalizedBindingKey = normalizeText(bindingKey);
-  const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
+  const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
   if (!normalizedBindingKey || !normalizedWorkspaceRoot) {
     return "";
   }
