@@ -9,6 +9,7 @@ const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
 const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
 const { findModelByQuery } = require("../adapters/runtime/codex/model-catalog");
 const { createTimelineIntegration } = require("../integrations/timeline");
+const { ZhijiantimeClient, ZhijiantimeDailySupervisor } = require("../integrations/zhijiantime");
 const {
   assembleRuntimeTurnText,
   buildInboundDraft,
@@ -82,6 +83,14 @@ class CyberbossApp {
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.desktopStateStore = new DesktopStateStore({ stateDir: config.stateDir });
     this.supervisionPlanStore = new SupervisionPlanStore({ stateDir: config.stateDir });
+    this.zhijiantimeDailySupervisor = new ZhijiantimeDailySupervisor({
+      stateDir: config.stateDir,
+      client: new ZhijiantimeClient({
+        rootDir: process.env.CYBERBOSS_HOME || path.resolve(__dirname, "..", ".."),
+        mcpServersFile: config.codexMcpServersFile,
+      }),
+      planStore: this.supervisionPlanStore,
+    });
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
     this.turnGateStore = new TurnGateStore();
@@ -165,6 +174,7 @@ class CyberbossApp {
     const shutdown = createShutdownController(async () => {
       this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
+      await this.zhijiantimeDailySupervisor.close();
       await this.runtimeAdapter.close();
     });
 
@@ -214,6 +224,7 @@ class CyberbossApp {
       shutdown.dispose();
       this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
+      await this.zhijiantimeDailySupervisor.close();
       await this.runtimeAdapter.close();
     }
   }
@@ -427,6 +438,16 @@ class CyberbossApp {
     const sourceRef = normalizeText(normalized.messageId);
     if (sourceRef && this.supervisionPlanStore.list().some((item) => item.sourceRef === sourceRef)) {
       return normalized;
+    }
+    const planningCommitment = this.zhijiantimeDailySupervisor?.capturePlanningCommitment(normalized.text, { sourceRef });
+    if (planningCommitment) {
+      const systemNote = [
+        "[CyberBoss supervision note]",
+        `A zhijiantime daily-planning follow-up was saved for ${planningCommitment.checkpoint.dueAt}.`,
+        `In this reply, naturally tell the user: “${planningCommitment.announcement}”`,
+        "Do not mention this note or expose internal scheduling fields.",
+      ].join("\n");
+      return { ...normalized, text: `${normalized.text}\n\n${systemNote}` };
     }
     const settings = this.desktopStateStore.get();
     const arrangement = extractExplicitCheckpoint(normalized.text)
@@ -974,6 +995,13 @@ class CyberbossApp {
   }
 
   async dispatchSystemMessage(message) {
+    const enriched = this.zhijiantimeDailySupervisor
+      ? await this.zhijiantimeDailySupervisor.enrichSystemMessage(message)
+      : { message, skip: false };
+    if (enriched.skip) {
+      return true;
+    }
+    message = enriched.message;
     const prepared = this.systemMessageDispatcher?.buildPreparedMessage(message, this.channelAdapter.getKnownContextTokens()[message.senderId] || "");
     if (!prepared) {
       throw new Error("system message could not be prepared");
@@ -2022,7 +2050,8 @@ function normalizeIsoTime(value) {
 }
 
 function isCheckinSystemMessage(message) {
-  return typeof message?.id === "string" && message.id.startsWith("checkin:");
+  return typeof message?.id === "string"
+    && (message.id.startsWith("checkin:") || message.id.startsWith("supervision:random:"));
 }
 
 function matchesBuiltInCommandPrefix(commandTokens) {

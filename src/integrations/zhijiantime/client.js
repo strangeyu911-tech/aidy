@@ -3,8 +3,8 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 class ZhijiantimeClient {
-  constructor({ command = "", args = [], cwd = "", env = {}, rootDir = "" } = {}) {
-    const resolved = resolveZhijiantimeCommand({ command, args, cwd, env, rootDir });
+  constructor({ command = "", args = [], cwd = "", env = {}, rootDir = "", mcpServersFile = "" } = {}) {
+    const resolved = resolveZhijiantimeCommand({ command, args, cwd, env, rootDir, mcpServersFile });
     this.command = resolved.command;
     this.args = resolved.args;
     this.cwd = resolved.cwd;
@@ -74,13 +74,13 @@ class ZhijiantimeClient {
   }
 }
 
-function resolveZhijiantimeCommand({ command, args, cwd, env, rootDir }) {
+function resolveZhijiantimeCommand({ command, args, cwd, env, rootDir, mcpServersFile = "" }) {
   if (command && Array.isArray(args) && args.length) return { command, args, cwd, env };
   const envCommand = process.env.CYBERBOSS_ZHIJIANTIME_COMMAND;
   const envArgs = parseJsonArray(process.env.CYBERBOSS_ZHIJIANTIME_ARGS);
   if (envCommand && envArgs.length) return { command: envCommand, args: envArgs, cwd, env };
 
-  const serverFromMcpFile = resolveFromExternalMcpFile(process.env.CYBERBOSS_MCP_SERVERS_FILE);
+  const serverFromMcpFile = resolveFromExternalMcpFile(mcpServersFile || process.env.CYBERBOSS_MCP_SERVERS_FILE);
   if (serverFromMcpFile) return serverFromMcpFile;
 
   const candidates = [

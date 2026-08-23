@@ -65,6 +65,24 @@ function buildCodexMcpConfigArgs(mcpServerConfig) {
       "-c",
       `mcp_servers.${name}.args=${formatTomlArray(args)}`,
     );
+    if (typeof config.required === "boolean") {
+      output.push(
+        "-c",
+        `mcp_servers.${name}.required=${config.required}`,
+      );
+    }
+    if (Number.isInteger(config.startupTimeoutSec) && config.startupTimeoutSec > 0) {
+      output.push(
+        "-c",
+        `mcp_servers.${name}.startup_timeout_sec=${config.startupTimeoutSec}`,
+      );
+    }
+    if (Number.isInteger(config.toolTimeoutSec) && config.toolTimeoutSec > 0) {
+      output.push(
+        "-c",
+        `mcp_servers.${name}.tool_timeout_sec=${config.toolTimeoutSec}`,
+      );
+    }
     const autoApproveTools = Array.isArray(config.autoApproveTools)
       ? config.autoApproveTools
       : name === "cyberboss_tools"
@@ -93,13 +111,46 @@ function normalizeExternalMcpServerConfig(server, index) {
   if (!name || !command) {
     throw new Error(`External MCP server at index ${index} requires a valid name and command`);
   }
-  return {
+  const normalized = {
     name,
     command,
     args: Array.isArray(server.args)
       ? server.args.map((value) => normalizeNonEmptyString(value)).filter(Boolean)
       : [],
   };
+  if (Object.prototype.hasOwnProperty.call(server, "required")) {
+    if (typeof server.required !== "boolean") {
+      throw new Error(`External MCP server ${name} field required must be a boolean`);
+    }
+    normalized.required = server.required;
+  }
+  for (const [field, sourceField] of [
+    ["startupTimeoutSec", "startupTimeoutSec"],
+    ["toolTimeoutSec", "toolTimeoutSec"],
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(server, sourceField)) {
+      continue;
+    }
+    const value = server[sourceField];
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`External MCP server ${name} field ${sourceField} must be a positive integer`);
+    }
+    normalized[field] = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(server, "autoApproveTools")) {
+    if (!Array.isArray(server.autoApproveTools)) {
+      throw new Error(`External MCP server ${name} field autoApproveTools must be an array`);
+    }
+    const tools = server.autoApproveTools.map((value, toolIndex) => {
+      const toolName = normalizeNonEmptyString(value);
+      if (!toolName) {
+        throw new Error(`External MCP server ${name} field autoApproveTools contains an invalid tool at index ${toolIndex}`);
+      }
+      return toolName;
+    });
+    normalized.autoApproveTools = [...new Set(tools)];
+  }
+  return normalized;
 }
 
 function normalizeMcpServerName(value) {

@@ -243,7 +243,7 @@ Cyberboss can attach additional local STDIO MCP servers without changing its bui
 CYBERBOSS_MCP_SERVERS_FILE=D:\\CyberBoss\\mcp-servers.local.json
 ```
 
-Start from [templates/mcp-servers.example.json](./templates/mcp-servers.example.json). Each server needs a unique `name`, an executable `command`, and optional `args`. External MCP tools remain approval-gated; Cyberboss only auto-approves its own project tools. Keep credentials and machine-specific paths out of Git, and keep the local configuration file private.
+Start from [templates/mcp-servers.example.json](./templates/mcp-servers.example.json). Each server needs a unique `name`, an executable `command`, and optional `args`. External MCP tools remain approval-gated unless their exact names appear in `autoApproveTools`; use that only for safe read-only tools. `required`, `startupTimeoutSec`, and `toolTimeoutSec` make startup failures explicit and tune slow local servers. Keep credentials and machine-specific paths out of Git, and keep the local configuration file private.
 
 This makes integrations such as a private local task MCP optional. A useful boundary is: the task MCP owns planned work, while Cyberboss owns observed activity, reminders, and review.
 

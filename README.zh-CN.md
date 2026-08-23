@@ -243,6 +243,18 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
 
 如果你要跑共享线程，建议也在第一次启动前就把 `CYBERBOSS_WORKSPACE_ROOT` 配好。这样 `shared:open` 会优先接到你当前项目对应的那条线程，而不是回退到别的历史绑定。
 
+#### 可选的本地 MCP 服务
+
+Cyberboss 可以在不改内置工具的前提下挂载额外的本地 STDIO MCP 服务。要启用它，把 `CYBERBOSS_MCP_SERVERS_FILE` 指向一个本地 JSON 文件：
+
+```dotenv
+CYBERBOSS_MCP_SERVERS_FILE=D:\\CyberBoss\\mcp-servers.local.json
+```
+
+可以从 [templates/mcp-servers.example.json](./templates/mcp-servers.example.json) 开始。每个服务需要唯一的 `name`、可执行的 `command`，以及可选的 `args`。外部 MCP 工具默认仍需审批；只有精确列入 `autoApproveTools` 的工具会自动批准，因此这里只应放安全的只读工具。`required`、`startupTimeoutSec` 和 `toolTimeoutSec` 可让启动失败明确暴露，并为较慢的本地服务设置合理超时。账号凭据与机器专属路径不要提交进 Git，本地配置文件也应保持私有。
+
+以指尖时光为例，适合自动批准读取日程、待办、每日概览和统计；创建、更新、完成项目等写操作继续要求审批。
+
 如果你使用 Ollama 这类本地 Codex provider，推荐用一个很小的 wrapper script，不要直接把 provider flags 塞进 `CYBERBOSS_CODEX_COMMAND`。把 [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) 复制到 `${HOME}/.cyberboss/codex-local`，给它执行权限，并让 Cyberboss 使用这个 wrapper：
 
 ```bash

@@ -5,6 +5,15 @@
       "command": "C:\\path\\to\\node.exe",
       "args": [
         "C:\\path\\to\\zhijiantime-mcp\\dist\\src\\index.js"
+      ],
+      "required": true,
+      "startupTimeoutSec": 20,
+      "toolTimeoutSec": 60,
+      "autoApproveTools": [
+        "list_schedules",
+        "list_todos",
+        "get_daily_overview",
+        "get_period_stats"
       ]
     }
   ]
