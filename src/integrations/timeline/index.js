@@ -14,7 +14,7 @@ function createTimelineIntegration(config) {
         stateDir: config.stateDir,
       };
     },
-    async runSubcommand(subcommand, args = []) {
+    async runSubcommand(subcommand, args = [], options = {}) {
       const normalizedSubcommand = normalizeText(subcommand);
       if (!normalizedSubcommand) {
         throw new Error("timeline subcommand cannot be empty");
@@ -27,6 +27,7 @@ function createTimelineIntegration(config) {
       }, {
         subcommand: normalizedSubcommand,
         stdinBody: prepared.stdinBody,
+        signal: options.signal,
       });
     },
   };
@@ -93,11 +94,22 @@ function runTimelineCommand(binPath, args, extraEnv = {}, options = {}) {
     child.once("error", (error) => {
       finishReject(error);
     });
+    const abortHandler = () => {
+      child.kill();
+      const error = new Error("timeline operation was cancelled");
+      error.name = "AbortError";
+      error.code = "ABORTED";
+      finishReject(error);
+    };
+    if (options.signal?.aborted) abortHandler();
+    else options.signal?.addEventListener?.("abort", abortHandler, { once: true });
     if (stdinBody) {
       child.stdin.once("error", finishReject);
       child.stdin.end(stdinBody);
     }
     child.once("exit", (code, signal) => {
+      options.signal?.removeEventListener?.("abort", abortHandler);
+      if (settled) return;
       if (signal) {
         finishReject(new Error(`timeline process was interrupted by signal: ${signal}`));
         return;

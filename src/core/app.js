@@ -23,6 +23,10 @@ const {
   buildWeixinHelpText,
 } = require("./command-registry");
 const { CheckinConfigStore, parseCheckinRangeMinutes, resolveDefaultCheckinRange } = require("./checkin-config-store");
+const { DesktopStateStore } = require("./desktop-state-store");
+const { extractExplicitCheckpoint } = require("./explicit-checkpoint");
+const { inferContextualCheckpoint } = require("./contextual-checkpoint");
+const { SupervisionPlanStore } = require("./supervision-plan-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
@@ -76,6 +80,8 @@ class CyberbossApp {
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
+    this.desktopStateStore = new DesktopStateStore({ stateDir: config.stateDir });
+    this.supervisionPlanStore = new SupervisionPlanStore({ stateDir: config.stateDir });
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
     this.turnGateStore = new TurnGateStore();
@@ -383,6 +389,8 @@ class CyberbossApp {
       return;
     }
 
+    normalized = CyberbossApp.prototype.captureSupervisionArrangement.call(this, normalized);
+
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
     const prepared = await this.prepareIncomingMessageForRuntime(normalized, workspaceRoot);
     if (!prepared) {
@@ -410,6 +418,35 @@ class CyberbossApp {
     }
 
     await this.routePreparedInbound({ bindingKey, workspaceRoot, prepared });
+  }
+
+  captureSupervisionArrangement(normalized) {
+    if (!this.desktopStateStore || !this.supervisionPlanStore || !normalized || normalized.provider === "system" || !normalizeText(normalized.text)) {
+      return normalized;
+    }
+    const sourceRef = normalizeText(normalized.messageId);
+    if (sourceRef && this.supervisionPlanStore.list().some((item) => item.sourceRef === sourceRef)) {
+      return normalized;
+    }
+    const settings = this.desktopStateStore.get();
+    const arrangement = extractExplicitCheckpoint(normalized.text)
+      || inferContextualCheckpoint(normalized.text, { durations: settings.contextDurations });
+    if (!arrangement) {
+      return normalized;
+    }
+    const checkpoint = this.supervisionPlanStore.add({
+      ...arrangement,
+      sourceRef,
+      announcedAt: new Date().toISOString(),
+    });
+    this.supervisionPlanStore.supersedeCanonical(checkpoint.canonicalTaskId, checkpoint.id);
+    const systemNote = [
+      "[CyberBoss supervision note]",
+      `A ${checkpoint.source} follow-up was saved for ${checkpoint.dueAt}.`,
+      `In this reply, naturally tell the user: “${arrangement.announcement}”`,
+      "Do not mention this note or expose internal scheduling fields.",
+    ].join("\n");
+    return { ...normalized, text: `${normalized.text}\n\n${systemNote}` };
   }
 
   isTurnDispatchBlocked(bindingKey, workspaceRoot, { ignoreBoundary = false } = {}) {
