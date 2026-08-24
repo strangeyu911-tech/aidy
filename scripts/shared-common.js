@@ -9,6 +9,7 @@ const {
   resolveCodexProjectToolMcpServerConfig,
 } = require("../src/adapters/runtime/codex/mcp-config");
 const { normalizeWorkspaceRoot } = require("../src/core/workspace-path");
+const { createWindowsAppServer } = require("../src/diagnostics/codex-auth/windows-app-server");
 
 try {
   require("dotenv").config({ path: path.join(process.cwd(), ".env") });
@@ -129,6 +130,35 @@ async function ensureSharedAppServer() {
   }
 
   ensureLogDir();
+  if (process.platform === "win32") {
+    const adapter = createWindowsAppServer();
+    const config = buildSharedAppServerConfig();
+    const inspected = await adapter.inspect(config);
+    const decision = classifyWindowsAppServerInspection(inspected);
+    if (inspected.listenerPid) {
+      if (decision.identityVerified) {
+        if (inspected.pidFilePid !== inspected.listenerPid) {
+          writePidFile(appServerPidFile, inspected.listenerPid);
+        }
+        return {
+          pid: inspected.listenerPid,
+          status: decision.status,
+          identityVerified: true,
+        };
+      }
+      return {
+        pid: inspected.listenerPid,
+        status: decision.status,
+        identityVerified: false,
+      };
+    }
+    const started = await adapter.start(config);
+    if (!started.ok) {
+      throw new Error(`failed to start shared app-server safely; check ${appServerLogFile}`);
+    }
+    return { pid: started.listenerPid, status: "started", identityVerified: true };
+  }
+
   const pidFromFile = readPidFile(appServerPidFile);
   if (pidFromFile && isPidAlive(pidFromFile) && (await checkReadyz())) {
     return { pid: pidFromFile, status: "already_running" };
@@ -260,6 +290,47 @@ function getThreadId(binding, workspaceRoot, runtimeId = "") {
   return normalizeText(alias?.[1]);
 }
 
+function classifyWindowsAppServerInspection(inspected) {
+  if (!inspected?.listenerPid) {
+    return { status: "start_required", identityVerified: false };
+  }
+  if (!inspected.appServerIdentityVerified) {
+    return { status: "already_running_unknown_identity", identityVerified: false };
+  }
+  return {
+    status: inspected.pidFilePid !== inspected.listenerPid
+      ? "already_running_pid_repaired"
+      : "already_running",
+    identityVerified: true,
+  };
+}
+
+function buildSharedAppServerConfig() {
+  const command = process.env.CYBERBOSS_CODEX_COMMAND || "codex";
+  const mcpConfigArgs = buildCodexMcpConfigArgs([
+    resolveCodexProjectToolMcpServerConfig({
+      cyberbossHome: process.env.CYBERBOSS_HOME || rootDir,
+    }),
+    ...resolveAdditionalMcpServerConfigs({
+      filePath: process.env.CYBERBOSS_MCP_SERVERS_FILE,
+    }),
+  ]);
+  return {
+    command,
+    codexHome: process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    cwd: rootDir,
+    port: Number(port),
+    listenUrl,
+    pidFile: appServerPidFile,
+    logFile: appServerLogFile,
+    appServerPrefixArgs: mcpConfigArgs,
+    appServerEnv: {
+      CYBERBOSS_STATE_DIR: stateDir,
+      TIMELINE_FOR_AGENT_STATE_DIR: stateDir,
+    },
+  };
+}
+
 function getThreadMapForRuntime(binding, runtimeId) {
   const normalizedRuntimeId = normalizeText(runtimeId);
   const runtimeMap = binding && typeof binding.threadIdByWorkspaceRootByRuntime === "object"
@@ -297,6 +368,8 @@ module.exports = {
   writePidFile,
   removePidFileIfMatches,
   ensureSharedAppServer,
+  buildSharedAppServerConfig,
+  classifyWindowsAppServerInspection,
   ensureBridgeNotRunning,
   resolveBoundThread,
 };

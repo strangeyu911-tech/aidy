@@ -5,19 +5,40 @@ const {
   bridgePidFile,
   readPidFile,
   isPidAlive,
+  buildSharedAppServerConfig,
 } = require("./shared-common");
+const { createWindowsAppServer } = require("../src/diagnostics/codex-auth/windows-app-server");
 
 async function main() {
   const runtime = process.env.CYBERBOSS_RUNTIME || "codex";
   const isCodex = runtime === "codex";
   console.log(`runtime=${runtime}`);
   console.log(`listen=${listenUrl}`);
-  printPidState("shared_app_server_pid", appServerPidFile);
+  if (isCodex && process.platform === "win32") {
+    await printWindowsAppServerState();
+  } else {
+    printPidState("shared_app_server_pid", appServerPidFile);
+  }
   printPidState("shared_cyberboss_pid", bridgePidFile);
   if (!isCodex) {
     console.log(`readyz=skipped`);
   } else {
     console.log(`readyz=${await checkReadyz() ? "ok" : "down"}`);
+  }
+}
+
+async function printWindowsAppServerState() {
+  try {
+    const inspected = await createWindowsAppServer().inspect(buildSharedAppServerConfig());
+    console.log(`shared_app_server_pid_file=${inspected.pidFilePid || "missing"}`);
+    console.log(`shared_app_server_listener_pid=${inspected.listenerPid || "missing"}`);
+    console.log(`shared_app_server_pid_state=${inspected.pidFileState || "unknown"}`);
+    console.log(`shared_app_server_identity=${inspected.appServerIdentityVerified ? "verified" : "unverified"}`);
+  } catch (error) {
+    console.log(`shared_app_server_listener_pid=unknown`);
+    console.log(`shared_app_server_pid_state=unknown`);
+    console.log(`shared_app_server_identity=unverified`);
+    console.log(`shared_app_server_inspection_error=${String(error?.message || error).slice(0, 200)}`);
   }
 }
 
