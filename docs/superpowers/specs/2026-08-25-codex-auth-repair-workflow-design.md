@@ -139,6 +139,8 @@ reply == CYBERBOSS_AUTH_OK
 
 `--diagnose-only` 只检查配置、凭据文件、CLI 状态、监听进程身份和 `/readyz`。它不发送真实模型请求，因此报告必须明确标记“App Server 认证未经业务探针验证”，不能输出 `REPAIR_SUCCEEDED`。
 
+只读检查全部通过时输出信息性代码 `DIAGNOSIS_COMPLETE`。该代码只证明诊断完成，不证明模型认证成功。
+
 设备码登录失败、企业策略限制登录方式或修复后仍返回 401 时，工作流停止并保留证据，不循环重试。
 
 ## 固定排查方向
@@ -197,6 +199,7 @@ PID 文件与监听 PID 不一致时，PID 文件标记为陈旧。不得停止 
 第一版使用以下稳定结果代码：
 
 ```text
+DIAGNOSIS_COMPLETE
 CONFIG_INVALID
 PLATFORM_UNSUPPORTED
 CLI_NOT_FOUND

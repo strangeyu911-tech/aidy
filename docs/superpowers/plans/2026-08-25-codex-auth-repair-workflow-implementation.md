@@ -194,11 +194,11 @@ node --test test/codex-auth-workflow.test.js
 - 增加：
 
 ```json
-"test": "node --test",
+"test:codex-auth": "node --test ./test/codex-auth-app-server-probe.test.js ./test/codex-auth-cli-options.test.js ./test/codex-auth-cli.test.js ./test/codex-auth-device-login.test.js ./test/codex-auth-diagnostics.test.js ./test/codex-auth-windows-app-server.test.js ./test/codex-auth-workflow.test.js ./test/shared-app-server-state.test.js",
 "codex:auth-repair": "node ./scripts/codex-auth-repair.js"
 ```
 
-- `test` 使用 Node 自带测试发现机制，避免依赖 PowerShell 对通配符的展开行为。
+- `test:codex-auth` 显式列出本工作流测试，避免依赖 PowerShell 对通配符的展开行为，也避免把仓库中与本功能无关的既有平台测试失败混入发布验收。
 
 ### 验证
 
@@ -260,7 +260,7 @@ npm run shared:status
 ### 自动化测试
 
 ```text
-npm test
+npm run test:codex-auth
 npm run check
 ```
 

@@ -286,6 +286,8 @@ When `CYBERBOSS_RUNTIME=claudecode`, Cyberboss also upserts a workspace-local `.
   Check the shared runtime process, shared bridge, and `readyz`
 - `npm run doctor`
   Inspect current config, channel/runtime boundaries, and thread status
+- `npm run codex:auth-repair`
+  Windows-first Codex authentication repair. It checks the dedicated `CODEX_HOME`, can run device-code login, only restarts an identity-verified App Server, and requires a real model reply. See the [Chinese repair guide](./docs/codex-auth-repair.zh-CN.md)
 - `npm run help`
   Show stable command entrypoints
 

@@ -294,6 +294,8 @@ model_catalog_json = "/绝对路径/.codex/local-models.json"
   跨平台查看共享 runtime 进程、共享桥接和 `readyz` 状态
 - `npm run doctor`
   查看当前配置、channel/runtime 边界和线程状态
+- `npm run codex:auth-repair`
+  Windows 第一版 Codex 认证自动修复：检查专用 `CODEX_HOME`，必要时设备码登录，只重启身份已验证的 App Server，并用真实模型回复验收。完整说明见 [Codex 认证修复手册](./docs/codex-auth-repair.zh-CN.md)
 - `npm run help`
   查看可直接执行的命令入口
 

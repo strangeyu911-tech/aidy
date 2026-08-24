@@ -65,7 +65,10 @@ The intentionally small public set is:
 - `npm run shared:open`
 - `npm run shared:status`
 - `npm run doctor`
+- `npm run codex:auth-repair`
 - `npm run help`
+
+`npm run codex:auth-repair` is the Windows-first Codex authentication workflow. It diagnoses the dedicated `CODEX_HOME`, can run device-code login, safely restarts only a verified App Server, and requires a real model reply before reporting success. See [the Chinese repair guide](./codex-auth-repair.zh-CN.md).
 
 ## Project Tools
 
