@@ -19,7 +19,18 @@ class ProjectToolHost {
       inputSchema: tool.inputSchema,
     }));
     const extra = this.extraToolHosts.flatMap((host) => host.listTools());
-    return [...builtIn, ...extra];
+    return [...builtIn, ...extra].map(toPublicToolDefinition).filter(Boolean);
+  }
+
+  getToolApproval(toolName) {
+    if (PROJECT_TOOLS.some((candidate) => candidate.name === toolName)) {
+      return "auto";
+    }
+    for (const host of this.extraToolHosts) {
+      const tool = host.listTools().find((candidate) => candidate?.name === toolName);
+      if (tool) return tool.approval === "ask" ? "ask" : "auto";
+    }
+    return "ask";
   }
 
   async invokeTool(toolName, args = {}, context = {}) {
@@ -35,8 +46,10 @@ class ProjectToolHost {
       });
     }
     for (const host of this.extraToolHosts) {
-      if (host.listTools().some((tool) => tool.name === toolName)) {
-        return await host.invokeTool(toolName, normalizedArgs);
+      const tool = host.listTools().find((candidate) => candidate.name === toolName);
+      if (tool) {
+        validateSchema(tool.inputSchema, normalizedArgs, toolName, "input");
+        return await host.invokeTool(toolName, normalizedArgs, context);
       }
     }
     throw new Error(`Unknown tool: ${toolName}`);
@@ -58,6 +71,23 @@ class ProjectToolHost {
       senderId: normalizeText(context.senderId) || normalizeText(active.senderId),
     };
   }
+}
+
+function toPublicToolDefinition(tool) {
+  const name = normalizeText(tool?.name);
+  if (!name) return null;
+  return {
+    name,
+    description: normalizeText(tool?.description),
+    inputSchema: cloneJsonSchema(tool?.inputSchema),
+  };
+}
+
+function cloneJsonSchema(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { type: "object", properties: {} };
+  }
+  return JSON.parse(JSON.stringify(value));
 }
 
 function listProjectToolNames() {

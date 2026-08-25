@@ -39,9 +39,10 @@ class ConversationStore {
     }
   }
 
-  beginTurn(scope, input) {
+  beginTurn(scope, input, { conversationId = "" } = {}) {
     const normalizedScope = normalizeRuntimeScope(scope);
-    const conversation = this.getOrCreateConversation(normalizedScope);
+    const normalizedConversationId = normalizeText(conversationId);
+    const conversation = this.getOrCreateConversation(normalizedScope, normalizedConversationId);
     if (conversation.archived) {
       throw makeError("Archived profile history cannot accept new turns.", "PROFILE_ARCHIVED");
     }
@@ -50,6 +51,7 @@ class ConversationStore {
       status: "inflight",
       input: normalizeMessage(input, "user"),
       assistant: null,
+      messages: [],
       toolResults: [],
       pendingToolCallIds: [],
     };
@@ -63,10 +65,11 @@ class ConversationStore {
     if (conversation.archived) {
       throw makeError("Archived profile history cannot be modified.", "PROFILE_ARCHIVED");
     }
-    if (turn.assistant) {
-      throw makeError("Assistant message is already committed for this turn.", "ASSISTANT_ALREADY_COMMITTED");
+    if (turn.pendingToolCallIds.length) {
+      throw makeError("Assistant continuation requires every pending tool result.", "TOOL_RESULTS_PENDING");
     }
     turn.assistant = normalizeMessage(message, "assistant");
+    turn.messages.push(turn.assistant);
     turn.pendingToolCallIds = extractToolCallIds(turn.assistant);
     if (!turn.pendingToolCallIds.length) {
       turn.status = "committed";
@@ -75,7 +78,7 @@ class ConversationStore {
     return clone(turn);
   }
 
-  commitToolResult(turnId, result) {
+  commitToolResult(turnId, result, { continueTurn = false } = {}) {
     const { conversation, turn } = this.requireInflightTurn(turnId);
     if (conversation.archived) {
       throw makeError("Archived profile history cannot be modified.", "PROFILE_ARCHIVED");
@@ -89,8 +92,9 @@ class ConversationStore {
       throw makeError("Tool result does not match a pending tool call.", "TOOL_CALL_NOT_PENDING");
     }
     turn.toolResults.push(normalizedResult);
+    turn.messages.push(normalizedResult);
     turn.pendingToolCallIds = turn.pendingToolCallIds.filter((candidate) => candidate !== toolCallId);
-    if (!turn.pendingToolCallIds.length) {
+    if (!turn.pendingToolCallIds.length && !continueTurn) {
       turn.status = "committed";
     }
     this.save();
@@ -108,19 +112,23 @@ class ConversationStore {
     return clone(located.turn);
   }
 
-  resume(scope) {
+  resume(scope, { conversationId = "" } = {}) {
     const normalizedScope = normalizeRuntimeScope(scope);
+    const normalizedConversationId = normalizeText(conversationId);
     const scopeKey = buildRuntimeScopeKey(normalizedScope);
     const conversation = this.state.conversations.find((candidate) => (
-      candidate.scopeKey === scopeKey && sameRuntimeScope(candidate.scope, normalizedScope)
+      candidate.scopeKey === scopeKey
+      && candidate.conversationId === normalizedConversationId
+      && sameRuntimeScope(candidate.scope, normalizedScope)
     ));
     if (!conversation) {
-      return emptyResume(normalizedScope, scopeKey);
+      return emptyResume(normalizedScope, scopeKey, normalizedConversationId);
     }
     const committed = conversation.turns.filter((turn) => turn.status === "committed");
     return {
       scopeKey,
       scope: clone(conversation.scope),
+      conversationId: conversation.conversationId,
       messages: committed.flatMap(committedTurnMessages).map(clone),
       turns: committed.map(clone),
       abortedTurns: conversation.turns.filter((turn) => turn.status === "aborted").map(clone),
@@ -151,15 +159,18 @@ class ConversationStore {
     return archived;
   }
 
-  getOrCreateConversation(scope) {
+  getOrCreateConversation(scope, conversationId = "") {
     const scopeKey = buildRuntimeScopeKey(scope);
     let conversation = this.state.conversations.find((candidate) => (
-      candidate.scopeKey === scopeKey && sameRuntimeScope(candidate.scope, scope)
+      candidate.scopeKey === scopeKey
+      && candidate.conversationId === conversationId
+      && sameRuntimeScope(candidate.scope, scope)
     ));
     if (!conversation) {
       conversation = {
         scopeKey,
         scope: clone(scope),
+        conversationId,
         archived: false,
         turns: [],
       };
@@ -227,6 +238,7 @@ function normalizeConversationState(value) {
     conversations.push({
       scopeKey: buildRuntimeScopeKey(scope),
       scope,
+      conversationId: normalizeText(candidate.conversationId),
       archived: Boolean(candidate.archived),
       turns,
     });
@@ -239,10 +251,19 @@ function normalizeTurn(value) {
   const id = normalizeText(value.id);
   if (!id) return null;
   const status = ["inflight", "committed", "aborted"].includes(value.status) ? value.status : "aborted";
-  const assistant = isRecord(value.assistant) ? normalizeMessage(value.assistant, "assistant") : null;
-  const toolResults = (Array.isArray(value.toolResults) ? value.toolResults : [])
+  const legacyAssistant = isRecord(value.assistant) ? normalizeMessage(value.assistant, "assistant") : null;
+  const legacyToolResults = (Array.isArray(value.toolResults) ? value.toolResults : [])
     .filter(isRecord)
     .map((result) => normalizeMessage(result, "tool"));
+  const messages = Array.isArray(value.messages)
+    ? value.messages
+      .filter(isRecord)
+      .map((message) => normalizeMessage(message, normalizeText(message.role) || "assistant"))
+      .filter((message) => message.role === "assistant" || message.role === "tool")
+    : [legacyAssistant, ...legacyToolResults].filter(Boolean);
+  const assistantMessages = messages.filter((message) => message.role === "assistant");
+  const assistant = assistantMessages.at(-1) || legacyAssistant;
+  const toolResults = messages.filter((message) => message.role === "tool");
   const declaredToolCallIds = assistant ? extractToolCallIds(assistant) : [];
   const completedToolCallIds = new Set(toolResults.map(extractToolResultCallId).filter(Boolean));
   const pendingToolCallIds = declaredToolCallIds.filter((toolCallId) => !completedToolCallIds.has(toolCallId));
@@ -252,6 +273,7 @@ function normalizeTurn(value) {
     status: status === "committed" && !structurallyCommitted ? "aborted" : status,
     input: normalizeMessage(value.input, "user"),
     assistant,
+    messages,
     toolResults,
     pendingToolCallIds: status === "inflight" ? pendingToolCallIds : [],
   };
@@ -311,13 +333,17 @@ function findTurn(state, turnId) {
 }
 
 function committedTurnMessages(turn) {
-  return [turn.input, turn.assistant, ...turn.toolResults].filter(Boolean);
+  const ordered = Array.isArray(turn.messages) && turn.messages.length
+    ? turn.messages
+    : [turn.assistant, ...turn.toolResults].filter(Boolean);
+  return [turn.input, ...ordered].filter(Boolean);
 }
 
-function emptyResume(scope, scopeKey) {
+function emptyResume(scope, scopeKey, conversationId = "") {
   return {
     scopeKey,
     scope: clone(scope),
+    conversationId,
     messages: [],
     turns: [],
     abortedTurns: [],

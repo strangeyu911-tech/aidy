@@ -298,6 +298,13 @@ test("tool host descriptions include schema summary for models that only surface
   assert.match(timelineWrite.description, /events: \{/);
 });
 
+test("CyberBoss project tools declare internal auto approval without exposing it in schemas", () => {
+  const host = createHost();
+  const exposed = host.listTools().find((tool) => tool.name === "cyberboss_diary_append");
+  assert.equal(host.getToolApproval("cyberboss_diary_append"), "auto");
+  assert.equal(Object.prototype.hasOwnProperty.call(exposed, "approval"), false);
+});
+
 test("tool host exposes whereabouts tools from the external dependency", async () => {
   const host = createHost();
   const tools = host.listTools();

@@ -121,3 +121,25 @@ test("fresh instances reopen committed conversation files", () => {
   const reopened = new ConversationStore({ filePath });
   assert.deepEqual(reopened.resume(scope).messages.map((message) => message.text), ["persist me", "persisted"]);
 });
+
+test("multi-step tool turns persist ordered assistant and tool history through reopen", () => {
+  const filePath = makeFilePath();
+  const scope = scopeFor();
+  const first = new ConversationStore({ filePath, randomUUID: () => "multi-step" });
+  const turn = first.beginTurn(scope, { role: "user", text: "run" }, { conversationId: "thread-a" });
+  first.commitAssistant(turn.id, {
+    role: "assistant",
+    text: "working",
+    toolCalls: [{ id: "call-1", name: "echo" }],
+  });
+  first.commitToolResult(turn.id, { role: "tool", toolCallId: "call-1", text: "done" }, { continueTurn: true });
+  assert.deepEqual(first.resume(scope, { conversationId: "thread-a" }).messages, []);
+  first.commitAssistant(turn.id, { role: "assistant", text: "finished" });
+
+  const reopened = new ConversationStore({ filePath });
+  assert.deepEqual(
+    reopened.resume(scope, { conversationId: "thread-a" }).messages.map((message) => message.text),
+    ["run", "working", "done", "finished"],
+  );
+  assert.deepEqual(reopened.resume(scope, { conversationId: "thread-b" }).messages, []);
+});
