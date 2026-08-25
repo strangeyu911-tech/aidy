@@ -3,13 +3,13 @@
 [中文](./README.zh-CN.md) · English
 
 # The Overbearing Boss Fell for My ADHD
-## Cyberboss: a WeChat bridge for Codex and Claude Code
+## Cyberboss: an API-first, multi-runtime WeChat agent bridge
 
 > "Keep escaping into dopamine if you want. I'll still catch you at the next timestamp."
 
 [![Node >=22](https://img.shields.io/badge/Node-22%2B-3C873A)](./package.json)
 [![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-b31b1b)](./LICENSE)
-[![Runtime-Codex%20%7C%20ClaudeCode](https://img.shields.io/badge/Runtime-Codex%20%7C%20ClaudeCode-111827)](#technical-stack)
+[![Runtime-API%20%7C%20OpenCode%20%7C%20Codex%20%7C%20Claude](https://img.shields.io/badge/Runtime-API%20%7C%20OpenCode%20%7C%20Codex%20%7C%20Claude-111827)](#technical-stack)
 [![Bridge-Weixin](https://img.shields.io/badge/Bridge-Weixin-07C160)](#technical-stack)
 [![Timeline-Enabled](https://img.shields.io/badge/Timeline-Enabled-8b5cf6)](#core-features)
 
@@ -30,7 +30,21 @@
 
 Cyberboss is not another polite productivity timer. It is not a to-do list with better branding either.
 
-It is an agent bridge that plugs a local coding runtime directly into WeChat and turns it into a time-aware, context-persistent accountability companion. It supports Codex and Claude Code while keeping the same commands and day-to-day behavior. It does not wait for you to "start a session". It watches the flow of your day, notices when you disappear, and decides when to show up again.
+It is an agent bridge that connects a verified model profile directly to WeChat and turns it into a time-aware, context-persistent accountability companion. The built-in API runtime works without OpenCode, while OpenCode, Codex, and Claude Code remain explicit optional choices. It does not wait for you to "start a session". It watches the flow of your day, notices when you disappear, and decides when to show up again.
+
+### API-first release behavior
+
+- A clean installation has **no default engine**. Running and Quiet stay disabled until a model profile passes a live connection/capability test and is activated.
+- Built-in API profiles support OpenAI, OpenRouter, Anthropic Claude, Google Gemini, Ollama, DeepSeek, Kimi, GLM, MiniMax, Tencent Hunyuan, Xiaomi MiMo, Qwen, and custom OpenAI-compatible endpoints.
+- OpenRouter includes live catalog refresh and searchable model selection. External OpenCode also refreshes its live provider/model catalog on every activation.
+- OpenCode is optional: Managed local uses an isolated Cyberboss-owned service and vault credentials; External service uses credentials already owned by that service and accepts only loopback HTTP or HTTPS.
+- Codex and Claude Code remain compatibility profiles and are never silently selected.
+- API keys, service passwords, and sensitive headers are encrypted with Windows DPAPI for the current Windows user. They are not exposed to the renderer, normal logs, backups, or exports.
+- Model choice is global. `/model` only reports the active profile; changes must be verified and activated in **Control Center → Models and APIs**.
+- Existing Codex/Claude sessions migrate conservatively. Unprovable legacy sessions stay read-only, and restored profiles return as drafts without credentials.
+- Night-care behavior is intentionally deferred to the separate follow-up plan and is not part of this API-first release.
+
+See [API-first operations](./docs/api-first-operations.md) and [API-first migration](./docs/api-first-migration.md) for setup, recovery, backup, and upgrade details.
 
 ## Why Cyberboss?
 
@@ -77,7 +91,7 @@ Cyberboss builds on top of `timeline-for-agent`, then adds WeChat, reminders, di
 ## Technical Stack
 
 - **Core**
-  A pluggable runtime layer for Codex and Claude Code, with the same WeChat command surface and shared-thread workflow.
+  A strict runtime registry for Built-in API, optional OpenCode, Codex compatibility, and Claude Code compatibility, with one verified global profile.
 - **Bridge**
   A WeChat HTTP bridge with long-poll synchronization for inbound messages, outbound replies, files, and status transitions.
 - **Task System**
@@ -103,7 +117,8 @@ Cyberboss assumes none of that. It treats the user as someone who may drift, dis
 ### Requirements
 
 - Node.js `>= 22`
-- `codex` or `claude` installed locally
+- Windows for DPAPI-backed API credentials
+- A provider API endpoint/key, local Ollama, an explicit OpenCode service/executable, or an installed Codex/Claude Code compatibility runtime
 - Chrome / Chromium / Edge if you want screenshot features
 
 ### Get the source and install dependencies
@@ -116,7 +131,7 @@ cd cyberboss
 npm install
 ```
 
-### Configure environment variables before the first command
+### Configure channel/workspace variables, then choose a model in the control center
 
 `Cyberboss` reads environment variables from:
 
@@ -136,7 +151,7 @@ CYBERBOSS_WORKSPACE_ROOT=/absolute/path/to/your/project
 Common optional variables:
 
 ```dotenv
-CYBERBOSS_RUNTIME=codex
+CYBERBOSS_RUNTIME=
 CYBERBOSS_CODEX_ENDPOINT=ws://127.0.0.1:8765
 CYBERBOSS_CODEX_COMMAND=
 CYBERBOSS_CODEX_MODEL=
@@ -167,7 +182,7 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
 What these do:
 
 - `CYBERBOSS_RUNTIME`
-  Choose `codex` or `claudecode`. The command set stays the same.
+  Legacy compatibility hint only. It never activates an engine or overrides the global verified profile.
 - `CYBERBOSS_CODEX_ENDPOINT`
   Reuse an existing shared Codex app-server instead of spawning a private runtime.
 - `CYBERBOSS_CODEX_COMMAND`
@@ -175,7 +190,7 @@ What these do:
 - `CYBERBOSS_CODEX_MODEL`
   Force Codex turns to use a specific model. Leave empty to use Codex's default model selection.
 - `CYBERBOSS_CODEX_MODEL_PROVIDER`
-  Force Codex turns to use a specific provider, such as `ollama` for local models. Leave empty for the default cloud provider.
+  Compatibility-profile hint for Codex, such as `ollama` for local models. It does not select a default provider.
 - `CYBERBOSS_CLAUDE_COMMAND`
   Override the Claude launcher. Default is `claude`.
 - `CYBERBOSS_CLAUDE_MODEL`
@@ -243,7 +258,7 @@ model_catalog_json = "/absolute/path/to/.codex/local-models.json"
 
 Build that file from your existing Codex model catalog and add entries for your local model slugs, including the correct `context_window`, `max_context_window`, `input_modalities`, and truncation policy. Keep the cloud model entries in the catalog. Verify with `codex debug models`; Codex should list the local model and should not warn that it is using fallback metadata.
 
-When `CYBERBOSS_RUNTIME=claudecode`, Cyberboss also upserts a workspace-local `.mcp.json` entry for `cyberboss_tools` before starting Claude, and launches Claude with that MCP config explicitly attached. That is how Claude discovers the Cyberboss project tools without any global registration.
+When an activated Claude Code compatibility profile is used, Cyberboss also upserts a workspace-local `.mcp.json` entry for `cyberboss_tools` before starting Claude and launches Claude with that MCP config explicitly attached. That is how Claude discovers the Cyberboss project tools without any global registration.
 
 ### Terminal commands for end users
 
@@ -264,7 +279,7 @@ When `CYBERBOSS_RUNTIME=claudecode`, Cyberboss also upserts a workspace-local `.
 
 Here, `checkin` means the random wake-up mechanism, not a fixed periodic reminder.
 
-Switch the runtime with `CYBERBOSS_RUNTIME`. You do not need a different command set for Claude Code.
+Switch runtimes by verifying and activating a profile in **Control Center → Models and APIs**. You do not need a different command set for Claude Code.
 
 `npm run start` and `npm run start:checkin` are still useful for minimal local debugging, but they are not the recommended way to observe or debug the real shared bridge workflow.
 
@@ -295,9 +310,9 @@ Switch the runtime with `CYBERBOSS_RUNTIME`. You do not need a different command
 - `/no`
   Reject the current approval
 - `/model`
-  Show current model
+  Show the current global profile/runtime/provider/model
 - `/model <id>`
-  Switch model
+  Read-only compatibility form: reports that the requested value was not applied and directs you to the control center
 - `/star`
   Show the GitHub star guide inside WeChat
 - `/help`

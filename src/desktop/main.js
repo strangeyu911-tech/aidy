@@ -156,7 +156,15 @@ async function bootstrap() {
     supervisor.start().catch(() => publishSnapshot());
   }
   logger.info("desktop.ready", { desiredState });
+  scheduleArtifactSmokeExit();
   app.on("activate", showMainWindow);
+}
+
+function scheduleArtifactSmokeExit() {
+  const delayMs = Number.parseInt(String(process.env.CYBERBOSS_ARTIFACT_SMOKE_EXIT_MS || ""), 10);
+  if (!Number.isSafeInteger(delayMs) || delayMs < 250 || delayMs > 30_000) return;
+  const timer = setTimeout(requestExit, delayMs);
+  timer.unref?.();
 }
 
 function createMainWindow() {

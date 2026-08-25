@@ -5,7 +5,7 @@
 `core` is responsible for:
 
 - reading config
-- choosing which channel / runtime / integrations to use
+- resolving the one explicitly activated global runtime profile (there is no default engine)
 - orchestrating capabilities instead of implementing concrete protocols
 
 ## Channel Adapters
@@ -31,6 +31,9 @@ Responsible for:
 
 - sending messages into the specific agent runtime
 - handling thread / session / approval / stop
+- implementing the common contract for Built-in API, optional OpenCode, Codex compatibility, and Claude Code compatibility
+
+Provider configuration is split between non-secret `provider-profiles.json` and a Windows DPAPI credential vault. Backups contain only sanitized draft profile structure; vault ciphertext and encrypted diagnostic capture are excluded.
 
 Not responsible for:
 

@@ -3,13 +3,13 @@
 中文 · [English](./README.md)
 
 # 《霸道总裁爱上患有 ADHD 的我》
-## 支持 Codex 与 Claude Code 的微信桥接系统：Cyberboss
+## API-first、多运行时微信 Agent 桥接系统：Cyberboss
 
 > “你尽管在多巴胺里逃避，但我永远会在下一个时间戳抓到你。”
 
 [![Node >=22](https://img.shields.io/badge/Node-22%2B-3C873A)](./package.json)
 [![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-b31b1b)](./LICENSE)
-[![Runtime-Codex%20%7C%20ClaudeCode](https://img.shields.io/badge/Runtime-Codex%20%7C%20ClaudeCode-111827)](#technical-stack)
+[![Runtime-API%20%7C%20OpenCode%20%7C%20Codex%20%7C%20Claude](https://img.shields.io/badge/Runtime-API%20%7C%20OpenCode%20%7C%20Codex%20%7C%20Claude-111827)](#technical-stack)
 [![Bridge-Weixin](https://img.shields.io/badge/Bridge-Weixin-07C160)](#technical-stack)
 [![Timeline-Enabled](https://img.shields.io/badge/Timeline-Enabled-8b5cf6)](#core-features)
 
@@ -31,7 +31,21 @@
 
 Cyberboss 不是另一个平庸的番茄钟，也不是一个只会堆积任务的待办清单。
 
-它是一个把本地 coding runtime 深度接入微信的 Agent Bridge。当前同时支持 Codex 和 Claude Code，但日常使用命令和行为保持一致。它的存在不是为了“提醒你开始”，而是直接化身为那个拥有绝对时间感、盯死进度、在你消失太久时会主动破屏而出的“赛博老板”。
+它是一个把经过验证的模型配置深度接入微信的 Agent Bridge。内置 API 运行时不依赖 OpenCode；OpenCode、Codex 和 Claude Code 都是需要明确选择的可选运行时，日常使用命令和行为保持一致。它的存在不是为了“提醒你开始”，而是直接化身为那个拥有绝对时间感、盯死进度、在你消失太久时会主动破屏而出的“赛博老板”。
+
+### API-first 版本行为
+
+- 全新安装**没有默认引擎**。模型配置通过实时连接与能力测试并激活以前，“运行”和“静默”不可用。
+- 内置 API 配置支持 OpenAI、OpenRouter、Anthropic Claude、Google Gemini、Ollama、DeepSeek、Kimi、GLM、MiniMax、腾讯混元、小米 MiMo、Qwen，以及自定义 OpenAI-compatible 端点。
+- OpenRouter 提供实时目录刷新与模型搜索；外部 OpenCode 每次激活也会强制刷新实时 provider/model 目录。
+- OpenCode 不是必需依赖：Managed local 使用 Cyberboss 隔离管理的服务与保险库凭据；External service 只使用外部实例已有的 provider 凭据，且仅接受回环 HTTP 或 HTTPS。
+- Codex 与 Claude Code 仅作为兼容配置保留，永远不会被静默选为默认项。
+- API key、服务密码和敏感 header 由当前 Windows 用户的 DPAPI 加密；renderer、普通日志、备份和导出都不会包含它们。
+- 模型选择是全局的。`/model` 只显示当前配置；切换必须在**控制中心 → 模型与 API**中完成验证和激活。
+- 旧 Codex/Claude 会话采取保守迁移：无法证明原运行时/模型身份的历史保持只读；从备份恢复的 profile 一律变回无凭据 draft。
+- 夜间关怀属于后续独立计划，本次 API-first 版本不提前实现。
+
+首次配置、恢复与备份参见 [API-first 运维手册](./docs/api-first-operations.zh-CN.md)，旧版本升级参见 [API-first 迁移指南](./docs/api-first-migration.zh-CN.md)。
 
 ## 为什么需要 Cyberboss？
 
@@ -80,7 +94,7 @@ Reminder 队列不是给用户设的闹钟，而是模型留给未来自己的�
 ## 技术实现
 
 - **Core**
-  可切换的 Codex / Claude Code runtime 层，对外保持同一套微信命令与共享线程工作流。
+  严格注册 Built-in API、可选 OpenCode、Codex 兼容与 Claude Code 兼容运行时，并只使用一个已验证的全局 profile。
 - **Bridge**
   微信 HTTP bridge，支持长轮询同步，把微信侧输入、输出、文件和状态变化接到同一条 agent 链路里。
 - **Task System**
@@ -106,7 +120,8 @@ Cyberboss 假设你是一个完全不可控的个体：你不需要先点开始�
 ### 环境前提
 
 - Node.js `>= 22`
-- 本机已安装 `codex` 或 `claude`
+- 使用 DPAPI 保存 API 凭据时需要 Windows
+- 至少准备 provider API 端点/密钥、本地 Ollama、明确配置的 OpenCode 服务/可执行文件，或已安装的 Codex/Claude Code 兼容运行时之一
 - 如果需要截图，本机需要可用的 Chrome / Chromium / Edge
 
 ### 获取源码与安装依赖
@@ -121,7 +136,7 @@ npm install
 
 不要把 README 里的命令理解成“全局安装后直接可用”的 npm package 命令。
 
-### 在跑第一个命令前先配环境变量
+### 先配置 channel/workspace 变量，再在控制中心选择模型
 
 `Cyberboss` 会按这个顺序读取环境变量：
 
@@ -141,7 +156,7 @@ CYBERBOSS_WORKSPACE_ROOT=/绝对路径/你的项目目录
 可选常用项：
 
 ```dotenv
-CYBERBOSS_RUNTIME=codex
+CYBERBOSS_RUNTIME=
 CYBERBOSS_CODEX_ENDPOINT=ws://127.0.0.1:8765
 CYBERBOSS_CODEX_COMMAND=
 CYBERBOSS_CODEX_MODEL=
@@ -179,7 +194,7 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
 这些变量的作用：
 
 - `CYBERBOSS_RUNTIME`
-  选择 `codex` 或 `claudecode`。两种 runtime 使用同一套命令。
+  仅作为旧版兼容提示；它不会激活引擎，也不能覆盖全局已验证 profile。
 - `CYBERBOSS_CODEX_ENDPOINT`
   复用已有的共享 Codex app-server，而不是新起私有 runtime。
 - `CYBERBOSS_CODEX_COMMAND`
@@ -187,7 +202,7 @@ CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
 - `CYBERBOSS_CODEX_MODEL`
   强制 Codex turn 使用指定模型。留空则使用 Codex 默认模型选择。
 - `CYBERBOSS_CODEX_MODEL_PROVIDER`
-  强制 Codex turn 使用指定 provider，例如本地模型可填 `ollama`。留空则使用默认云端 provider。
+  Codex 兼容 profile 的提示项，例如本地模型可填 `ollama`；它不会选择默认 provider。
 - `CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT`
   Codex app-server 直传图片能力的可选覆盖。留空时按 model metadata 判断；设为 `true` 可直接测试本地多模态模型，设为 `false` 可强制走 caption fallback。
 - `CYBERBOSS_CLAUDE_COMMAND`
@@ -278,7 +293,7 @@ model_catalog_json = "/绝对路径/.codex/local-models.json"
 
 这份文件应基于你现有的 Codex model catalog 生成，再追加本地模型条目。每个本地模型条目至少要和实际模型 slug 对齐，并写清楚正确的 `context_window`、`max_context_window`、`input_modalities` 和 truncation policy。不要只保留本地模型而删掉云端模型条目。配置后用 `codex debug models` 验证；本地模型应该能被列出，并且不应再出现 fallback metadata 警告。
 
-当 `CYBERBOSS_RUNTIME=claudecode` 时，Cyberboss 会在当前工作区自动补写 `.mcp.json` 里的 `cyberboss_tools`，并在启动 Claude 时显式挂上这份 MCP 配置。Claude 能发现 Cyberboss project tools，靠的就是这条项目本地配置，而不是全局注册。
+激活 Claude Code 兼容 profile 后，Cyberboss 会在当前工作区自动补写 `.mcp.json` 里的 `cyberboss_tools`，并在启动 Claude 时显式挂上这份 MCP 配置。Claude 能发现 Cyberboss project tools，靠的就是这条项目本地配置，而不是全局注册。
 
 ### 用户自己会用到的终端命令
 
@@ -301,7 +316,7 @@ model_catalog_json = "/绝对路径/.codex/local-models.json"
 
 这里的 `checkin` 指的就是“随机轮询唤醒”能力，不是固定整点提醒。
 
-切换 runtime 只需要改 `CYBERBOSS_RUNTIME`。不需要为 Claude Code 单独学习另一套命令。
+切换 runtime 必须在**控制中心 → 模型与 API**中验证并激活 profile；不需要为 Claude Code 单独学习另一套命令。
 
 `npm run start` / `npm run start:checkin` 可以用于本地最小链路调试，但不适合观察共享桥的真实行为，也不适合作为共享线程问题的默认排查入口。因此 README 只把共享模式作为默认入口。
 
@@ -332,9 +347,9 @@ model_catalog_json = "/绝对路径/.codex/local-models.json"
 - `/no`
   拒绝当前待处理授权
 - `/model`
-  查看当前模型
+  查看当前全局 profile/runtime/provider/model
 - `/model <id>`
-  切换模型
+  只读兼容形式：说明请求值未应用，并引导回控制中心
 - `/star`
   在微信里查看 GitHub star 引导
 - `/help`

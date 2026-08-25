@@ -12,7 +12,7 @@ It defines stable internal actions first, then lets each channel expose its own 
 
 This keeps the core naming stable when new runtimes or channels are added later.
 
-The runtime can be `codex` or `claudecode`, but the documented command surface stays the same.
+The runtime can be `builtin-api`, `opencode`, `codex`, or `claudecode`, but the documented command surface stays the same. A clean install has no default runtime; only a verified, explicitly activated global profile can run.
 
 ## Current Action Groups
 
@@ -47,7 +47,7 @@ The runtime can be `codex` or `claudecode`, but the documented command surface s
 ### Capabilities
 
 - `model.inspect`
-- `model.select`
+- `model.select` (control-center-only verified profile activation; `/model` remains inspect-only)
 - `channel.send_file`
 - `timeline.write`
 - `reminder.create`
@@ -107,7 +107,7 @@ Notes:
 - `/always`
 - `/no`
 - `/model`
-- `/model <id>`
+- `/model <id>` (read-only compatibility form; it does not switch the global profile)
 - `/star`
 - `/help`
 

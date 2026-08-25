@@ -3,13 +3,17 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
+const { normalizeProviderProfiles } = require("../core/provider-profile-store");
+
 const DATA_CLASSES = Object.freeze({
-  settings: ["desktop-state.json", "supervision-plan.json"],
+  settings: ["desktop-state.json", "supervision-plan.json", "provider-profiles.json"],
   diary: ["diary"],
   reports: ["reports", "timeline"],
 });
 const ALLOWED_TOP_LEVEL = new Set(Object.values(DATA_CLASSES).flat());
 const ALLOWED_EXTENSIONS = new Set([".json", ".md", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".html", ".css", ".js", ".map", ".woff", ".woff2", ".ttf", ".ico"]);
+const FORBIDDEN_ARCHIVE_ENTRY = /(?:^|\/)(?:credential-vault|diagnostic-capture)(?:\.|\/|$)|(?:^|\/)opencode(?:\/|$)/i;
+const FORBIDDEN_PROFILE_KEY = /^(?:api.?key|provider.?key|authorization|proxy.?authorization|password|service.?password|secret|secret.?refs|secret.?generation|token|ciphertext|headers?|sensitive.?headers|request(?:body|raw)?|response(?:body|raw)?|raw(?:request|response)|raw|body)$/i;
 
 class BackupService {
   constructor({ stateDir, logger } = {}) {
@@ -65,6 +69,7 @@ class BackupService {
       const manifestPath = path.join(staging, "manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
       validateManifest(manifest, staging);
+      prepareRestoredProviderProfiles(staging);
       if (createPreRestoreBackup) await this.createBackup({ kind: "pre-restore" });
       const targets = manifest.dataClasses.flatMap((name) => DATA_CLASSES[name] || []);
       const movedExisting = [];
@@ -134,6 +139,11 @@ function copySafe(source, destination) {
   if (!stat.isFile()) return;
   if (!ALLOWED_EXTENSIONS.has(path.extname(source).toLowerCase())) return;
   fs.mkdirSync(path.dirname(destination), { recursive: true });
+  if (path.basename(source).toLowerCase() === "provider-profiles.json") {
+    const portable = preparePortableProviderProfiles(JSON.parse(fs.readFileSync(source, "utf8")));
+    fs.writeFileSync(destination, `${JSON.stringify(portable, null, 2)}\n`, "utf8");
+    return;
+  }
   fs.copyFileSync(source, destination);
 }
 
@@ -166,10 +176,75 @@ function validateArchiveEntries(entries) {
     if (entry.startsWith("/") || /^[A-Za-z]:/.test(entry) || entry.split("/").includes("..")) {
       throw backupError("UNSAFE_BACKUP_PATH", "备份中包含不安全的文件路径。");
     }
+    if (FORBIDDEN_ARCHIVE_ENTRY.test(entry)) {
+      throw backupError("FORBIDDEN_BACKUP_ENTRY", "备份中包含禁止导入的敏感数据。");
+    }
     const topLevel = entry.split("/")[0];
     if (topLevel !== "manifest.json" && !ALLOWED_TOP_LEVEL.has(topLevel)) {
       throw backupError("UNEXPECTED_BACKUP_ENTRY", "备份中包含 CyberBoss 不认识的数据类型。");
     }
+  }
+}
+
+function prepareRestoredProviderProfiles(staging) {
+  const profilePath = path.join(staging, "provider-profiles.json");
+  if (!fs.existsSync(profilePath)) return;
+  const portable = preparePortableProviderProfiles(JSON.parse(fs.readFileSync(profilePath, "utf8")));
+  fs.writeFileSync(profilePath, `${JSON.stringify(portable, null, 2)}\n`, "utf8");
+}
+
+function preparePortableProviderProfiles(value) {
+  const normalized = normalizeProviderProfiles(value);
+  return {
+    schemaVersion: normalized.schemaVersion,
+    activeProfileId: "",
+    profiles: normalized.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      runtimeId: profile.runtimeId,
+      ownershipMode: profile.ownershipMode,
+      providerId: profile.providerId,
+      protocolId: profile.protocolId,
+      baseUrl: sanitizeBaseUrl(profile.baseUrl),
+      options: sanitizeProfileValue(profile.options),
+      modelId: profile.modelId,
+      modelVariant: profile.modelVariant,
+      visionProfileId: profile.visionProfileId,
+      secretRefs: { apiKey: "", servicePassword: "", sensitiveHeaders: {} },
+      secretGeneration: 0,
+      status: "draft",
+      verifiedFingerprint: "",
+      capabilities: {},
+      verificationError: "",
+      catalogMetadata: sanitizeProfileValue(profile.catalogMetadata),
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+      verifiedAt: "",
+    })),
+  };
+}
+
+function sanitizeProfileValue(value, key = "") {
+  if (FORBIDDEN_PROFILE_KEY.test(String(key).replace(/[-_\s]/g, ""))) return undefined;
+  if (Array.isArray(value)) return value.map((item) => sanitizeProfileValue(item)).filter((item) => item !== undefined);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .map(([childKey, childValue]) => [childKey, sanitizeProfileValue(childValue, childKey)])
+      .filter(([, childValue]) => childValue !== undefined));
+  }
+  if (["string", "number", "boolean"].includes(typeof value) || value === null) return value;
+  return undefined;
+}
+
+function sanitizeBaseUrl(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return "";
+  try {
+    const parsed = new URL(text);
+    if (!new Set(["http:", "https:"]).has(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) return "";
+    return parsed.toString().replace(/\/$/, text.endsWith("/") ? "/" : "");
+  } catch {
+    return "";
   }
 }
 
@@ -229,6 +304,7 @@ module.exports = {
   DATA_CLASSES,
   assertChildPath,
   normalizeClasses,
+  preparePortableProviderProfiles,
   validateArchiveEntries,
   validateManifest,
 };
