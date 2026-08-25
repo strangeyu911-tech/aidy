@@ -59,10 +59,31 @@ function makeHarness(runtimeId, behavior = {}) {
       },
       async sendTurn() {
         turnCount += 1;
-        const turn = { threadId: `thread-${turnCount}`, turnId: `turn-${turnCount}` };
+        const currentTurn = turnCount;
+        const turn = { threadId: `thread-${currentTurn}`, turnId: `turn-${currentTurn}` };
         queueMicrotask(() => {
           listener({ type: "runtime.turn.started", payload: turn });
-          if (turnCount === 1) {
+          if (currentTurn === 1) {
+            if (behavior.foreignEvents) {
+              const foreign = { threadId: "foreign-thread", turnId: "foreign-turn" };
+              listener({
+                type: "runtime.approval.requested",
+                payload: { ...foreign, requestId: "foreign-approval", toolName: "write_file", commandTokens: ["write_file"] },
+              });
+              listener({ type: "runtime.tool.started", payload: { ...foreign, toolCallId: "foreign-tool", toolName: expectedTool } });
+              listener({ type: "runtime.tool.completed", payload: { ...foreign, toolCallId: "foreign-tool", toolName: expectedTool, isError: false } });
+              listener({ type: "runtime.reply.delta", payload: { ...foreign, text: "foreign continuation" } });
+              listener({ type: "runtime.turn.completed", payload: foreign });
+              const otherTurn = { threadId: turn.threadId, turnId: "other-turn" };
+              listener({
+                type: "runtime.approval.requested",
+                payload: { ...otherTurn, requestId: "other-turn-approval", toolName: "write_file", commandTokens: ["write_file"] },
+              });
+              listener({ type: "runtime.tool.started", payload: { ...otherTurn, toolCallId: "other-tool", toolName: expectedTool } });
+              listener({ type: "runtime.tool.completed", payload: { ...otherTurn, toolCallId: "other-tool", toolName: expectedTool, isError: false } });
+              listener({ type: "runtime.reply.delta", payload: { ...otherTurn, text: "other-turn continuation" } });
+              listener({ type: "runtime.turn.completed", payload: otherTurn });
+            }
             if (behavior.unsafeApproval) {
               listener({
                 type: "runtime.approval.requested",
@@ -79,10 +100,28 @@ function makeHarness(runtimeId, behavior = {}) {
                 payload: { ...turn, toolCallId: "tool-1", toolName: expectedTool, isError: false },
               });
             }
+            if (behavior.emptyIdTool) {
+              listener({
+                type: "runtime.tool.started",
+                payload: { threadId: "", turnId: "", toolCallId: "empty-tool", toolName: expectedTool },
+              });
+              listener({
+                type: "runtime.tool.completed",
+                payload: { threadId: "", turnId: "", toolCallId: "empty-tool", toolName: expectedTool, isError: false },
+              });
+            }
             if (!behavior.omitContinuation) {
               listener({ type: "runtime.reply.delta", payload: { ...turn, text: "verified" } });
             }
-            listener({ type: "runtime.turn.completed", payload: turn });
+            listener({
+              type: "runtime.turn.completed",
+              payload: behavior.emptyTerminalTurnId ? { threadId: turn.threadId, turnId: "" } : turn,
+            });
+          } else if (behavior.cancellationApproval) {
+            listener({
+              type: "runtime.approval.requested",
+              payload: { ...turn, requestId: "cancel-approval", toolName: expectedTool, commandTokens: [expectedTool] },
+            });
           }
         });
         return turn;
@@ -234,6 +273,36 @@ test("unknown approval requests are declined and cannot satisfy tool evidence", 
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "UNSAFE_TOOL_REQUESTED");
   assert.equal(harness.approvals.some((entry) => entry.decision === "decline"), true);
+});
+
+test("shared runtime events from another thread are ignored and never receive an approval response", async () => {
+  const harness = makeHarness("opencode", { foreignEvents: true });
+  const result = await harness.verifier.verify(harness.profile.id);
+  assert.equal(result.ok, true);
+  assert.deepEqual(harness.approvals, []);
+});
+
+test("tool evidence with empty thread and turn IDs cannot satisfy the current probe", async () => {
+  const harness = makeHarness("codex", { omitTool: true, emptyIdTool: true });
+  const result = await harness.verifier.verify(harness.profile.id);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "TOOL_CALLING_UNSUPPORTED");
+});
+
+test("an official same-thread terminal may omit turnId without weakening tool evidence", async () => {
+  const harness = makeHarness("opencode", { emptyTerminalTurnId: true });
+  const result = await harness.verifier.verify(harness.profile.id);
+  assert.equal(result.ok, true);
+});
+
+test("a matching cancellation-probe approval is declined and fails verification", async () => {
+  const harness = makeHarness("claudecode", { cancellationApproval: true });
+  const result = await harness.verifier.verify(harness.profile.id);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "UNSAFE_TOOL_REQUESTED");
+  assert.deepEqual(harness.approvals.map((entry) => ({ requestId: entry.requestId, decision: entry.decision })), [
+    { requestId: "cancel-approval", decision: "decline" },
+  ]);
 });
 
 test("the dedicated verification MCP tool is side-effect-free and token bound", async () => {

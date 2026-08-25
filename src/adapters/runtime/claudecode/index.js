@@ -83,6 +83,7 @@ function createClaudeCodeRuntimeAdapter(config) {
       ipcServer,
       workspaceRoot,
     });
+    let pendingVerificationTurnStart = null;
     client.onMessage((event, raw) => {
       rememberObservedModelForWorkspace(workspaceRoot, extractClaudeMessageModel(raw));
       if (event.type === "session.id") {
@@ -91,6 +92,17 @@ function createClaudeCodeRuntimeAdapter(config) {
             sessionStore.setThreadIdForWorkspace(binding.bindingKey, workspaceRoot, event.sessionId);
           }
         }
+        if (verificationMode && pendingVerificationTurnStart && globalListener) {
+          globalListener({
+            ...pendingVerificationTurnStart,
+            payload: {
+              ...pendingVerificationTurnStart.payload,
+              threadId: event.sessionId,
+              workspaceRoot,
+            },
+          }, raw);
+        }
+        pendingVerificationTurnStart = null;
         return;
       }
       const mapped = verificationMode && event.type === "assistant.text"
@@ -106,6 +118,10 @@ function createClaudeCodeRuntimeAdapter(config) {
         : mapClaudeCodeMessageToRuntimeEvent(event, raw);
       if (mapped?.payload && !mapped.payload.workspaceRoot) {
         mapped.payload.workspaceRoot = workspaceRoot;
+      }
+      if (verificationMode && mapped?.type === "runtime.turn.started" && !normalizeText(mapped.payload?.threadId)) {
+        pendingVerificationTurnStart = mapped;
+        return;
       }
       if (mapped?.type === "runtime.approval.requested") {
         if (pendingApprovals.size >= 100) {

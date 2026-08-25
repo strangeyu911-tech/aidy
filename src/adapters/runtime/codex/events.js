@@ -109,6 +109,7 @@ function mapCodexMessageToRuntimeEvent(message) {
       payload: {
         kind: "command",
         threadId,
+        ...(turnId ? { turnId } : {}),
         requestId: message?.id ?? null,
         reason: normalizeString(params?.reason),
         command: extractApprovalDisplayCommand(params),

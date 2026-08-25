@@ -71,29 +71,14 @@ class RuntimeProfileVerifier {
       requireAdapter(adapter);
 
       const journal = new EventJournal();
+      const approvalRouter = new ProbeApprovalRouter({ adapter, verification, journal });
       unsubscribe = adapter.onEvent((event) => {
         journal.push(event);
-        if (event?.type === "runtime.approval.requested") {
-          const decision = isAllowlistedApproval(event, verification) ? "accept" : "decline";
-          if (decision === "decline") {
-            journal.push({
-              type: "runtime.verification.unsafe-approval",
-              payload: { requestId: event?.payload?.requestId },
-            });
-          }
-          Promise.resolve(adapter.respondApproval({
-            requestId: event?.payload?.requestId,
-            threadId: event?.payload?.threadId,
-            decision,
-            remember: false,
-          })).catch((error) => journal.push({
-            type: "runtime.verification.approval-failed",
-            payload: { code: normalizeText(error?.code) || "APPROVAL_RESPONSE_FAILED" },
-          }));
-        }
+        approvalRouter.observe(event);
       });
 
       await adapter.initialize();
+      approvalRouter.begin("probe");
       const probeTurn = await adapter.sendTurn({
         bindingKey: `runtime-verification:${id}`,
         workspaceRoot,
@@ -101,13 +86,18 @@ class RuntimeProfileVerifier {
         metadata: { purpose: "runtime-capability-verification" },
         model: profile.modelId,
       });
+      approvalRouter.bind(probeTurn);
       await verifySuccessfulTurn({
         journal,
         turn: probeTurn,
         toolName: verification.toolName,
         timeoutMs: this.eventTimeoutMs,
       });
+      await approvalRouter.settle();
+      assertApprovalSafety(journal.events, probeTurn);
+      approvalRouter.end();
 
+      approvalRouter.begin("cancellation");
       const cancellationTurn = await adapter.sendTurn({
         bindingKey: `runtime-verification-cancel:${id}`,
         workspaceRoot,
@@ -115,14 +105,19 @@ class RuntimeProfileVerifier {
         metadata: { purpose: "runtime-cancellation-verification" },
         model: profile.modelId,
       });
+      approvalRouter.bind(cancellationTurn);
       await journal.waitFor((events) => hasEvent(events, cancellationTurn, "runtime.turn.started"), this.eventTimeoutMs,
         "CANCELLATION_UNSUPPORTED", "The runtime did not start the cancellation probe.");
       await adapter.cancelTurn({ ...cancellationTurn, workspaceRoot });
       await journal.waitFor((events) => events.some((event) => (
-        eventMatchesTurn(event, cancellationTurn)
+        eventMatchesTurn(event, cancellationTurn, { allowEmptyTerminalTurnId: true })
         && event?.type === "runtime.turn.failed"
         && normalizeText(event?.payload?.code).toUpperCase() === "CANCELLED"
-      )), this.eventTimeoutMs, "CANCELLATION_UNSUPPORTED", "The runtime did not acknowledge cancellation.");
+      ) || hasApprovalSafetyFailure(events, cancellationTurn)), this.eventTimeoutMs,
+      "CANCELLATION_UNSUPPORTED", "The runtime did not acknowledge cancellation.");
+      await approvalRouter.settle();
+      assertApprovalSafety(journal.events, cancellationTurn);
+      approvalRouter.end();
 
       this.assertCredentialGeneration(id, secretGeneration);
       const currentProfile = this.profileStore.get(id);
@@ -206,18 +201,87 @@ class EventJournal {
   }
 }
 
+class ProbeApprovalRouter {
+  constructor({ adapter, verification, journal }) {
+    this.adapter = adapter;
+    this.verification = verification;
+    this.journal = journal;
+    this.scope = null;
+    this.pendingResponses = new Set();
+  }
+
+  begin(kind) {
+    this.scope = { kind, turn: null, queued: [] };
+  }
+
+  bind(turn) {
+    if (!this.scope) return;
+    this.scope.turn = { threadId: normalizeText(turn?.threadId), turnId: normalizeText(turn?.turnId) };
+    const queued = this.scope.queued;
+    this.scope.queued = [];
+    for (const event of queued) {
+      if (eventMatchesTurn(event, this.scope.turn)) this.respond(event);
+    }
+  }
+
+  end() {
+    this.scope = null;
+  }
+
+  observe(event) {
+    if (event?.type !== "runtime.approval.requested" || !this.scope) return;
+    if (!this.scope.turn) {
+      this.scope.queued.push(event);
+      return;
+    }
+    if (eventMatchesTurn(event, this.scope.turn)) this.respond(event);
+  }
+
+  respond(event) {
+    const turn = this.scope?.turn;
+    if (!turn) return;
+    const decision = this.scope.kind === "probe" && isAllowlistedApproval(event, this.verification)
+      ? "accept"
+      : "decline";
+    if (decision === "decline") {
+      this.journal.push({
+        type: "runtime.verification.unsafe-approval",
+        payload: { ...turn, requestId: event?.payload?.requestId },
+      });
+    }
+    const response = Promise.resolve().then(() => this.adapter.respondApproval({
+      requestId: event?.payload?.requestId,
+      threadId: event?.payload?.threadId,
+      decision,
+      remember: false,
+    })).catch((error) => this.journal.push({
+      type: "runtime.verification.approval-failed",
+      payload: {
+        ...turn,
+        code: normalizeText(error?.code) || "APPROVAL_RESPONSE_FAILED",
+      },
+    })).finally(() => this.pendingResponses.delete(response));
+    this.pendingResponses.add(response);
+  }
+
+  async settle() {
+    while (this.pendingResponses.size) {
+      await Promise.allSettled([...this.pendingResponses]);
+    }
+  }
+}
+
 async function verifySuccessfulTurn({ journal, turn, toolName, timeoutMs }) {
   await journal.waitFor((events) => events.some((event) => (
-    eventMatchesTurn(event, turn)
+    eventMatchesTurn(event, turn, { allowEmptyTerminalTurnId: true })
     && new Set(["runtime.turn.completed", "runtime.turn.failed"]).has(event?.type)
   )), timeoutMs, "MODEL_SERVICE_TIMEOUT", "The runtime verification turn did not finish.");
-  const events = journal.events.filter((event) => eventMatchesTurn(event, turn));
-  if (journal.events.some((event) => event?.type === "runtime.verification.unsafe-approval")) {
-    throw verifierError("UNSAFE_TOOL_REQUESTED", "The runtime requested a tool outside the read-only verification allowlist.");
-  }
-  if (journal.events.some((event) => event?.type === "runtime.verification.approval-failed")) {
-    throw verifierError("APPROVAL_RESPONSE_FAILED", "The runtime approval response could not be delivered.");
-  }
+  const events = journal.events.filter((event) => eventMatchesTurn(
+    event,
+    turn,
+    { allowEmptyTerminalTurnId: true },
+  ));
+  assertApprovalSafety(events, turn);
   const failed = events.find((event) => event?.type === "runtime.turn.failed");
   if (failed) throw verifierError(normalizeText(failed?.payload?.code) || "MODEL_SERVICE_UNAVAILABLE", "The runtime verification turn failed.");
   if (!events.some((event) => event?.type === "runtime.turn.started")) {
@@ -228,10 +292,11 @@ async function verifySuccessfulTurn({ journal, turn, toolName, timeoutMs }) {
   ));
   if (startedIndex < 0) throw verifierError("TOOL_CALLING_UNSUPPORTED", "The runtime did not use the required read-only native tool.");
   const toolCallId = normalizeText(events[startedIndex]?.payload?.toolCallId);
+  if (!toolCallId) throw verifierError("TOOL_CALLING_UNSUPPORTED", "The runtime tool event did not identify its call.");
   const completedIndex = events.findIndex((event, index) => index > startedIndex
     && event?.type === "runtime.tool.completed"
     && toolNameMatches(event?.payload?.toolName, toolName)
-    && (!toolCallId || normalizeText(event?.payload?.toolCallId) === toolCallId)
+    && normalizeText(event?.payload?.toolCallId) === toolCallId
     && event?.payload?.isError !== true);
   if (completedIndex < 0) throw verifierError("TOOL_RESULT_UNAVAILABLE", "The runtime did not report a successful tool result.");
   const continuation = events.findIndex((event, index) => index > completedIndex
@@ -277,18 +342,41 @@ function isAllowlistedApproval(event, verification) {
   return tokens.join("__").toLowerCase().endsWith(`__${ECHO_TOOL_NAME}`);
 }
 
-function eventMatchesTurn(event, turn) {
+function eventMatchesTurn(event, turn, { allowEmptyTerminalTurnId = false } = {}) {
   const payload = event?.payload || {};
   const expectedThread = normalizeText(turn?.threadId);
   const expectedTurn = normalizeText(turn?.turnId);
   const actualThread = normalizeText(payload.threadId);
   const actualTurn = normalizeText(payload.turnId);
-  return (!expectedThread || !actualThread || expectedThread === actualThread)
-    && (!expectedTurn || !actualTurn || expectedTurn === actualTurn);
+  if (!expectedThread || !actualThread || expectedThread !== actualThread) return false;
+  if (!expectedTurn) return !actualTurn;
+  if (actualTurn === expectedTurn) return true;
+  return allowEmptyTerminalTurnId && !actualTurn && isOfficialTerminalEvent(event);
 }
 
 function hasEvent(events, turn, type) {
   return events.some((event) => event?.type === type && eventMatchesTurn(event, turn));
+}
+
+function isOfficialTerminalEvent(event) {
+  return new Set(["runtime.turn.completed", "runtime.turn.failed"]).has(event?.type);
+}
+
+function hasApprovalSafetyFailure(events, turn) {
+  return events.some((event) => (
+    new Set(["runtime.verification.unsafe-approval", "runtime.verification.approval-failed"]).has(event?.type)
+    && eventMatchesTurn(event, turn)
+  ));
+}
+
+function assertApprovalSafety(events, turn) {
+  const scoped = events.filter((event) => eventMatchesTurn(event, turn));
+  if (scoped.some((event) => event?.type === "runtime.verification.unsafe-approval")) {
+    throw verifierError("UNSAFE_TOOL_REQUESTED", "The runtime requested a tool outside the read-only verification allowlist.");
+  }
+  if (scoped.some((event) => event?.type === "runtime.verification.approval-failed")) {
+    throw verifierError("APPROVAL_RESPONSE_FAILED", "The runtime approval response could not be delivered.");
+  }
 }
 
 function toolNameMatches(actual, expected) {
