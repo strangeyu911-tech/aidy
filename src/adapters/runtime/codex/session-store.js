@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { buildRuntimeScopeKey, normalizeRuntimeScope } = require("../api/conversation-store");
 const { normalizeModelCatalog } = require("./model-catalog");
 const { normalizeCommandTokens } = require("../shared/approval-command");
 const { normalizeWorkspaceRoot } = require("../../../core/workspace-path");
@@ -199,6 +200,84 @@ class SessionStore {
       };
     }
     return this.updateBinding(bindingKey, nextBinding);
+  }
+
+  getThreadIdForScope(bindingKey, workspaceRoot, scope) {
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
+    if (!normalizedWorkspaceRoot) return "";
+    const normalizedScope = normalizeRuntimeScope(scope);
+    const scopeKey = buildRuntimeScopeKey(normalizedScope);
+    const record = getThreadScopeMap(this.getBinding(bindingKey))[scopeKey];
+    if (!record || !sameRuntimeScope(record.scope, normalizedScope)) return "";
+    return normalizeThreadValue(record.threadIdByWorkspaceRoot?.[normalizedWorkspaceRoot]);
+  }
+
+  setThreadIdForScope(bindingKey, workspaceRoot, scope, threadId, extra = {}) {
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
+    if (!normalizedWorkspaceRoot) return this.getBinding(bindingKey);
+    const normalizedScope = normalizeRuntimeScope(scope);
+    const scopeKey = buildRuntimeScopeKey(normalizedScope);
+    const normalizedThreadId = normalizeThreadValue(threadId);
+    const current = this.getBinding(bindingKey) || {};
+    const currentScopes = getThreadScopeMap(current);
+    const currentRecord = currentScopes[scopeKey] || {};
+    return this.updateBinding(bindingKey, {
+      ...extra,
+      activeWorkspaceRoot: normalizedWorkspaceRoot,
+      threadScopes: {
+        ...currentScopes,
+        [scopeKey]: {
+          scope: normalizedScope,
+          threadIdByWorkspaceRoot: {
+            ...(currentRecord.threadIdByWorkspaceRoot || {}),
+            [normalizedWorkspaceRoot]: normalizedThreadId,
+          },
+        },
+      },
+    });
+  }
+
+  clearThreadIdForScope(bindingKey, workspaceRoot, scope) {
+    return this.setThreadIdForScope(bindingKey, workspaceRoot, scope, "");
+  }
+
+  listLegacyReadOnlySessions() {
+    const sessions = [];
+    for (const [bindingKey, binding] of Object.entries(this.state.bindings || {})) {
+      for (const session of collectLegacySessions({ bindingKey, ...(binding || {}) })) {
+        if (isLegacySessionMigrated(binding, session)) continue;
+        sessions.push(asReadOnlyLegacySession(session));
+      }
+    }
+    return sessions;
+  }
+
+  migrateLegacyBindings(profiles, options = {}) {
+    const results = [];
+    for (const [bindingKey, binding] of Object.entries(this.state.bindings || {})) {
+      const result = migrateLegacyBinding({ bindingKey, ...(binding || {}) }, profiles, options);
+      results.push(result);
+      for (const migration of result.migrations) {
+        this.setThreadIdForScope(
+          bindingKey,
+          migration.workspaceRoot,
+          migration.scope,
+          migration.threadId,
+        );
+        const current = this.getBinding(bindingKey) || {};
+        this.updateBinding(bindingKey, {
+          legacySessionMigrationByThreadId: {
+            ...getLegacyMigrationMap(current),
+            [legacySessionIdentity(migration)]: {
+              scopeKey: buildRuntimeScopeKey(migration.scope),
+              scope: migration.scope,
+              workspaceRoot: migration.workspaceRoot,
+            },
+          },
+        });
+      }
+    }
+    return results;
   }
 
   setActiveWorkspaceRoot(bindingKey, workspaceRoot) {
@@ -409,6 +488,54 @@ function normalizeBinding(binding) {
       (value) => value && typeof value === "object" ? { ...value } : {}
     );
   }
+  normalized.threadScopes = normalizeThreadScopes(normalized.threadScopes);
+  normalized.legacySessionMigrationByThreadId = normalizeLegacyMigrationMap(
+    normalized.legacySessionMigrationByThreadId,
+  );
+  return normalized;
+}
+
+function normalizeThreadScopes(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const record of Object.values(value)) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+    let scope;
+    try {
+      scope = normalizeRuntimeScope(record.scope);
+    } catch {
+      continue;
+    }
+    normalized[buildRuntimeScopeKey(scope)] = {
+      scope,
+      threadIdByWorkspaceRoot: normalizeWorkspaceMap(
+        record.threadIdByWorkspaceRoot,
+        (threadId) => normalizeThreadValue(threadId),
+      ),
+    };
+  }
+  return normalized;
+}
+
+function normalizeLegacyMigrationMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [identity, record] of Object.entries(value)) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+    let scope;
+    try {
+      scope = normalizeRuntimeScope(record.scope);
+    } catch {
+      continue;
+    }
+    const key = normalizeValue(identity);
+    if (!key) continue;
+    normalized[key] = {
+      scopeKey: buildRuntimeScopeKey(scope),
+      scope,
+      workspaceRoot: normalizeWorkspaceRoot(record.workspaceRoot),
+    };
+  }
   return normalized;
 }
 
@@ -471,6 +598,20 @@ function getThreadMapForRuntime(binding, runtimeId) {
   return scoped && typeof scoped === "object" ? scoped : {};
 }
 
+function getThreadScopeMap(binding) {
+  return binding?.threadScopes && typeof binding.threadScopes === "object" && !Array.isArray(binding.threadScopes)
+    ? binding.threadScopes
+    : {};
+}
+
+function getLegacyMigrationMap(binding) {
+  return binding?.legacySessionMigrationByThreadId
+    && typeof binding.legacySessionMigrationByThreadId === "object"
+    && !Array.isArray(binding.legacySessionMigrationByThreadId)
+    ? binding.legacySessionMigrationByThreadId
+    : {};
+}
+
 function getCodexParamsMap(binding) {
   return binding?.codexParamsByWorkspaceRoot && typeof binding.codexParamsByWorkspaceRoot === "object"
     ? binding.codexParamsByWorkspaceRoot
@@ -499,4 +640,145 @@ function isSameTokenList(left, right) {
   return left.every((value, index) => value === right[index]);
 }
 
-module.exports = { SessionStore };
+function migrateLegacyBinding(binding, profiles, options = {}) {
+  const legacySessions = collectLegacySessions(binding);
+  const activeProfiles = resolveExplicitlyActiveProfiles(profiles, options.activeProfileId);
+  const migrations = [];
+  const readOnlySessions = [];
+
+  for (const session of legacySessions) {
+    const matches = activeProfiles.filter((profile) => isCompatibleLegacyProfile(profile, session));
+    if (matches.length !== 1) {
+      readOnlySessions.push(asReadOnlyLegacySession(session));
+      continue;
+    }
+    const profile = matches[0];
+    migrations.push({
+      bindingKey: session.bindingKey,
+      workspaceRoot: session.workspaceRoot,
+      threadId: session.threadId,
+      runtimeId: session.runtimeId,
+      scope: normalizeRuntimeScope({
+        runtimeId: profile.runtimeId,
+        profileId: profile.id,
+        modelId: profile.modelId,
+        secretGeneration: profile.secretGeneration,
+      }),
+    });
+  }
+
+  return {
+    scopedThreadId: migrations.length === 1 && legacySessions.length === 1 ? migrations[0].threadId : "",
+    scope: migrations.length === 1 && legacySessions.length === 1 ? migrations[0].scope : null,
+    migrations,
+    legacySessions: readOnlySessions,
+    startFreshScopedSession: readOnlySessions.length > 0,
+  };
+}
+
+function collectLegacySessions(binding) {
+  const source = binding && typeof binding === "object" ? binding : {};
+  const bindingKey = normalizeValue(source.bindingKey);
+  const sessions = [];
+  for (const [workspaceRoot, rawThreadId] of Object.entries(getLegacyThreadMap(source))) {
+    const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
+    const threadId = normalizeThreadValue(rawThreadId);
+    if (!normalizedWorkspaceRoot || !threadId) continue;
+    const runtimeId = inferLegacyRuntimeId(source, normalizedWorkspaceRoot);
+    const params = getLegacyRuntimeParams(source, normalizedWorkspaceRoot, runtimeId);
+    sessions.push({
+      bindingKey,
+      workspaceRoot: normalizedWorkspaceRoot,
+      threadId,
+      runtimeId,
+      modelId: normalizeValue(params.model),
+      providerId: normalizeValue(params.modelProvider || params.model_provider).toLowerCase(),
+    });
+  }
+  return sessions;
+}
+
+function inferLegacyRuntimeId(binding, workspaceRoot) {
+  const declared = normalizeValue(binding.legacyRuntimeId || binding.runtimeId).toLowerCase();
+  if (declared === "codex" || declared === "claudecode") return declared;
+  const runtimeParams = getRuntimeParamsRuntimeMap(binding);
+  const matchingRuntimes = ["codex", "claudecode"].filter((runtimeId) => (
+    Object.prototype.hasOwnProperty.call(runtimeParams[runtimeId] || {}, workspaceRoot)
+  ));
+  if (matchingRuntimes.length === 1) return matchingRuntimes[0];
+  if (Object.prototype.hasOwnProperty.call(getCodexParamsMap(binding), workspaceRoot)) return "codex";
+  return "";
+}
+
+function getLegacyRuntimeParams(binding, workspaceRoot, runtimeId) {
+  const scoped = getRuntimeParamsMapForRuntime(binding, runtimeId)[workspaceRoot];
+  if (scoped && typeof scoped === "object") return scoped;
+  if (runtimeId === "codex") return getCodexParamsMap(binding)[workspaceRoot] || {};
+  return {};
+}
+
+function resolveExplicitlyActiveProfiles(profiles, activeProfileId) {
+  const candidates = Array.isArray(profiles) ? profiles.filter((profile) => profile && typeof profile === "object") : [];
+  const normalizedActiveProfileId = normalizeValue(activeProfileId);
+  if (normalizedActiveProfileId) {
+    return candidates.filter((profile) => normalizeValue(profile.id) === normalizedActiveProfileId);
+  }
+  return candidates.filter((profile) => (
+    profile.active === true || profile.isActive === true || profile.explicitlyActivated === true
+  ));
+}
+
+function isCompatibleLegacyProfile(profile, session) {
+  const runtimeId = normalizeValue(profile.runtimeId).toLowerCase();
+  if (profile.status !== "verified" || (runtimeId !== "codex" && runtimeId !== "claudecode")) return false;
+  if (!session.runtimeId || runtimeId !== session.runtimeId) return false;
+  if (!normalizeValue(profile.id) || !normalizeValue(profile.modelId)) return false;
+  const secretGeneration = Number(profile.secretGeneration);
+  if (!Number.isSafeInteger(secretGeneration) || secretGeneration < 0) return false;
+
+  const profileModelId = normalizeValue(profile.modelId);
+  const profileProviderId = normalizeValue(profile.providerId).toLowerCase();
+  if (runtimeId === "codex" && (!session.modelId || !session.providerId)) return false;
+  if (session.modelId && profileModelId !== session.modelId) return false;
+  if (session.providerId && profileProviderId !== session.providerId) return false;
+  return true;
+}
+
+function asReadOnlyLegacySession(session) {
+  return {
+    bindingKey: session.bindingKey,
+    workspaceRoot: session.workspaceRoot,
+    threadId: session.threadId,
+    runtimeId: session.runtimeId,
+    readOnly: true,
+    resumable: false,
+    reason: "legacy_scope_ambiguous",
+    label: "旧版兼容会话（只读）",
+    explanation: "无法确认原始运行时、档案和模型身份；后续交互将在新的 scoped 会话中继续。",
+  };
+}
+
+function isLegacySessionMigrated(binding, session) {
+  const migration = getLegacyMigrationMap(binding)[legacySessionIdentity(session)];
+  if (!migration) return false;
+  const scopeRecord = getThreadScopeMap(binding)[migration.scopeKey];
+  return Boolean(
+    scopeRecord
+    && sameRuntimeScope(scopeRecord.scope, migration.scope)
+    && normalizeThreadValue(scopeRecord.threadIdByWorkspaceRoot?.[session.workspaceRoot]) === session.threadId
+  );
+}
+
+function legacySessionIdentity(session) {
+  return `${normalizeValue(session.runtimeId)}:${normalizeThreadValue(session.threadId)}`;
+}
+
+function sameRuntimeScope(left, right) {
+  return Boolean(left && right)
+    && left.runtimeId === right.runtimeId
+    && left.profileId === right.profileId
+    && left.modelId === right.modelId
+    && left.secretGeneration === right.secretGeneration;
+}
+
+module.exports = { SessionStore, migrateLegacyBinding };
