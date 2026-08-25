@@ -18,6 +18,30 @@ test("component logger redacts sensitive fields and supports filtering", () => {
   assert.equal(records[0].data.status, "ok");
 });
 
+test("component logger recursively removes provider credentials, headers, ciphertext, and bodies", () => {
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-log-redaction-"));
+  const logger = new ComponentLogger({ logDir, component: "runtime" });
+  const secrets = ["api-secret", "service-secret", "cipher-secret", "auth-secret", "header-secret", "request-secret", "response-secret", "custom-header-secret"];
+  logger.error("provider.failure", {
+    nested: {
+      apiKey: secrets[0],
+      servicePassword: secrets[1],
+      ciphertext: secrets[2],
+      headers: { Authorization: `Bearer ${secrets[3]}`, "X-Custom-Sensitive": secrets[4] },
+      requestBody: secrets[5],
+      responseBody: secrets[6],
+      customHeaders: { "X-Tenant": secrets[7] },
+    },
+    url: "https://user:password@example.test/path?api_key=query-secret",
+    summary: "safe summary",
+  });
+  const persisted = fs.readFileSync(path.join(logDir, "runtime.jsonl"), "utf8");
+  for (const secret of [...secrets, "query-secret", "user:password"]) {
+    assert.equal(persisted.includes(secret), false);
+  }
+  assert.equal(persisted.includes("safe summary"), true);
+});
+
 test("component logger rotates bounded files", () => {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-log-rotation-"));
   const logger = new ComponentLogger({ logDir, component: "bridge", maxBytes: 80, maxRotated: 2 });

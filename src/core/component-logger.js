@@ -3,7 +3,8 @@ const path = require("path");
 
 const LEVELS = Object.freeze({ DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 });
 const COMPONENTS = new Set(["desktop", "bridge", "runtime", "integrations", "reports"]);
-const SENSITIVE_KEY = /(token|secret|password|authorization|cookie|message|body|diary|command|args|wechat.*id|sender.*id)/i;
+const SENSITIVE_KEY = /(token|secret|password|authorization|cookie|message|body|diary|command|args|api[-_]?key|ciphertext|wechat.*id|sender.*id)/i;
+const HEADER_CONTAINER_KEY = /headers$/i;
 
 class ComponentLogger {
   constructor({ logDir, component = "desktop", level = "INFO", maxBytes = 10 * 1024 * 1024, maxRotated = 5, maxAgeDays = 14, totalMaxBytes = 200 * 1024 * 1024 } = {}) {
@@ -107,7 +108,7 @@ class ComponentLogger {
 }
 
 function redact(value, key = "") {
-  if (SENSITIVE_KEY.test(key)) {
+  if (SENSITIVE_KEY.test(key) || HEADER_CONTAINER_KEY.test(key)) {
     return "[REDACTED]";
   }
   if (Array.isArray(value)) {
@@ -119,7 +120,8 @@ function redact(value, key = "") {
   if (typeof value === "string") {
     return value
       .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+/gi, "$1[REDACTED]")
-      .replace(/([?&](?:token|key|secret)=)[^&\s]+/gi, "$1[REDACTED]");
+      .replace(/([?&](?:token|api[_-]?key|key|secret|password)=)[^&\s]+/gi, "$1[REDACTED]")
+      .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@");
   }
   return value;
 }
