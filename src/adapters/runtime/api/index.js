@@ -27,6 +27,7 @@ function createApiRuntimeAdapter({ config = {}, profile, secrets = {}, projectTo
   let client = null;
   let initialized = false;
   let closed = false;
+  let credentialInvalid = false;
 
   const toolBridge = new RuntimeToolBridge({
     projectToolHost,
@@ -119,6 +120,8 @@ function createApiRuntimeAdapter({ config = {}, profile, secrets = {}, projectTo
           },
           async beforeFailure(error) {
             if (!isDefinitiveAuthenticationFailure(error)) return;
+            credentialInvalid = true;
+            initialized = false;
             await Promise.resolve(
               profileStore?.markUnverified?.(normalizedProfile.id, "invalid_credentials"),
             ).catch(() => {});
@@ -162,9 +165,7 @@ function createApiRuntimeAdapter({ config = {}, profile, secrets = {}, projectTo
       };
     },
     async initialize() {
-      if (normalizedProfile.status !== "verified") {
-        throw runtimeError("PROFILE_NOT_VERIFIED", "The built-in API profile must be verified before use.");
-      }
+      assertProfileUsable();
       if (closed) throw runtimeError("RUNTIME_CLOSED", "The built-in API runtime is closed.");
       ensureClient();
       initialized = true;
@@ -196,6 +197,7 @@ function createApiRuntimeAdapter({ config = {}, profile, secrets = {}, projectTo
       return this.sendTurn(args);
     },
     async sendTurn({ bindingKey, workspaceRoot, text, attachments = [], metadata = {} } = {}) {
+      assertProfileUsable();
       if (!initialized) await this.initialize();
       const normalizedBindingKey = normalizeText(bindingKey);
       const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
@@ -316,6 +318,15 @@ function createApiRuntimeAdapter({ config = {}, profile, secrets = {}, projectTo
       return { workspaceRoot: normalizedWorkspaceRoot };
     },
   };
+
+  function assertProfileUsable() {
+    if (credentialInvalid) {
+      throw runtimeError("INVALID_CREDENTIALS", "The provider credentials must be reverified before use.");
+    }
+    if (normalizedProfile.status !== "verified") {
+      throw runtimeError("PROFILE_NOT_VERIFIED", "The built-in API profile must be verified before use.");
+    }
+  }
 
   return adapter;
 }

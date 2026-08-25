@@ -9,7 +9,10 @@ class RuntimeToolBridge {
     }
     this.projectToolHost = projectToolHost;
     this.requestApproval = typeof requestApproval === "function" ? requestApproval : null;
-    this.maxResultBytes = positiveInteger(maxResultBytes, DEFAULT_MAX_RESULT_BYTES);
+    this.maxResultBytes = Math.min(
+      positiveInteger(maxResultBytes, DEFAULT_MAX_RESULT_BYTES),
+      DEFAULT_MAX_RESULT_BYTES,
+    );
   }
 
   listTools() {

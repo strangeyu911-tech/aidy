@@ -204,6 +204,7 @@ test("tool bridge hides approval metadata, validates schemas, and bounds seriali
 
   const oversizedBridge = new RuntimeToolBridge({
     projectToolHost: echoToolHost({ result: { text: "x".repeat(256 * 1024) } }),
+    maxResultBytes: 1024 * 1024,
   });
   await assert.rejects(
     oversizedBridge.invoke({ call: { id: "call-3", name: "echo", arguments: { text: "ok" } } }),
@@ -288,11 +289,13 @@ test("approval ask waits for matching requestId and abort rejects all pending ap
 test("definitive authentication failure marks the profile unverified before turn.failed", async () => {
   const stateDir = makeStateDir();
   const ordering = [];
+  let clientCalls = 0;
   const adapter = createApiRuntimeAdapter({
     config: {
       stateDir,
       protocolClient: {
         async streamTurn() {
+          clientCalls += 1;
           throw Object.assign(new Error("denied"), { code: "INVALID_CREDENTIALS", status: 401 });
         },
       },
@@ -314,6 +317,15 @@ test("definitive authentication failure marks the profile unverified before turn
   await adapter.sendTurn({ bindingKey: "b", workspaceRoot: stateDir, text: "hello" });
   await waitFor(() => ordering.includes("failed"));
   assert.deepEqual(ordering, ["unverified:profile-1:invalid_credentials", "failed"]);
+  await assert.rejects(
+    adapter.sendTurn({ bindingKey: "b", workspaceRoot: stateDir, text: "must not reach client" }),
+    (error) => error.code === "INVALID_CREDENTIALS" || error.code === "PROFILE_NOT_VERIFIED",
+  );
+  await assert.rejects(
+    adapter.initialize(),
+    (error) => error.code === "INVALID_CREDENTIALS" || error.code === "PROFILE_NOT_VERIFIED",
+  );
+  assert.equal(clientCalls, 1);
 });
 
 test("adapter exposes the full runtime contract and exact profile capabilities", () => {
