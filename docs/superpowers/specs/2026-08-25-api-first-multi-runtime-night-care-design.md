@@ -161,6 +161,11 @@ profile unverified, blocks new turns, and puts an active runtime into an
 actionable Error state. Rate limiting, quota exhaustion, and transient network
 failure do not invalidate verification.
 
+Secret generation increments on every vault write, including deletion and
+rewriting the same byte-for-byte secret value. Any credential-write operation
+therefore invalidates the previous fingerprint and requires a new live
+verification; equality of the new and old key does not bypass that gate.
+
 ### Windows credential vault
 
 API keys and sensitive custom header values are stored in a separate vault.
@@ -179,6 +184,11 @@ private content. Captures are kept separately from component logs, encrypted
 with DPAPI, limited in size, excluded from backup/export, and automatically
 deleted after 24 hours. Enabling it never relaxes credential and Authorization
 redaction.
+
+When capture is active, a vision-preprocessing child operation is included under
+the same consent and expiry boundary. Its textual request context and caption or
+error response may be captured; raw image bytes and base64 payloads are replaced
+by MIME type, byte length, dimensions when known, and a one-way content digest.
 
 Backups and exports include only non-sensitive profile structure. Restored
 profiles become drafts and require the user to enter and verify credentials
@@ -264,6 +274,13 @@ manual refresh, provider-auth change, endpoint/version change, and after a
 10-minute freshness period. Stale entries may be displayed with a warning but
 cannot satisfy activation without a live provider/model refresh.
 
+For External service mode, provider-auth changes inside the external instance
+are not reliably observable by CyberBoss. Every External service profile
+activation therefore bypasses the 10-minute cache and performs a live provider
+and model refresh. If that refresh fails or the selected model is no longer
+available, activation fails without changing the current active profile.
+Managed local mode retains event-driven invalidation and the 10-minute cache.
+
 ### Runtime-agnostic desktop supervisor
 
 The supervisor resolves the active profile before starting anything:
@@ -286,6 +303,16 @@ runtime, passes its readiness probe, and only then resumes bridge dispatch. If
 that rollback start also fails, the controller remains in Error with neither
 profile reported as healthy and offers explicit Retry. A switch never drops an
 already completed assistant response.
+
+The completion grace period includes model streaming and every in-flight tool
+call, including long-running MCP tools. It defaults to 120 seconds and is
+configurable from 30 through 600 seconds. The UI remains responsive and shows
+the active operation and remaining grace time. When the period expires, the
+controller aborts the turn, waits for the adapter to acknowledge cancellation,
+marks unfinished tool/approval state expired, and proceeds with the switch.
+Backup finalization, atomic restore swap, rollback, and other declared
+non-interruptible safety boundaries are never aborted; the switch stays pending
+until that boundary ends and then continues cancellation and switchover.
 
 ## Control-center experience
 
@@ -362,6 +389,11 @@ sleep. The deterministic 90-minute inference remains the safe fallback when the
 runtime is unhealthy. The user exits explicit sleep after an explicit waking
 statement or at 06:00. Crossing midnight does not itself mark the user asleep.
 
+If the local phrase classifier throws or returns a malformed result, the error
+is contained and treated as no intent. Night care continues using only the time
+window and 90-minute inactivity inference; classifier failure cannot abort
+inbound processing or proactive-message suppression.
+
 During the night-care window, a user who has not explicitly entered sleep state
 is inferred asleep after 90 minutes from the current night's activity baseline.
 The inference is used only to suppress proactive output. A new inbound message
@@ -437,6 +469,10 @@ Code compatibility profile. A missing or ambiguous match leaves the old session
 read-only and starts a fresh scoped session. Migration never binds a legacy
 session to Built-in API or OpenCode.
 
+The session/diagnostics UI labels such history “旧版兼容会话（只读）” and explains
+that its original runtime/profile/model identity cannot be proven, so interaction
+continues in a newly created scoped session rather than inside the legacy one.
+
 New session scope keys include runtime, provider profile, model, and credential
 generation so switching cannot resume a thread under the wrong credentials or
 model. Existing per-workspace model settings are migration hints only and never
@@ -466,7 +502,9 @@ OpenCode test doubles, Codex, and Claude Code adapters where applicable. They
 verify normalized lifecycle and approval events and session isolation.
 Session tests also prove that completed history resumes only for an exact scope,
 in-flight turns become aborted, pending approvals expire, invalid/deleted
-profiles cannot resume, and durable supervision state is not duplicated.
+profiles cannot resume, long-running MCP tools obey the configured switch grace
+period without interrupting declared safety boundaries, and durable supervision
+state is not duplicated.
 
 ### Store and security tests
 
@@ -475,9 +513,9 @@ atomic save, close and reopen, schema migration, corrupt data recovery, DPAPI
 encryption abstraction, secret-reference deletion, masked snapshots, and log
 redaction. They also cover external vault tampering, decrypt failure, runtime
 401/403 invalidation, bounded diagnostic capture, automatic capture expiry, and
-capture exclusion from export. Backup and export tests inspect archive contents
-and prove that API keys, authorization headers, sensitive custom headers, and
-ciphertext are not included.
+vision-child capture without raw image payloads, plus capture exclusion from
+export. Backup and export tests inspect archive contents and prove that API keys,
+authorization headers, sensitive custom headers, and ciphertext are not included.
 
 ### Desktop and supervisor tests
 
@@ -487,7 +525,8 @@ switching after an active turn, start behavior for each runtime, failed-switch
 rollback with old-runtime restart/readiness, rollback-start failure, active-
 profile deletion safeguards, visual fallback selection/failure/usage attribution,
 managed-local versus external OpenCode credential ownership, external transport
-security, and catalog refresh invalidation.
+security, forced External service catalog refresh on every activation, and
+Managed local catalog invalidation.
 
 ### Night-care tests
 
@@ -536,9 +575,16 @@ or inspected successfully before delivery is reported complete.
 - After an exact-profile switch back, completed session history resumes while
   unfinished tool turns and approvals do not; invalid or deleted profiles remain
   non-resumable.
+- Every vault write increments secret generation and makes the affected profile
+  unverified, even when the rewritten credential bytes equal the old value.
 - When a new runtime start fails after the old one stops, the old selection is
   restored, its runtime is restarted/reconnected, and bridge dispatch resumes
   only after readiness succeeds.
+- A profile switch waits no longer than its configured 30–600 second grace
+  period for model/tool work, except while a declared non-interruptible safety
+  boundary is completing.
+- Every External service activation performs a live provider/model refresh and
+  fails safely if the selected model is no longer currently available.
 - If a vision fallback fails or becomes invalid, the original attachment remains
   recorded, the user receives an image-processing error, and no substitute
   provider is silently chosen.
@@ -546,6 +592,8 @@ or inspected successfully before delivery is reported complete.
   the ordinary random or explicitly agreed schedule instead of task pressure.
 - Explicit or inferred sleep suppresses every proactive message; inferred state
   and its baseline are cleared at 06:00 and never cross local-night windows.
+- A failed local sleep/wake classifier yields no intent and leaves the
+  time-window and inactivity suppression policy operational.
 - Night-care replacements and suppression are visible in Records and are never
   replayed after 06:00.
 - The final verification proves configuration and export artifacts exist,
