@@ -130,6 +130,26 @@ test("markUnverified and delete clear the active selection", () => {
   assert.equal(store.delete(draft.id), false);
 });
 
+test("a secret write records the new generation, masks references, and requires reverification", () => {
+  const { store } = makeProfileStore();
+  const draft = store.upsertDraft({ runtimeId: "builtin-api", providerId: "openai", modelId: "gpt-5" });
+  store.markVerified(draft.id, { secretGeneration: 1, capabilities: { tools: true } });
+  store.activate(draft.id);
+
+  const updated = store.markSecretWritten(draft.id, {
+    generation: 2,
+    secretRefs: { apiKey: "vault:profile:api-key", servicePassword: "", sensitiveHeaders: {} },
+  });
+
+  assert.equal(updated.status, "draft");
+  assert.equal(updated.secretGeneration, 2);
+  assert.equal(store.getActive(), null);
+  const masked = store.listMasked()[0];
+  assert.equal(masked.hasApiKey, true);
+  assert.equal(masked.hasServicePassword, false);
+  assert.equal(JSON.stringify(masked).includes("vault:profile"), false);
+});
+
 test("profile normalization rejects arbitrary runtimes and stale active IDs", () => {
   const normalized = normalizeProviderProfiles({
     schemaVersion: 99,

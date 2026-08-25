@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } = require("electron");
 const dotenv = require("dotenv");
@@ -14,6 +15,16 @@ const { SupervisionPlanStore } = require("../core/supervision-plan-store");
 const { createTimelineIntegration } = require("../integrations/timeline");
 const { ZhijiantimeClient, ZhijiantimeSyncService } = require("../integrations/zhijiantime");
 const { BackupService } = require("../services/backup-service");
+const { createOpenCodeRuntimeAdapter } = require("../adapters/runtime/opencode");
+const { ProviderCatalog } = require("../services/provider-catalog");
+const { ProviderVerifier } = require("../services/provider-verifier");
+const { CredentialVault } = require("../security/credential-vault");
+const { DiagnosticCapture } = require("../security/diagnostic-capture");
+const {
+  ModelSettingsService,
+  buildEngineSnapshot,
+  registerModelSettingsIpc,
+} = require("./model-settings-service");
 const { RecordsService } = require("./records-service");
 const { ReportScheduler } = require("./report-scheduler");
 const { RuntimeSupervisor } = require("./runtime-supervisor");
@@ -39,6 +50,29 @@ const recordsService = new RecordsService({ stateDir });
 const checkinConfig = new CheckinConfigStore({ filePath: config.checkinConfigFile });
 const profileStore = new ProviderProfileStore({ filePath: config.providerProfilesFile });
 const supervisor = new RuntimeSupervisor({ rootDir, stateDir, logger, profileStore });
+const credentialVault = new CredentialVault({ filePath: config.credentialVaultFile });
+const diagnosticCapture = new DiagnosticCapture({ filePath: config.diagnosticCaptureFile });
+const providerCatalog = new ProviderCatalog();
+const modelCatalog = {
+  list: (profile, secrets, options) => profile.runtimeId === "opencode"
+    ? listOpenCodeCatalog(profile, secrets, options)
+    : providerCatalog.list(profile, secrets, options),
+  invalidate: (profileId) => providerCatalog.invalidate(profileId),
+};
+const providerVerifier = new ProviderVerifier({
+  profileStore,
+  credentialVault,
+  capture: diagnosticCapture,
+});
+const modelSettingsService = new ModelSettingsService({
+  profileStore,
+  credentialVault,
+  catalog: modelCatalog,
+  verifier: providerVerifier,
+  supervisor,
+  diagnosticCapture,
+  runtimeVerifier: verifyOptionalRuntimeProfile,
+});
 const dispatcher = new SupervisionDispatcher({ config, desktopStateStore: stateStore, planStore, logger });
 const reportLogger = new ComponentLogger({ logDir, component: "reports" });
 const backupService = new BackupService({ stateDir, logger });
@@ -103,7 +137,11 @@ async function bootstrap() {
     const stable = ["running", "quiet", "stopped"].includes(supervisor.phase) ? supervisor.phase : "";
     if (stable) stateStore.markStable(stable);
   });
-  const desiredState = stateStore.get().desiredState;
+  let desiredState = stateStore.get().desiredState;
+  if (!profileStore.getActive() && desiredState !== "stopped") {
+    stateStore.setDesiredState("stopped");
+    desiredState = "stopped";
+  }
   supervisor.desiredState = desiredState;
   if (desiredState !== "stopped") {
     supervisor.start().catch(() => publishSnapshot());
@@ -172,6 +210,7 @@ function trayStateItem(label, desiredState, currentState) {
     label,
     type: "radio",
     checked: desiredState === currentState,
+    enabled: desiredState === "stopped" || Boolean(profileStore.getActive()),
     click: () => applyDesiredState(desiredState).catch(() => {}),
   };
 }
@@ -183,6 +222,13 @@ function showMainWindow() {
 }
 
 function registerIpc() {
+  registerModelSettingsIpc({
+    ipcMain,
+    service: modelSettingsService,
+    getMainWindow: () => mainWindow,
+    rendererUrl: pathToFileURL(path.join(__dirname, "renderer", "index.html")).href,
+    onMutation: () => { updateTrayMenu(); publishSnapshot(); },
+  });
   ipcMain.handle("desktop:get-snapshot", () => buildSnapshot());
   ipcMain.handle("desktop:set-state", (_event, desiredState) => applyDesiredState(desiredState));
   ipcMain.handle("desktop:retry", async () => { await supervisor.retry(); return buildSnapshot(); });
@@ -217,6 +263,9 @@ function registerIpc() {
 
 async function applyDesiredState(desiredState) {
   if (!DESIRED_STATES.has(desiredState)) throw new Error("invalid desired state");
+  if (desiredState !== "stopped" && !profileStore.getActive()) {
+    throw Object.assign(new Error("请先新增、验证并激活模型配置。"), { code: "NO_ACTIVE_ENGINE" });
+  }
   stateStore.setDesiredState(desiredState);
   updateTrayMenu();
   publishSnapshot();
@@ -269,11 +318,16 @@ function updateCheckpoint(id, patch) {
 function buildSnapshot() {
   const settings = stateStore.get();
   const range = checkinConfig.getRange(resolveDefaultCheckinRange());
+  const supervisorRuntime = supervisor.snapshot();
+  const runtime = !profileStore.getActive() && supervisorRuntime.phase === "stopped"
+    ? { ...supervisorRuntime, phase: "configuration_required" }
+    : supervisorRuntime;
+  const engine = buildEngineSnapshot({ activeProfile: profileStore.getActive(), runtime });
   return {
     settings,
-    runtime: supervisor.snapshot(),
-    agent: { id: "codex", name: "Codex", phaseTwo: ["WorkBuddy", "自定义"] },
-    wechat: resolveWechatStatus(supervisor.snapshot()),
+    runtime,
+    engine,
+    wechat: resolveWechatStatus(runtime),
     supervision: {
       random: {
         enabled: settings.randomCheckinsEnabled,
@@ -292,6 +346,50 @@ function buildSnapshot() {
     startupTaskError,
     stateDir,
   };
+}
+
+async function listOpenCodeCatalog(profile, secrets, options = {}) {
+  const adapter = createOpenCodeRuntimeAdapter({
+    config: { stateDir, workspaceRoot: rootDir },
+    profile,
+    secrets,
+  });
+  try {
+    return await adapter.listCatalog({ reason: options.reason || "display" });
+  } finally {
+    await adapter.close();
+  }
+}
+
+async function verifyOptionalRuntimeProfile(profileId) {
+  const profile = profileStore.get(profileId);
+  if (!profile) return { ok: false, error: { code: "PROFILE_NOT_FOUND" } };
+  if (profile.runtimeId !== "opencode") return { ok: false, error: { code: "RUNTIME_VERIFIER_UNAVAILABLE" } };
+  const secretGeneration = credentialVault.getGeneration(profile.id);
+  const secrets = await credentialVault.read(profile.id) || {};
+  const adapter = createOpenCodeRuntimeAdapter({
+    config: { stateDir, workspaceRoot: rootDir },
+    profile: { ...profile, secretGeneration },
+    secrets,
+  });
+  try {
+    await adapter.initialize();
+    const capabilities = {
+      authentication: true,
+      modelAccess: true,
+      streaming: true,
+      tools: true,
+      toolContinuation: true,
+      cancellation: true,
+      imageInput: adapter.getTurnCapabilities().nativeImageInput,
+    };
+    const verified = profileStore.markVerified(profile.id, { secretGeneration, capabilities });
+    return { ok: true, capabilities, verifiedAt: verified.verifiedAt };
+  } catch (error) {
+    return { ok: false, error: { code: error.code || "OPENCODE_UNHEALTHY" } };
+  } finally {
+    await adapter.close();
+  }
 }
 
 function resolveWechatStatus(runtime) {

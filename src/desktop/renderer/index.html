@@ -22,13 +22,19 @@
     <main>
       <section id="view-control" class="view active" aria-labelledby="nav-control">
         <div id="error-card" class="error-card hidden"></div>
+        <section id="first-run-setup" class="setup-panel hidden" aria-labelledby="first-run-title">
+          <span class="eyebrow">首次设置 · 需要完成 5 步</span>
+          <h2 id="first-run-title">先连接一个你能使用的模型</h2>
+          <p>CyberBoss 没有默认引擎。请新增配置、测试连接并激活；成功前“运行”和“静默”不会开启。</p>
+          <button class="primary-action" type="button" data-open-model-setup>开始设置模型</button>
+        </section>
         <section class="hero-card">
           <div>
             <span class="eyebrow">当前状态</span>
             <h2 id="state-title">正在读取…</h2>
             <p id="state-description">正在确认后台服务状态。</p>
           </div>
-          <button id="power-button" class="power-button" type="button">启动</button>
+          <button id="power-button" class="power-button" type="button" disabled>启动</button>
         </section>
 
         <section class="mode-card">
@@ -43,7 +49,7 @@
         </section>
 
         <div class="status-grid">
-          <article class="status-card"><span>Agent</span><strong>Codex</strong><small>默认引擎</small></article>
+          <article class="status-card"><span>模型引擎</span><strong id="engine-name">尚未配置</strong><small id="engine-detail">请先新增并验证 API</small></article>
           <article class="status-card"><span>微信</span><strong id="wechat-state">—</strong><small id="wechat-detail">等待状态</small></article>
           <article class="status-card"><span>随机查岗</span><strong id="random-range">—</strong><small>具体时间保持随机</small></article>
         </div>
@@ -76,6 +82,59 @@
 
       <section id="view-settings" class="view" aria-labelledby="nav-settings">
         <div class="page-heading"><div><span class="eyebrow">偏好设置</span><h2>设置</h2></div></div>
+        <section id="model-settings" class="panel model-settings" aria-labelledby="model-settings-title">
+          <div class="panel-heading">
+            <div><span class="eyebrow">全局只激活一个</span><h3 id="model-settings-title">模型与 API</h3></div>
+            <button id="new-model-profile" class="primary-action" type="button">新增配置</button>
+          </div>
+          <p class="section-help">可保存多个配置。只有通过实时连接测试的配置可以激活；CyberBoss 不会默认选择 Codex。</p>
+          <div id="model-profile-list" class="profile-list empty-state">正在读取模型配置…</div>
+          <form id="model-profile-editor" class="profile-editor hidden">
+            <input id="profile-id" type="hidden">
+            <ol class="setup-steps">
+              <li>
+                <strong>选择运行方式</strong>
+                <div class="form-grid">
+                  <label>配置名称<input id="profile-name" maxlength="120" required placeholder="例如：工作用 OpenRouter"></label>
+                  <label>运行引擎<select id="profile-runtime" required></select></label>
+                  <label id="profile-ownership-row" class="hidden">OpenCode 方式<select id="profile-ownership"><option value="managed-local">托管本机</option><option value="external">外部服务</option></select></label>
+                </div>
+              </li>
+              <li>
+                <strong>填写供应商与连接信息</strong>
+                <div class="form-grid">
+                  <label>供应商<select id="profile-provider" required></select></label>
+                  <label>Base URL<input id="profile-base-url" type="url" maxlength="2048" placeholder="https://…"></label>
+                  <label>API Key<input id="profile-api-key" type="password" autocomplete="off" maxlength="8192" placeholder="保存后不会再显示"></label>
+                  <label id="profile-service-password-row" class="hidden">OpenCode 服务密码<input id="profile-service-password" type="password" autocomplete="off" maxlength="8192" placeholder="可选的 Basic Auth 密码"></label>
+                </div>
+                <label class="wide-field">敏感自定义 headers（每行 name: value）<textarea id="profile-sensitive-headers" rows="3" maxlength="16384" autocomplete="off" placeholder="x-custom-key: value"></textarea></label>
+                <p id="external-opencode-notice" class="notice hidden">外部 OpenCode 的 provider 凭据必须在外部实例中配置；CyberBoss 不接受 provider key，只保存服务地址和可选的服务密码。</p>
+              </li>
+              <li>
+                <strong>选择模型</strong>
+                <div class="model-picker">
+                  <input id="profile-model-search" type="search" maxlength="200" placeholder="搜索已加载的模型">
+                  <button id="refresh-profile-models" type="button">刷新模型</button>
+                </div>
+                <label class="wide-field">模型 ID<input id="profile-model-id" list="profile-model-options" maxlength="512" required placeholder="可从目录选择，或手动输入"></label>
+                <datalist id="profile-model-options"></datalist>
+                <small id="profile-model-help">除 OpenRouter 和 OpenCode 外，也可以手动填写模型 ID。</small>
+              </li>
+              <li>
+                <strong>测试完整连接能力</strong>
+                <p>会实时检查凭据、模型访问、流式回复、工具调用、工具结果续接和取消；图片能力为可选项。</p>
+                <button id="test-model-profile" type="button">保存并测试连接</button>
+                <p id="profile-test-result" class="operation-result hidden" role="status"></p>
+              </li>
+              <li>
+                <strong>激活配置</strong>
+                <p>测试通过后激活，才会解锁“运行”和“静默”。切换失败时会继续使用原配置。</p>
+                <div class="editor-actions"><button id="cancel-model-profile" type="button">取消</button><button id="save-model-profile" type="submit">保存草稿</button><button id="activate-model-profile" class="primary-action" type="button" disabled>激活</button></div>
+              </li>
+            </ol>
+          </form>
+        </section>
         <section class="panel settings-list">
           <label class="setting-row"><span><strong>随 Windows 启动</strong><small>由唯一的后台启动任务负责</small></span><input id="startup-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>随机查岗</strong><small>只显示范围，不提前透露具体时间</small></span><input id="random-setting" type="checkbox"></label>
@@ -103,6 +162,13 @@
         <section class="panel action-panel">
           <div><h3>诊断</h3><p>日志默认脱敏保存，最多展示最近事件。</p></div>
           <button id="load-logs" type="button">查看最近日志</button>
+        </section>
+        <section class="panel diagnostic-capture">
+          <div><h3>临时连接诊断</h3><p>仅在你明确同意后记录一次连接测试或最长 15 分钟。内容可能含私人提示词和回复，但永远不记录凭据、Authorization 或图片原始字节；24 小时后自动删除且不进入备份。</p></div>
+          <label><input id="diagnostic-consent" type="checkbox"> 我同意临时记录本次诊断</label>
+          <label>时长<select id="diagnostic-duration"><option value="300000">5 分钟</option><option value="900000">15 分钟</option></select></label>
+          <div class="data-action-buttons"><button id="enable-diagnostic-capture" type="button">启用</button><button id="disable-diagnostic-capture" type="button">停止记录</button><button id="delete-diagnostic-capture" type="button">立即删除</button></div>
+          <p id="diagnostic-capture-result" class="operation-result hidden"></p>
         </section>
         <div id="log-list" class="log-list hidden"></div>
         <button id="exit-app" class="danger-link" type="button">彻底退出 CyberBoss</button>

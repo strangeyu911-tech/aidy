@@ -155,6 +155,18 @@ test("disable ends recording but retains encrypted capture until cleanup", async
   assert.equal(fs.readFileSync(filePath, "utf8").includes("before"), false);
 });
 
+test("explicit delete removes the encrypted capture immediately", async () => {
+  const stateDir = makeStateDir();
+  const filePath = path.join(stateDir, "diagnostic-capture.json");
+  const capture = new DiagnosticCapture({ stateDir, protector: makeProtector() });
+  await capture.enable({ scope: "connection-test", durationMs: 60_000 });
+  await capture.record({ kind: "private" });
+  assert.equal(fs.existsSync(filePath), true);
+  assert.equal(await capture.delete(), true);
+  assert.equal(fs.existsSync(filePath), false);
+  assert.deepEqual(await capture.read(), []);
+});
+
 test("structurally corrupt capture metadata fails closed", async () => {
   const stateDir = makeStateDir();
   fs.writeFileSync(path.join(stateDir, "diagnostic-capture.json"), JSON.stringify({

@@ -3,6 +3,10 @@ let snapshot = null;
 let previousMode = null;
 let modeCooldown = false;
 let undoTimer = null;
+let runtimeOptions = { runtimes: [], providers: [] };
+let modelProfiles = [];
+let editorProfile = null;
+let loadedModels = [];
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -11,6 +15,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindNavigation();
   bindControls();
   api.onSnapshot(renderSnapshot);
+  await loadModelSettings();
   renderSnapshot(await api.getSnapshot());
   await loadDiary();
   await loadReports();
@@ -49,6 +54,21 @@ function bindControls() {
   $("#sync-zhijian").addEventListener("click", async () => renderSnapshot(await api.syncZhijiantime()));
   $("#authorize-zhijian").addEventListener("click", authorizeZhijiantime);
   $("#exit-app").addEventListener("click", () => api.exit());
+  $$('[data-open-model-setup]').forEach((button) => button.addEventListener("click", openModelSettings));
+  $("#new-model-profile").addEventListener("click", () => openProfileEditor());
+  $("#cancel-model-profile").addEventListener("click", closeProfileEditor);
+  $("#model-profile-editor").addEventListener("submit", saveModelDraft);
+  $("#profile-runtime").addEventListener("change", renderProfileFields);
+  $("#profile-ownership").addEventListener("change", renderProfileFields);
+  $("#profile-provider").addEventListener("change", applyProviderDefaults);
+  $("#profile-model-search").addEventListener("input", renderModelOptions);
+  $("#profile-model-id").addEventListener("change", selectOpenCodeProviderForModel);
+  $("#refresh-profile-models").addEventListener("click", refreshProfileModels);
+  $("#test-model-profile").addEventListener("click", testModelProfile);
+  $("#activate-model-profile").addEventListener("click", activateModelProfile);
+  $("#enable-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("enable"));
+  $("#disable-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("disable"));
+  $("#delete-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("delete"));
   for (const selector of ["#startup-setting", "#random-setting", "#report-setting", "#report-time", "#meal-duration", "#shower-duration"]) {
     $(selector).addEventListener("change", saveSettings);
   }
@@ -89,7 +109,14 @@ function renderSnapshot(nextSnapshot) {
   $("#header-state").textContent = display.short;
   $("#power-button").textContent = desired === "stopped" ? "启动" : "停止";
   $("#power-button").classList.toggle("stop", desired !== "stopped");
-  $$("[data-mode]").forEach((button) => button.classList.toggle("active", button.dataset.mode === desired));
+  const configurationRequired = snapshot.engine?.configurationRequired !== false;
+  $("#first-run-setup").classList.toggle("hidden", !configurationRequired);
+  $("#power-button").disabled = configurationRequired || snapshot.engine?.canRun === false;
+  $$("[data-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.mode === desired);
+    button.disabled = configurationRequired || phase === "switching";
+  });
+  renderEngine(snapshot.engine, snapshot.runtime);
   $("#wechat-state").textContent = snapshot.wechat.label;
   $("#wechat-detail").textContent = phase === "quiet" ? "回复保留，主动推送静默" : "后台连接状态";
   $("#random-range").textContent = snapshot.supervision.random.enabled
@@ -103,7 +130,9 @@ function renderSnapshot(nextSnapshot) {
 }
 
 function stateDisplay(phase, desired) {
-  if (phase === "starting") return { title: "正在启动", short: "启动中", description: "正在依次连接 Codex 与微信，完成后会自动进入监管状态。" };
+  if (phase === "configuration_required") return { title: "需要设置模型", short: "未配置", description: "请先新增配置、完成实时连接测试并激活模型。" };
+  if (phase === "switching") return { title: "正在切换模型", short: "切换中", description: "正在等待当前回复与工具安全结束，然后切换模型服务。" };
+  if (phase === "starting") return { title: "正在启动", short: "启动中", description: "正在依次连接模型服务与微信，完成后会自动进入监管状态。" };
   if (phase === "stopping") return { title: "正在停止", short: "停止中", description: "正在安全关闭后台服务和当前任务。" };
   if (phase === "error") return { title: "需要处理", short: "异常", description: "桌面控制中心仍在运行，你可以查看下面的修复建议。" };
   if (desired === "quiet") return { title: "静默运行中", short: "静默", description: "会回复你的消息，并继续同步、日记和报表；不会主动发起查岗。" };
@@ -156,6 +185,305 @@ function renderSettings() {
   $("#zhijian-detail").textContent = zhijian.error?.summary || (zhijian.lastSyncAt ? `上次同步 ${formatDateTime(zhijian.lastSyncAt)}` : "同步今日日程和待办，按最新安排去重");
   $("#zhijian-auth-row").classList.toggle("hidden", zhijian.state !== "error" || !/DPAPI|凭据|授权|TOKEN/i.test(`${zhijian.error?.code || ""} ${zhijian.error?.summary || ""}`));
 }
+
+async function loadModelSettings() {
+  [runtimeOptions, modelProfiles] = await Promise.all([api.listRuntimeOptions(), api.listProfiles()]);
+  renderRuntimeOptions();
+  renderModelProfiles();
+}
+
+function renderRuntimeOptions() {
+  $("#profile-runtime").innerHTML = `<option value="">请选择运行引擎</option>${runtimeOptions.runtimes.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(runtimeLabel(item.id, item.name))}</option>`).join("")}`;
+  renderProfileFields();
+}
+
+function renderModelProfiles() {
+  const list = $("#model-profile-list");
+  if (!modelProfiles.length) {
+    list.className = "profile-list empty-state";
+    list.textContent = "还没有模型配置。请新增、测试并激活一个配置。";
+    return;
+  }
+  const activeId = snapshot?.engine?.activeProfile?.id || modelProfiles.find((item) => item.id === snapshot?.runtime?.selectedProfileId)?.id || "";
+  list.className = "profile-list";
+  list.innerHTML = modelProfiles.map((profile) => {
+    const active = profile.id === activeId;
+    return `<article class="profile-card ${active ? "active" : ""}"><div><span class="profile-state">${active ? "当前使用" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(runtimeLabel(profile.runtimeId))} · ${escapeHtml(providerLabel(profile.providerId))} · ${escapeHtml(profile.modelId || "未选模型")}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button type="button" data-activate-profile="${escapeHtml(profile.id)}" ${profile.status === "verified" ? "" : "disabled"}>激活</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
+  }).join("");
+  list.querySelectorAll("[data-edit-profile]").forEach((button) => button.addEventListener("click", () => openProfileEditor(button.dataset.editProfile)));
+  list.querySelectorAll("[data-test-profile]").forEach((button) => button.addEventListener("click", () => testExistingProfile(button.dataset.testProfile)));
+  list.querySelectorAll("[data-activate-profile]").forEach((button) => button.addEventListener("click", () => activateExistingProfile(button.dataset.activateProfile)));
+  list.querySelectorAll("[data-delete-profile]").forEach((button) => button.addEventListener("click", () => deleteModelProfile(button.dataset.deleteProfile)));
+}
+
+function openModelSettings() {
+  $("#nav-settings").click();
+  $("#model-settings").scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!modelProfiles.length) openProfileEditor();
+}
+
+function openProfileEditor(profileId = "") {
+  editorProfile = modelProfiles.find((item) => item.id === profileId) || null;
+  loadedModels = [];
+  $("#profile-id").value = editorProfile?.id || "";
+  $("#profile-name").value = editorProfile?.name || "";
+  $("#profile-runtime").value = editorProfile?.runtimeId || "";
+  $("#profile-ownership").value = editorProfile?.ownershipMode || "managed-local";
+  renderProfileFields();
+  $("#profile-provider").value = editorProfile?.providerId || "";
+  renderProfileFields();
+  $("#profile-base-url").value = editorProfile?.baseUrl || "";
+  $("#profile-model-id").value = editorProfile?.modelId || "";
+  $("#profile-api-key").value = "";
+  $("#profile-service-password").value = "";
+  $("#profile-sensitive-headers").value = "";
+  $("#profile-test-result").classList.add("hidden");
+  $("#activate-model-profile").disabled = editorProfile?.status !== "verified";
+  $("#model-profile-editor").classList.remove("hidden");
+  $("#model-profile-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closeProfileEditor() {
+  editorProfile = null;
+  loadedModels = [];
+  $("#model-profile-editor").classList.add("hidden");
+  clearSecretInputs();
+}
+
+function renderProfileFields() {
+  const runtimeId = $("#profile-runtime").value;
+  const isOpenCode = runtimeId === "opencode";
+  const external = isOpenCode && $("#profile-ownership").value === "external";
+  $("#profile-ownership-row").classList.toggle("hidden", !isOpenCode);
+  $("#profile-service-password-row").classList.toggle("hidden", !external);
+  $("#external-opencode-notice").classList.toggle("hidden", !external);
+  $("#profile-api-key").closest("label").classList.toggle("hidden", external || ["codex", "claudecode"].includes(runtimeId));
+  $("#profile-sensitive-headers").closest("label").classList.toggle("hidden", external || ["codex", "claudecode"].includes(runtimeId));
+  const provider = $("#profile-provider");
+  const previous = provider.value;
+  if (runtimeId === "builtin-api") {
+    provider.innerHTML = `<option value="">请选择供应商</option>${runtimeOptions.providers.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.displayName)}</option>`).join("")}`;
+  } else if (isOpenCode) {
+    const known = [...new Set([editorProfile?.providerId, ...loadedModels.map((item) => item.providerId)].filter(Boolean))];
+    provider.innerHTML = `<option value="opencode">从实例目录选择</option>${known.filter((id) => id !== "opencode").map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("")}`;
+  } else if (["codex", "claudecode"].includes(runtimeId)) {
+    provider.innerHTML = '<option value="compatibility">兼容运行时</option>';
+  } else {
+    provider.innerHTML = '<option value="">请先选择运行引擎</option>';
+  }
+  if ([...provider.options].some((option) => option.value === previous)) provider.value = previous;
+  const strict = isOpenCode || provider.value === "openrouter";
+  $("#profile-model-help").textContent = strict ? "此运行方式必须从最新实时目录选择模型，不能使用手动 ID。" : "可从目录选择；目录不可用时也可以手动填写模型 ID。";
+}
+
+function applyProviderDefaults() {
+  const preset = runtimeOptions.providers.find((item) => item.id === $("#profile-provider").value);
+  if (preset?.defaultBaseUrl && !$("#profile-base-url").value) $("#profile-base-url").value = preset.defaultBaseUrl;
+  renderProfileFields();
+}
+
+async function saveModelDraft(event) {
+  event.preventDefault();
+  try {
+    const saved = await persistEditor({ includeSecrets: true });
+    setProfileResult(`草稿“${saved.name}”已安全保存。还需要测试并激活。`, false);
+  } catch (error) {
+    setProfileResult(error.message || "保存失败。", true);
+  } finally {
+    $("#profile-api-key").value = "";
+    $("#profile-service-password").value = "";
+    $("#profile-sensitive-headers").value = "";
+  }
+}
+
+async function refreshProfileModels() {
+  const button = $("#refresh-profile-models");
+  button.disabled = true;
+  setProfileResult("正在实时刷新模型目录…", false);
+  try {
+    const saved = await persistEditor({ includeSecrets: true, allowStrictWithoutCatalog: true });
+    const result = await api.refreshModels(saved.id, { query: $("#profile-model-search").value });
+    loadedModels = result.models || [];
+    renderProfileFields();
+    renderModelOptions();
+    setProfileResult(result.stale ? "只取得旧目录，不能用于激活。请检查连接后重试。" : `已加载 ${loadedModels.length} 个实时模型。`, result.stale);
+  } catch (error) {
+    setProfileResult(error.message || "刷新模型失败。", true);
+  } finally {
+    clearSecretInputs();
+    button.disabled = false;
+  }
+}
+
+function renderModelOptions() {
+  const query = $("#profile-model-search").value.trim().toLowerCase();
+  const filtered = loadedModels.filter((model) => !query || `${model.id} ${model.name} ${model.providerId}`.toLowerCase().includes(query)).slice(0, 1000);
+  $("#profile-model-options").innerHTML = filtered.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(`${model.providerId ? `${model.providerId} · ` : ""}${model.name || model.id}`)}</option>`).join("");
+}
+
+function selectOpenCodeProviderForModel() {
+  if ($("#profile-runtime").value !== "opencode") return;
+  const selected = loadedModels.find((item) => item.id === $("#profile-model-id").value);
+  if (!selected?.providerId) return;
+  renderProfileFields();
+  if (![...$("#profile-provider").options].some((option) => option.value === selected.providerId)) {
+    $("#profile-provider").add(new Option(selected.providerId, selected.providerId));
+  }
+  $("#profile-provider").value = selected.providerId;
+}
+
+async function testModelProfile() {
+  const button = $("#test-model-profile");
+  button.disabled = true;
+  setProfileResult("正在检查凭据、模型、流式回复、工具和取消能力…", false);
+  try {
+    const saved = await persistEditor({ includeSecrets: true });
+    const result = await api.testProfile(saved.id);
+    await reloadProfiles();
+    editorProfile = modelProfiles.find((item) => item.id === saved.id) || null;
+    if (result.ok) {
+      $("#activate-model-profile").disabled = false;
+      setProfileResult("连接测试通过。现在可以激活此配置。", false);
+    } else {
+      $("#activate-model-profile").disabled = true;
+      setProfileResult(`${result.error.summary} 修复建议：${result.error.repairAction}（${result.error.code}）`, true);
+    }
+  } catch (error) {
+    setProfileResult(error.message || "连接测试失败。", true);
+  } finally {
+    clearSecretInputs();
+    button.disabled = false;
+  }
+}
+
+async function activateModelProfile() {
+  const id = $("#profile-id").value;
+  if (!id) return setProfileResult("请先保存并测试配置。", true);
+  await activateExistingProfile(id);
+}
+
+async function activateExistingProfile(id) {
+  const previousActiveId = snapshot?.engine?.activeProfile?.id || snapshot?.runtime?.selectedProfileId || "";
+  setProfileResult("正在安全切换模型；当前回复和工具会先完成…", false);
+  try {
+    await api.activateProfile(id, { graceMs: 120000 });
+    await reloadProfiles();
+    renderSnapshot(await api.getSnapshot());
+    setProfileResult("模型配置已激活。", false);
+  } catch (error) {
+    await reloadProfiles();
+    editorProfile = modelProfiles.find((item) => item.id === previousActiveId) || editorProfile;
+    renderSnapshot(await api.getSnapshot());
+    const previous = modelProfiles.find((item) => item.id === previousActiveId);
+    setProfileResult(`切换失败；${previous ? `仍在使用“${previous.name}”` : "未改变原选择"}。${error.message || "请按状态提示修复后重试。"}`, true);
+  }
+}
+
+async function testExistingProfile(id) {
+  openProfileEditor(id);
+  await testModelProfile();
+}
+
+async function deleteModelProfile(id) {
+  const target = modelProfiles.find((item) => item.id === id);
+  if (!target || !window.confirm(`确认删除“${target.name}”吗？已保存的凭据也会从本机安全存储中删除。`)) return;
+  try {
+    await api.deleteProfile(id);
+    if (editorProfile?.id === id) closeProfileEditor();
+    await reloadProfiles();
+  } catch (error) {
+    setProfileResult(error.message || "删除失败。", true);
+  }
+}
+
+async function persistEditor({ includeSecrets, allowStrictWithoutCatalog = false } = {}) {
+  const runtimeId = $("#profile-runtime").value;
+  const providerId = $("#profile-provider").value;
+  const modelId = $("#profile-model-id").value.trim();
+  const strict = runtimeId === "opencode" || providerId === "openrouter";
+  if (strict && !allowStrictWithoutCatalog && !loadedModels.some((model) => model.id === modelId && (runtimeId !== "opencode" || model.providerId === providerId))) {
+    throw new Error("OpenRouter 和 OpenCode 必须刷新目录并从实时结果中选择模型。");
+  }
+  const saved = await api.saveProfile({
+    id: $("#profile-id").value || undefined,
+    name: $("#profile-name").value,
+    runtimeId,
+    ownershipMode: runtimeId === "opencode" ? $("#profile-ownership").value : "",
+    providerId,
+    baseUrl: $("#profile-base-url").value,
+    modelId,
+  });
+  $("#profile-id").value = saved.id;
+  if (includeSecrets) {
+    const secrets = collectSecretInputs();
+    if (Object.keys(secrets).length) await api.writeProfileSecrets(saved.id, secrets);
+  }
+  await reloadProfiles();
+  editorProfile = modelProfiles.find((item) => item.id === saved.id) || saved;
+  return editorProfile;
+}
+
+function collectSecretInputs() {
+  const apiKey = $("#profile-api-key").value.trim();
+  const servicePassword = $("#profile-service-password").value.trim();
+  const sensitiveHeaders = parseSensitiveHeaders($("#profile-sensitive-headers").value);
+  return { ...(apiKey ? { apiKey } : {}), ...(servicePassword ? { servicePassword } : {}), ...(Object.keys(sensitiveHeaders).length ? { sensitiveHeaders } : {}) };
+}
+
+function parseSensitiveHeaders(value) {
+  const result = {};
+  for (const line of value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
+    const separator = line.indexOf(":");
+    if (separator < 1) throw new Error("敏感 header 必须按 name: value 每行填写一项。");
+    result[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+  }
+  return result;
+}
+
+function clearSecretInputs() {
+  $("#profile-api-key").value = "";
+  $("#profile-service-password").value = "";
+  $("#profile-sensitive-headers").value = "";
+}
+
+async function reloadProfiles() {
+  modelProfiles = await api.listProfiles();
+  renderModelProfiles();
+}
+
+function setProfileResult(text, isError) {
+  const result = $("#profile-test-result");
+  result.textContent = text;
+  result.classList.remove("hidden");
+  result.classList.toggle("error-result", Boolean(isError));
+}
+
+function renderEngine(engine, runtime) {
+  const active = engine?.activeProfile;
+  $("#engine-name").textContent = active ? runtimeLabel(active.runtimeId) : "尚未配置";
+  if (runtime?.phase === "switching" && runtime.switchTransaction) {
+    const remaining = Math.max(0, Math.ceil((Date.parse(runtime.switchTransaction.deadlineAt) - Date.now()) / 1000));
+    $("#engine-detail").textContent = `正在${switchPhaseLabel(runtime.switchTransaction.phase)} · 最多等待 ${remaining} 秒`;
+  } else {
+    $("#engine-detail").textContent = active ? `${providerLabel(active.providerId)} · ${active.modelId}` : "请先新增、验证并激活";
+  }
+}
+
+async function updateDiagnosticCapture(action) {
+  const result = $("#diagnostic-capture-result");
+  try {
+    await api.setDiagnosticCapture({ action, consent: $("#diagnostic-consent").checked, durationMs: Number($("#diagnostic-duration").value), scope: "connection-test" });
+    result.textContent = ({ enable: "临时诊断已启用。", disable: "已停止记录，现有记录仍会按期自动删除。", delete: "临时诊断记录已立即删除。" })[action];
+  } catch (error) {
+    result.textContent = error.message || "诊断设置失败。";
+  }
+  result.classList.remove("hidden");
+}
+
+function runtimeLabel(id, fallback = "") { return ({ "builtin-api": "内置 API", opencode: "OpenCode", codex: "Codex（兼容）", claudecode: "Claude Code（兼容）" })[id] || fallback || id || "—"; }
+function providerLabel(id) { return runtimeOptions.providers.find((item) => item.id === id)?.displayName || id || "—"; }
+function profileStatusLabel(status) { return ({ verified: "已验证", draft: "需要测试", unverified: "验证已失效" })[status] || "需要测试"; }
+function switchPhaseLabel(phase) { return ({ draining: "等待当前工作完成", aborting: "停止超时工作", stopping_old: "停止原模型", starting_new: "启动新模型", probing_new: "确认新模型状态", rolling_back: "恢复原模型" })[phase] || "切换模型"; }
 
 async function saveSettings() {
   renderSnapshot(await api.updateSettings({

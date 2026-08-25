@@ -123,6 +123,14 @@ class DiagnosticCapture {
     });
   }
 
+  delete() {
+    return this.#enqueue(async () => {
+      const existed = fs.existsSync(this.filePath);
+      this.#removeFile();
+      return existed;
+    });
+  }
+
   cleanupExpired() {
     return this.#enqueue(async () => {
       const state = this.#readState();

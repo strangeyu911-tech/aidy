@@ -163,6 +163,26 @@ class ProviderProfileStore {
     return updated;
   }
 
+  markSecretWritten(id, { generation, secretRefs } = {}) {
+    const profileId = normalizeText(id);
+    const secretGeneration = normalizeNonNegativeInteger(generation);
+    let updated = null;
+    this.store.update((state) => {
+      const existing = requireProfile(state, profileId);
+      updated = clearVerification(normalizeProviderProfile({
+        ...existing,
+        secretGeneration,
+        secretRefs,
+        updatedAt: this.nowIso(),
+      }), "draft", "credentials_changed");
+      return {
+        ...replaceProfile(state, updated),
+        activeProfileId: clearIfEqual(state.activeProfileId, profileId),
+      };
+    });
+    return updated;
+  }
+
   activate(id) {
     const profileId = normalizeText(id);
     let active = null;
@@ -305,6 +325,7 @@ function maskProfile(profile) {
   return {
     ...masked,
     hasApiKey: Boolean(secretRefs.apiKey),
+    hasServicePassword: Boolean(secretRefs.servicePassword),
     hasSensitiveHeaders: Object.keys(secretRefs.sensitiveHeaders).length > 0,
   };
 }
