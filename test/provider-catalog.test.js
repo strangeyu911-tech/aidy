@@ -192,24 +192,19 @@ test("invalidate removes every cache variant for only the selected profile", asy
   assert.equal(calls, 3);
 });
 
-test("OpenRouter discovery paginates by offset and maps catalog errors", async () => {
+test("OpenRouter discovery requests the complete catalog once and maps catalog errors", async () => {
   const requested = [];
-  const responses = [
-    { ok: true, status: 200, json: async () => ({ data: [{ id: "a" }, { id: "b" }], total_count: 3 }) },
-    { ok: true, status: 200, json: async () => ({ data: [{ id: "c" }], total_count: 3 }) },
-  ];
   const catalog = new ProviderCatalog({
     pageSize: 2,
     fetch: async (url, init) => {
       requested.push({ url, authorization: init.headers.Authorization });
-      return responses.shift();
+      return { ok: true, status: 200, json: async () => ({ data: [{ id: "a" }, { id: "b" }, { id: "c" }] }) };
     },
   });
   const result = await catalog.list(builtinProfile(), { apiKey: "synthetic-key" }, { reason: "manual-refresh" });
   assert.deepEqual(result.models.map((model) => model.id), ["a", "b", "c"]);
-  assert.match(requested[0].url, /offset=0/);
-  assert.match(requested[0].url, /limit=2/);
-  assert.match(requested[1].url, /offset=2/);
+  assert.equal(requested.length, 1);
+  assert.equal(requested[0].url, "https://openrouter.ai/api/v1/models");
   assert.equal(requested[0].authorization, "Bearer synthetic-key");
 
   const failing = new ProviderCatalog({
@@ -253,20 +248,4 @@ test("OpenRouter HTTP failures use stable catalog error codes without exposing r
       );
     });
   }
-});
-
-test("OpenRouter malformed pagination fails closed instead of looping", async () => {
-  let calls = 0;
-  const catalog = new ProviderCatalog({
-    pageSize: 2,
-    fetch: async () => {
-      calls += 1;
-      return { ok: true, status: 200, json: async () => ({ data: [], total_count: 3 }) };
-    },
-  });
-  await assert.rejects(
-    catalog.list(builtinProfile(), { apiKey: "synthetic-key" }, { reason: "manual-refresh" }),
-    (error) => error.code === "INCOMPATIBLE_PROTOCOL",
-  );
-  assert.equal(calls, 1);
 });

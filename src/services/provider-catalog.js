@@ -187,24 +187,12 @@ class ProviderCatalog {
   }
 
   async fetchOpenRouterModels(profile, secrets) {
-    const models = [];
-    let offset = 0;
-    for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-      const url = new URL(joinEndpoint(resolveBaseUrl(profile, getProviderPreset("openrouter")), "models"));
-      url.searchParams.set("offset", String(offset));
-      url.searchParams.set("limit", String(this.pageSize));
-      const response = await this.requestJson(url.toString(), {
-        headers: bearerHeaders(secrets),
-      });
-      if (!Array.isArray(response.data)) throw incompatibleCatalog();
-      const totalCount = normalizeNonNegativeInteger(response.total_count);
-      if (response.data.length === 0 && totalCount !== null && offset < totalCount) throw incompatibleCatalog();
-      models.push(...response.data);
-      offset += response.data.length;
-      if (totalCount !== null ? offset >= totalCount : response.data.length < this.pageSize) return models;
-      if (response.data.length === 0) throw incompatibleCatalog();
-    }
-    throw catalogError("INCOMPATIBLE_PROTOCOL", "The model catalog exceeded its pagination limit.");
+    const response = await this.requestJson(
+      joinEndpoint(resolveBaseUrl(profile, getProviderPreset("openrouter")), "models"),
+      { headers: bearerHeaders(secrets) },
+    );
+    if (!Array.isArray(response.data)) throw incompatibleCatalog();
+    return response.data;
   }
 
   async fetchOpenAiCompatibleModels(profile, secrets) {
@@ -569,11 +557,6 @@ function normalizePositiveInteger(value, fallback) {
 function normalizePositiveIntegerOrNull(value) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function normalizeNonNegativeInteger(value) {
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function normalizeText(value) {
