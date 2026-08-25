@@ -30,6 +30,7 @@ const { extractExplicitCheckpoint } = require("./explicit-checkpoint");
 const { inferContextualCheckpoint } = require("./contextual-checkpoint");
 const { SupervisionPlanStore } = require("./supervision-plan-store");
 const { ProviderProfileStore } = require("./provider-profile-store");
+const { BridgeControlServer } = require("./bridge-control-server");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
@@ -102,6 +103,11 @@ class CyberbossApp {
     this.streamDelivery = null;
     this.pendingOperationByRunKey = new Map();
     this.runtimeEventChain = Promise.resolve();
+    this.activeTurnRecords = new Map();
+    this.drainingForSwitch = false;
+    this.nonInterruptibleBoundaryCount = 0;
+    this.bridgeControlServer = null;
+    this.runtimeState = null;
   }
 
   async ensureRuntimeAdapter() {
@@ -188,6 +194,8 @@ class CyberbossApp {
       accountId: account.accountId,
     });
     const runtimeState = await this.runtimeAdapter.initialize();
+    this.runtimeState = runtimeState;
+    await this.startBridgeControlServer();
     const knownContextTokens = Object.keys(this.channelAdapter.getKnownContextTokens()).length;
     const syncBuffer = this.channelAdapter.loadSyncBuffer();
     await this.restoreBoundThreadSubscriptions();
@@ -216,6 +224,7 @@ class CyberbossApp {
 
     const shutdown = createShutdownController(async () => {
       this.clearPendingImageInboundTimers();
+      await this.bridgeControlServer?.close?.();
       await this.closeLocationServer();
       await this.zhijiantimeDailySupervisor.close();
       await this.runtimeAdapter.close();
@@ -514,6 +523,9 @@ class CyberbossApp {
   }
 
   isTurnDispatchBlocked(bindingKey, workspaceRoot, { ignoreBoundary = false } = {}) {
+    if (this.drainingForSwitch) {
+      return true;
+    }
     const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
     if (!ignoreBoundary && scopeKey && this.turnBoundaryScopeKeys?.has(scopeKey)) {
       return true;
@@ -527,7 +539,22 @@ class CyberbossApp {
   }
 
   async dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared }) {
+    if (this.drainingForSwitch) {
+      this.bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared });
+      return false;
+    }
     const pendingScopeKey = this.turnGateStore.begin(bindingKey, workspaceRoot);
+    const activeRecordId = crypto.randomUUID();
+    const controller = new AbortController();
+    this.activeTurnRecords.set(activeRecordId, {
+      id: activeRecordId,
+      bindingKey,
+      workspaceRoot,
+      threadId: "",
+      turnId: "",
+      controller,
+      startedAt: new Date().toISOString(),
+    });
     await this.channelAdapter.sendTyping({
       userId: prepared.senderId,
       status: 1,
@@ -546,7 +573,10 @@ class CyberbossApp {
         profileId: activeProfile.id,
         usage: { total: { inputTokens: 0, outputTokens: 0 }, byProfile: {}, childOperations: [] },
       };
-      const runtimeTurn = await this.buildRuntimeTurn({ prepared, model, parentTurn, signal: prepared?.signal });
+      const runtimeSignal = prepared?.signal
+        ? AbortSignal.any([controller.signal, prepared.signal])
+        : controller.signal;
+      const runtimeTurn = await this.buildRuntimeTurn({ prepared, model, parentTurn, signal: runtimeSignal });
       const sendTurn = typeof this.runtimeAdapter.sendTurn === "function"
         ? this.runtimeAdapter.sendTurn.bind(this.runtimeAdapter)
         : this.runtimeAdapter.sendTextTurn.bind(this.runtimeAdapter);
@@ -564,6 +594,16 @@ class CyberbossApp {
           visionUsage: runtimeTurn.usageAttributions,
         },
       });
+      const activeRecord = this.activeTurnRecords.get(activeRecordId);
+      if (activeRecord) {
+        activeRecord.threadId = normalizeText(turn.threadId);
+        activeRecord.turnId = normalizeText(turn.turnId);
+        const state = this.threadStateStore.getThreadState(activeRecord.threadId);
+        if (state && ["idle", "failed"].includes(state.status)
+          && (!activeRecord.turnId || !state.turnId || state.turnId === activeRecord.turnId)) {
+          this.activeTurnRecords.delete(activeRecordId);
+        }
+      }
       for (const attribution of runtimeTurn.usageAttributions || []) {
         this.threadStateStore.recordUsage(turn.threadId, {
           ...attribution,
@@ -596,6 +636,7 @@ class CyberbossApp {
       }
       return true;
     } catch (error) {
+      this.activeTurnRecords.delete(activeRecordId);
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
       const messageText = error instanceof Error ? error.message : String(error || "unknown error");
       await this.channelAdapter.sendText({
@@ -643,6 +684,80 @@ class CyberbossApp {
 
   requireActiveProfile() {
     return resolveGlobalActiveProfile(this);
+  }
+
+  async startBridgeControlServer() {
+    const token = normalizeText(process.env.CYBERBOSS_BRIDGE_CONTROL_TOKEN);
+    const port = Number(this.config.bridgeControlPort);
+    if (!token || !Number.isSafeInteger(port) || port < 1 || port > 65535) return null;
+    this.bridgeControlServer = new BridgeControlServer({ app: this, token, port });
+    return this.bridgeControlServer.start();
+  }
+
+  getBridgeControlStatus() {
+    const activeProfile = this.activeProfile || this.profileStore?.getActive?.() || null;
+    const runtime = this.runtimeAdapter?.describe?.() || {};
+    const externalOpenCode = activeProfile?.runtimeId === "opencode" && activeProfile?.ownershipMode === "external";
+    return {
+      draining: Boolean(this.drainingForSwitch),
+      activeTurns: this.activeTurnRecords?.size || 0,
+      nonInterruptibleBoundary: (this.nonInterruptibleBoundaryCount || 0) > 0,
+      runtimeReady: Boolean(this.runtimeAdapter && this.runtimeState),
+      activeProfileId: normalizeText(activeProfile?.id),
+      runtimeId: normalizeText(activeProfile?.runtimeId || runtime.id),
+      modelId: normalizeText(activeProfile?.modelId || runtime.model),
+      secretGeneration: Number.isSafeInteger(Number(activeProfile?.secretGeneration)) ? Number(activeProfile.secretGeneration) : 0,
+      catalogLive: externalOpenCode ? Boolean(this.runtimeState?.catalog && this.runtimeState.catalog.cached === false) : true,
+    };
+  }
+
+  async drainForSwitch({ deadlineAt } = {}) {
+    this.drainingForSwitch = true;
+    const parsedDeadline = Date.parse(normalizeText(deadlineAt));
+    const deadlineMs = Number.isFinite(parsedDeadline) ? parsedDeadline : Date.now();
+    while ((this.activeTurnRecords?.size || 0) > 0) {
+      const deadlineExceeded = Date.now() >= deadlineMs;
+      const atBoundary = (this.nonInterruptibleBoundaryCount || 0) > 0;
+      if (deadlineExceeded && !atBoundary) break;
+      await sleep(10);
+    }
+    return {
+      ...this.getBridgeControlStatus(),
+      deadlineExceeded: Date.now() >= deadlineMs && (this.activeTurnRecords?.size || 0) > 0,
+    };
+  }
+
+  async abortActiveTurns(reason = "runtime profile switch") {
+    const records = [...(this.activeTurnRecords?.values?.() || [])];
+    const sessionStore = this.runtimeAdapter?.getSessionStore?.();
+    await Promise.all(records.map(async (record) => {
+      record.controller?.abort?.(reason);
+      if (record.threadId) {
+        await this.runtimeAdapter?.cancelTurn?.({
+          threadId: record.threadId,
+          turnId: record.turnId,
+          workspaceRoot: record.workspaceRoot,
+        });
+        sessionStore?.clearApprovalPrompt?.(record.threadId);
+        this.threadStateStore?.resolveApproval?.(record.threadId, "failed");
+        this.turnGateStore?.releaseThread?.(record.threadId);
+      } else {
+        while (this.activeTurnRecords.has(record.id)) await sleep(10);
+        return;
+      }
+      this.pendingOperationByRunKey?.delete?.(buildRunKey(record.threadId, record.turnId));
+      this.activeTurnRecords.delete(record.id);
+    }));
+    return this.getBridgeControlStatus();
+  }
+
+  enterNonInterruptibleBoundary() {
+    this.nonInterruptibleBoundaryCount = Math.max(0, Number(this.nonInterruptibleBoundaryCount) || 0) + 1;
+    return () => this.leaveNonInterruptibleBoundary();
+  }
+
+  leaveNonInterruptibleBoundary() {
+    this.nonInterruptibleBoundaryCount = Math.max(0, (Number(this.nonInterruptibleBoundaryCount) || 0) - 1);
   }
 
   async routePreparedInbound({ bindingKey, workspaceRoot, prepared }) {
@@ -1586,6 +1701,12 @@ class CyberbossApp {
       return;
     }
     if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {
+      for (const [recordId, record] of this.activeTurnRecords.entries()) {
+        if (record.threadId === normalizeText(event.payload.threadId)
+          && (!normalizeText(event.payload.turnId) || !record.turnId || record.turnId === normalizeText(event.payload.turnId))) {
+          this.activeTurnRecords.delete(recordId);
+        }
+      }
       const completedRunKey = buildRunKey(event.payload.threadId, event.payload.turnId);
       const pendingOperations = this.pendingOperationByRunKey;
       const pendingOperation = pendingOperations?.get?.(completedRunKey) || null;
