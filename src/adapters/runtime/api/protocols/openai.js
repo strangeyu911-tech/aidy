@@ -6,9 +6,10 @@ const {
   customHeaders,
   emitDelta,
   iterateSse,
+  imageContent,
   joinUrl,
   jsonHeaders,
-  normalizeMessage,
+  normalizeMessages,
   normalizeModels,
   normalizeTools,
   normalizedResult,
@@ -47,7 +48,7 @@ async function listOpenAiModels(requestContext, signal) {
 }
 
 async function streamChatTurn(requestContext, { messages = [], tools = [], signal, onDelta } = {}) {
-  const normalizedMessages = messages.map(normalizeMessage);
+  const normalizedMessages = await normalizeMessages(messages);
   const normalizedTools = normalizeTools(tools);
   const body = {
     model: requestContext.profile.modelId,
@@ -91,7 +92,7 @@ async function streamChatTurn(requestContext, { messages = [], tools = [], signa
 }
 
 async function streamResponsesTurn(requestContext, { messages = [], tools = [], signal, onDelta } = {}) {
-  const normalizedMessages = messages.map(normalizeMessage);
+  const normalizedMessages = await normalizeMessages(messages);
   const normalizedTools = normalizeTools(tools);
   const body = {
     model: requestContext.profile.modelId,
@@ -155,7 +156,16 @@ function chatMessage(message) {
   if (message.role === "tool") {
     return { role: "tool", tool_call_id: message.toolCallId, content: textContent(message) };
   }
-  const result = { role: message.role, content: textContent(message) };
+  const images = imageContent(message);
+  const result = {
+    role: message.role,
+    content: images.length
+      ? [
+          ...(textContent(message) ? [{ type: "text", text: textContent(message) }] : []),
+          ...images.map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` } })),
+        ]
+      : textContent(message),
+  };
   if (message.role === "assistant" && message.toolCalls.length) {
     result.tool_calls = message.toolCalls.map((call) => ({
       id: call.id,
@@ -180,9 +190,13 @@ function responsesInput(messages) {
       }
       continue;
     }
+    const images = imageContent(message);
     input.push({
       role: message.role,
-      content: [{ type: message.role === "assistant" ? "output_text" : "input_text", text: textContent(message) }],
+      content: [
+        ...(textContent(message) ? [{ type: message.role === "assistant" ? "output_text" : "input_text", text: textContent(message) }] : []),
+        ...images.map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}` })),
+      ],
     });
   }
   return input;

@@ -187,10 +187,22 @@ class ProviderProfileStore {
     this.store.update((state) => {
       deleted = state.profiles.some((profile) => profile.id === profileId);
       if (!deleted) return state;
+      const now = this.nowIso();
+      const referencingProfileIds = new Set(
+        state.profiles
+          .filter((profile) => profile.id !== profileId && profile.visionProfileId === profileId)
+          .map((profile) => profile.id),
+      );
       return {
         ...state,
-        activeProfileId: clearIfEqual(state.activeProfileId, profileId),
-        profiles: state.profiles.filter((profile) => profile.id !== profileId),
+        activeProfileId: state.activeProfileId === profileId || referencingProfileIds.has(state.activeProfileId)
+          ? ""
+          : state.activeProfileId,
+        profiles: state.profiles
+          .filter((profile) => profile.id !== profileId)
+          .map((profile) => referencingProfileIds.has(profile.id)
+            ? clearVerification({ ...profile, visionProfileId: "", updatedAt: now }, "draft", "")
+            : profile),
       };
     });
     return deleted;

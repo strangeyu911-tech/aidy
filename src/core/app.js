@@ -5,9 +5,7 @@ const fs = require("fs");
 const { createWeixinChannelAdapter } = require("../adapters/channel/weixin");
 const { DEFAULT_MIN_WEIXIN_CHUNK, MAX_MIN_WEIXIN_CHUNK } = require("../adapters/channel/weixin/config-store");
 const { persistIncomingWeixinAttachments } = require("../adapters/channel/weixin/media-receive");
-const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
-const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
-const { findModelByQuery } = require("../adapters/runtime/codex/model-catalog");
+const { createRuntimeAdapter } = require("../adapters/runtime/factory");
 const { createTimelineIntegration } = require("../integrations/timeline");
 const { ZhijiantimeClient, ZhijiantimeDailySupervisor } = require("../integrations/zhijiantime");
 const {
@@ -20,6 +18,9 @@ const {
   takeImageOnlyBatchMessages,
 } = require("./inbound-turn");
 const { resolveVisionContext } = require("../services/vision-context");
+const { VisionFallback } = require("../services/vision-fallback");
+const { CredentialVault } = require("../security/credential-vault");
+const { DiagnosticCapture } = require("../security/diagnostic-capture");
 const {
   buildWeixinHelpText,
 } = require("./command-registry");
@@ -28,6 +29,7 @@ const { DesktopStateStore } = require("./desktop-state-store");
 const { extractExplicitCheckpoint } = require("./explicit-checkpoint");
 const { inferContextualCheckpoint } = require("./contextual-checkpoint");
 const { SupervisionPlanStore } = require("./supervision-plan-store");
+const { ProviderProfileStore } = require("./provider-profile-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
@@ -57,15 +59,8 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
 
-function createRuntimeAdapter(config) {
-  if (config.runtime === "claudecode") {
-    return createClaudeCodeRuntimeAdapter(config);
-  }
-  return createCodexRuntimeAdapter(config);
-}
-
 class CyberbossApp {
-  constructor(config) {
+  constructor(config, dependencies = {}) {
     this.config = config;
     this.channelAdapter = createWeixinChannelAdapter(config);
     this.timelineIntegration = createTimelineIntegration(config);
@@ -76,7 +71,13 @@ class CyberbossApp {
     this.projectServices = projectTooling.services;
     this.projectToolHost = projectTooling.toolHost;
     this.runtimeContextStore = projectTooling.runtimeContextStore;
-    this.runtimeAdapter = createRuntimeAdapter(config);
+    this.profileStore = dependencies.profileStore || new ProviderProfileStore({ filePath: config.providerProfilesFile });
+    this.credentialVault = dependencies.vault || new CredentialVault({ filePath: config.credentialVaultFile });
+    this.diagnosticCapture = dependencies.capture || new DiagnosticCapture({ filePath: config.diagnosticCaptureFile });
+    this.runtimeAdapterFactory = dependencies.runtimeAdapterFactory || createRuntimeAdapter;
+    this.runtimeAdapter = null;
+    this.activeProfile = null;
+    this.visionFallback = null;
     this.threadStateStore = new ThreadStateStore();
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
@@ -98,16 +99,49 @@ class CyberbossApp {
     this.pendingImageInboundByScope = new Map();
     this.turnBoundaryScopeKeys = new Set();
     this.systemMessageDispatcher = null;
-    this.streamDelivery = new StreamDelivery({
-      channelAdapter: this.channelAdapter,
-      sessionStore: this.runtimeAdapter.getSessionStore(),
-      runtimeId: this.runtimeAdapter.describe().id,
-      onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
-    });
+    this.streamDelivery = null;
     this.pendingOperationByRunKey = new Map();
     this.runtimeEventChain = Promise.resolve();
-    this.runtimeAdapter.onEvent((event) => {
-      this.threadStateStore.applyRuntimeEvent(event);
+  }
+
+  async ensureRuntimeAdapter() {
+    if (this.runtimeAdapter) return this.runtimeAdapter;
+    const activeProfile = this.profileStore.getActive();
+    if (!activeProfile) {
+      throw Object.assign(new Error("No active model profile is configured. Open Control Center to verify and activate one. [NO_ACTIVE_ENGINE]"), {
+        code: "NO_ACTIVE_ENGINE",
+      });
+    }
+    const runtimeConfig = { ...this.config, capture: this.diagnosticCapture };
+    const adapter = await this.runtimeAdapterFactory({
+      config: runtimeConfig,
+      profileStore: this.profileStore,
+      vault: this.credentialVault,
+      projectToolHost: this.projectToolHost,
+    });
+    this.activeProfile = this.profileStore.getActive();
+    if (!this.activeProfile || this.activeProfile.id !== activeProfile.id) {
+      await Promise.resolve(adapter.close?.()).catch(() => {});
+      throw Object.assign(new Error("The global active profile changed during startup. [ACTIVE_PROFILE_CHANGED]"), {
+        code: "ACTIVE_PROFILE_CHANGED",
+      });
+    }
+    this.runtimeAdapter = adapter;
+    this.visionFallback = new VisionFallback({
+      config: runtimeConfig,
+      profileStore: this.profileStore,
+      vault: this.credentialVault,
+      projectToolHost: this.projectToolHost,
+      capture: this.diagnosticCapture,
+    });
+    this.streamDelivery = new StreamDelivery({
+      channelAdapter: this.channelAdapter,
+      sessionStore: adapter.getSessionStore(),
+      runtimeId: adapter.describe().id,
+      onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
+    });
+    adapter.onEvent((event) => {
+      this.threadStateStore.applyRuntimeEvent(withUsageProfile(event, this.activeProfile?.id));
       this.runtimeEventChain = this.runtimeEventChain
         .catch(() => {})
         .then(() => this.handleRuntimeEvent(event))
@@ -116,13 +150,21 @@ class CyberbossApp {
           console.error(`[cyberboss] runtime event handling failed type=${event?.type || "(unknown)"} ${message}`);
         });
     });
+    return adapter;
   }
 
   printDoctor() {
+    const activeProfile = this.profileStore.getActive();
     console.log(JSON.stringify({
       stateDir: this.config.stateDir,
       channel: this.channelAdapter.describe(),
-      runtime: this.runtimeAdapter.describe(),
+      runtime: this.runtimeAdapter?.describe?.() || (activeProfile ? {
+        id: activeProfile.runtimeId,
+        profileId: activeProfile.id,
+        provider: activeProfile.providerId,
+        model: activeProfile.modelId,
+        initialized: false,
+      } : { id: "", code: "NO_ACTIVE_ENGINE", initialized: false }),
       timeline: this.timelineIntegration.describe(),
       threads: this.threadStateStore.snapshot(),
     }, null, 2));
@@ -137,6 +179,7 @@ class CyberbossApp {
   }
 
   async start() {
+    await this.ensureRuntimeAdapter();
     const account = this.channelAdapter.resolveAccount();
     this.activeAccountId = account.accountId;
     this.systemMessageDispatcher = new SystemMessageDispatcher({
@@ -492,8 +535,18 @@ class CyberbossApp {
     }).catch(() => {});
 
     try {
-      const model = this.runtimeAdapter.getSessionStore().getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model;
-      const runtimeTurn = await this.buildRuntimeTurn({ prepared, model });
+      const activeProfile = resolveGlobalActiveProfile(this, {
+        sessionStore: this.runtimeAdapter.getSessionStore(),
+        bindingKey,
+        workspaceRoot,
+      });
+      const model = activeProfile.modelId;
+      const parentTurn = {
+        id: normalizeText(prepared?.id || prepared?.messageId) || crypto.randomUUID(),
+        profileId: activeProfile.id,
+        usage: { total: { inputTokens: 0, outputTokens: 0 }, byProfile: {}, childOperations: [] },
+      };
+      const runtimeTurn = await this.buildRuntimeTurn({ prepared, model, parentTurn, signal: prepared?.signal });
       const sendTurn = typeof this.runtimeAdapter.sendTurn === "function"
         ? this.runtimeAdapter.sendTurn.bind(this.runtimeAdapter)
         : this.runtimeAdapter.sendTextTurn.bind(this.runtimeAdapter);
@@ -507,8 +560,17 @@ class CyberbossApp {
           workspaceId: prepared.workspaceId,
           accountId: prepared.accountId,
           senderId: prepared.senderId,
+          activeProfileId: activeProfile.id,
+          visionUsage: runtimeTurn.usageAttributions,
         },
       });
+      for (const attribution of runtimeTurn.usageAttributions || []) {
+        this.threadStateStore.recordUsage(turn.threadId, {
+          ...attribution,
+          turnId: turn.turnId,
+          kind: "vision",
+        });
+      }
       this.runtimeContextStore?.setActiveContext?.({
         workspaceRoot,
         runtimeId: this.runtimeAdapter.describe().id,
@@ -545,7 +607,7 @@ class CyberbossApp {
     }
   }
 
-  async buildRuntimeTurn({ prepared, model = "" }) {
+  async buildRuntimeTurn({ prepared, model = "", parentTurn = {}, signal } = {}) {
     if (prepared?.provider === "system") {
       return {
         text: String(prepared.text || "").trim(),
@@ -557,7 +619,16 @@ class CyberbossApp {
       config: this.config,
       runtimeAdapter: this.runtimeAdapter,
       model,
+      visionFallback: this.visionFallback,
+      parentTurn,
+      signal,
     });
+    if (visionContext.blockingError) {
+      throw Object.assign(new Error(visionContext.blockingError.message), {
+        code: visionContext.blockingError.code,
+        attachmentErrors: visionContext.errors,
+      });
+    }
     return {
       text: assembleRuntimeTurnText({
         prepared,
@@ -566,7 +637,12 @@ class CyberbossApp {
       }),
       attachments: Array.isArray(visionContext.runtimeAttachments) ? visionContext.runtimeAttachments : [],
       visionContext,
+      usageAttributions: Array.isArray(visionContext.usageAttributions) ? visionContext.usageAttributions : [],
     };
+  }
+
+  requireActiveProfile() {
+    return resolveGlobalActiveProfile(this);
   }
 
   async routePreparedInbound({ bindingKey, workspaceRoot, prepared }) {
@@ -1136,10 +1212,9 @@ class CyberbossApp {
     const context = threadState?.context?.runtimeId === runtimeName
       ? threadState.context
       : this.threadStateStore.getLatestContext(runtimeName);
-    const runtimeParams = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
-    const storedModel = runtimeParams.model || "";
-    const storedModelProvider = runtimeParams.modelProvider || this.runtimeAdapter.describe().modelProvider || "";
-    const effectiveModel = this.runtimeAdapter.describe().model || storedModel;
+    const activeProfile = resolveGlobalActiveProfile(this, { sessionStore, bindingKey, workspaceRoot });
+    const effectiveModel = activeProfile.modelId;
+    const storedModelProvider = activeProfile.providerId;
 
     const lines = [
       `📍 workspace: ${workspaceRoot}`,
@@ -1204,12 +1279,12 @@ class CyberbossApp {
         contextToken: normalized.contextToken,
         provider: normalized.provider,
       });
-      const runtimeParams = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
+      const activeProfile = resolveGlobalActiveProfile(this, { sessionStore, bindingKey, workspaceRoot });
       await this.runtimeAdapter.refreshThreadInstructions({
         threadId,
         workspaceRoot,
-        model: runtimeParams.model,
-        modelProvider: runtimeParams.modelProvider,
+        model: activeProfile.modelId,
+        modelProvider: activeProfile.providerId,
       });
     } catch (error) {
       await this.channelAdapter.sendText({
@@ -1247,7 +1322,7 @@ class CyberbossApp {
       await this.runtimeAdapter.compactThread({
         threadId,
         workspaceRoot,
-        model: sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model,
+        model: resolveGlobalActiveProfile(this, { sessionStore, bindingKey, workspaceRoot }).modelId,
       }).then((result) => {
         const compactTurnId = normalizeCommandArgument(result?.turnId);
         if (compactTurnId) {
@@ -1290,12 +1365,12 @@ class CyberbossApp {
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
     const sessionStore = this.runtimeAdapter.getSessionStore();
-    const runtimeParams = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
+    const activeProfile = resolveGlobalActiveProfile(this, { sessionStore, bindingKey, workspaceRoot });
     const resumed = await this.runtimeAdapter.resumeThread({
       threadId: targetThreadId,
       workspaceRoot,
-      model: runtimeParams.model,
-      modelProvider: runtimeParams.modelProvider,
+      model: activeProfile.modelId,
+      modelProvider: activeProfile.providerId,
     });
     sessionStore.setThreadIdForWorkspace(
       bindingKey,
@@ -1449,54 +1524,21 @@ class CyberbossApp {
   }
 
   async handleModelCommand(normalized, command) {
-    const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
-      workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
-      senderId: normalized.senderId,
-    });
-    const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
     const query = normalizeCommandArgument(command.args);
-    const sessionStore = this.runtimeAdapter.getSessionStore();
-    const catalog = sessionStore.getAvailableModelCatalog();
-    const currentModel = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model;
-
-    if (!query) {
-      const lines = [
-        `Current model: ${currentModel || "(default)"}`,
-      ];
-      if (catalog?.models?.length) {
-        lines.push(`Available models: ${catalog.models.map((item) => item.model).join(", ")}`);
-      } else {
-        lines.push("Available models: (not available)");
-      }
-      await this.channelAdapter.sendText({
-        userId: normalized.senderId,
-        text: lines.join("\n"),
-        contextToken: normalized.contextToken,
-      });
-      return;
-    }
-
-    const runtimeId = this.runtimeAdapter.describe().id || "runtime";
-    let matched = findModelByQuery(catalog?.models || [], query);
-    if (!matched && runtimeId !== "codex" && !catalog?.models?.length) {
-      matched = { model: query };
-    }
-    if (!matched) {
-      await this.channelAdapter.sendText({
-        userId: normalized.senderId,
-        text: `❌ Model not found\n${query}`,
-        contextToken: normalized.contextToken,
-      });
-      return;
-    }
-
-    sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, {
-      model: matched.model,
-    });
+    const profile = this.activeProfile || this.profileStore?.getActive?.() || null;
+    const runtime = this.runtimeAdapter?.describe?.() || {};
+    const lines = [
+      "Model selection is global and this command is read-only.",
+      `Profile: ${profile?.name || profile?.id || runtime.profileId || "(none)"}`,
+      `Runtime: ${profile?.runtimeId || runtime.id || "(none)"}`,
+      `Provider: ${profile?.providerId || runtime.provider || runtime.modelProvider || "(none)"}`,
+      `Model: ${profile?.modelId || runtime.model || "(none)"}`,
+      "Open Control Center → Models and APIs to verify and activate a different profile.",
+    ];
+    if (query) lines.push(`Requested value was not applied: ${query}`);
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Model switched\nworkspace: ${workspaceRoot}\nmodel: ${matched.model}`,
+      text: lines.join("\n"),
       contextToken: normalized.contextToken,
     });
   }
@@ -2403,4 +2445,49 @@ function stringifyRpcId(value) {
 
 function hasRpcId(value) {
   return stringifyRpcId(value) !== "";
+}
+
+function withUsageProfile(event, profileId) {
+  if (event?.type !== "runtime.turn.completed" || !event.payload?.usage || !normalizeText(profileId)) {
+    return event;
+  }
+  return {
+    ...event,
+    payload: {
+      ...event.payload,
+      profileId: normalizeText(profileId),
+    },
+  };
+}
+
+function resolveGlobalActiveProfile(app, { sessionStore = null, bindingKey = "", workspaceRoot = "" } = {}) {
+  if (app?.profileStore && typeof app.profileStore.getActive === "function") {
+    const active = app.profileStore.getActive();
+    const startupProfile = app.activeProfile;
+    const changedSinceStartup = startupProfile && (
+      active?.id !== startupProfile.id
+      || active?.runtimeId !== startupProfile.runtimeId
+      || active?.modelId !== startupProfile.modelId
+      || active?.secretGeneration !== startupProfile.secretGeneration
+    );
+    if (!active || active.status !== "verified" || changedSinceStartup) {
+      throw Object.assign(new Error("The global active model profile is unavailable. Open Control Center to verify and activate one. [NO_ACTIVE_ENGINE]"), {
+        code: "NO_ACTIVE_ENGINE",
+      });
+    }
+    return active;
+  }
+
+  // Prototype-level unit fixtures created before global profiles existed do not
+  // construct a ProviderProfileStore. Production CyberbossApp instances always do.
+  const runtime = app?.runtimeAdapter?.describe?.() || {};
+  const legacyParams = sessionStore?.getRuntimeParamsForWorkspace?.(bindingKey, workspaceRoot) || {};
+  return {
+    id: normalizeText(app?.activeProfile?.id || runtime.profileId) || "test-runtime-profile",
+    name: normalizeText(app?.activeProfile?.name),
+    status: "verified",
+    runtimeId: normalizeText(app?.activeProfile?.runtimeId || runtime.id) || "runtime",
+    providerId: normalizeText(app?.activeProfile?.providerId || runtime.provider || runtime.modelProvider || legacyParams.modelProvider),
+    modelId: normalizeText(app?.activeProfile?.modelId || runtime.model || legacyParams.model),
+  };
 }

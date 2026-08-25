@@ -170,16 +170,9 @@ const COMMAND_GROUPS = [
     actions: [
       {
         action: "model.inspect",
-        summary: "Inspect the current model",
+        summary: "Inspect the global active model and open Control Center to change it",
         terminal: [],
         weixin: ["/model"],
-        status: "active",
-      },
-      {
-        action: "model.select",
-        summary: "Switch to a specific model",
-        terminal: [],
-        weixin: ["/model <id>"],
         status: "active",
       },
       {
@@ -332,8 +325,7 @@ function actionEmoji(action) {
     case "approval.accept_once": return "✅";
     case "approval.accept_workspace": return "💡";
     case "approval.reject_once": return "❌";
-    case "model.inspect":
-    case "model.select": return "🤖";
+    case "model.inspect": return "🤖";
     case "app.help": return "❓";
     case "app.star": return "⭐️";
     default: return "•";

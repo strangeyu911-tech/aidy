@@ -6,9 +6,10 @@ const {
   customHeaders,
   emitDelta,
   iterateSse,
+  imageContent,
   joinUrl,
   jsonHeaders,
-  normalizeMessage,
+  normalizeMessages,
   normalizeModels,
   normalizeTools,
   normalizedResult,
@@ -39,7 +40,7 @@ async function listModels(requestContext, signal) {
 }
 
 async function streamTurn(requestContext, { messages = [], tools = [], signal, onDelta } = {}) {
-  const normalizedMessages = messages.map(normalizeMessage);
+  const normalizedMessages = await normalizeMessages(messages);
   const normalizedTools = normalizeTools(tools);
   const system = normalizedMessages.filter((message) => message.role === "system").map(textContent).join("\n\n");
   const body = {
@@ -111,6 +112,12 @@ function anthropicMessages(messages) {
     }
     const content = [];
     if (textContent(message)) content.push({ type: "text", text: textContent(message) });
+    for (const image of imageContent(message)) {
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: image.mimeType, data: image.data },
+      });
+    }
     if (message.role === "assistant") {
       for (const call of message.toolCalls) {
         content.push({ type: "tool_use", id: call.id, name: call.name, input: call.arguments });

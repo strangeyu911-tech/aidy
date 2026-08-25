@@ -3,6 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const { createProtocolClient } = require("../src/adapters/runtime/api/protocol-client");
 
@@ -196,6 +199,47 @@ test("ollama client maps newline-delimited JSON text and tool calls", async (t) 
   assert.match(result.toolCalls[0].id, /^ollama-call-/);
   assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 2 });
   assert.equal(server.requests[0].url, "/api/chat");
+});
+
+test("every built-in protocol materializes saved image attachments only at request time", async (t) => {
+  const server = await startServer((request, response) => {
+    if (request.url === "/api/chat") {
+      sendChunks(response, "application/x-ndjson", ['{"message":{"content":"ok"},"done":true}\n']);
+    } else if (request.url === "/v1/messages") {
+      sendChunks(response, "text/event-stream", ['data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n']);
+    } else if (request.url.includes(":streamGenerateContent")) {
+      sendChunks(response, "text/event-stream", ['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n']);
+    } else if (request.url === "/responses") {
+      sendChunks(response, "text/event-stream", [
+        'event: response.output_text.delta\ndata: {"delta":"ok"}\n\n',
+        'event: response.completed\ndata: {"response":{"usage":{}}}\n\n',
+      ]);
+    } else {
+      sendChunks(response, "text/event-stream", ['data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n']);
+    }
+  });
+  t.after(server.close);
+  const imageDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-protocol-image-"));
+  const imagePath = path.join(imageDir, "pixel.png");
+  const imageBytes = Buffer.from("synthetic-image-bytes");
+  fs.writeFileSync(imagePath, imageBytes);
+  const attachment = { filePath: imagePath, contentType: "image/png", isImage: true };
+
+  for (const protocolId of ["openai-chat", "openai-responses", "anthropic-messages", "gemini", "ollama"]) {
+    const client = createProtocolClient({ profile: profile(protocolId, server.url), secrets: {} });
+    await client.streamTurn({ messages: [{ role: "user", content: "describe", attachments: [attachment] }] });
+  }
+
+  const base64 = imageBytes.toString("base64");
+  assert.equal(server.requests[0].body.messages[0].content[1].image_url.url, `data:image/png;base64,${base64}`);
+  assert.equal(server.requests[1].body.input[0].content[1].image_url, `data:image/png;base64,${base64}`);
+  assert.deepEqual(server.requests[2].body.messages[0].content[1], {
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data: base64 },
+  });
+  assert.deepEqual(server.requests[3].body.contents[0].parts[1], { inlineData: { mimeType: "image/png", data: base64 } });
+  assert.deepEqual(server.requests[4].body.messages[0].images, [base64]);
+  assert.equal(JSON.stringify([{ role: "user", content: "describe", attachments: [attachment] }]).includes(base64), false);
 });
 
 test("listModels uses each provider's live endpoint and normalized model shape", async (t) => {

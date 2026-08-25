@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("node:fs/promises");
+
 const { getProviderPreset } = require("../../../services/provider-catalog");
 
 const DEFAULT_OVERALL_TIMEOUT_MS = 60_000;
@@ -280,6 +282,19 @@ function normalizeMessage(message) {
   };
 }
 
+async function normalizeMessages(messages) {
+  const normalized = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const item = normalizeMessage(message);
+    if (item.role === "user") {
+      const images = await materializeImageAttachments(message.attachments);
+      if (images.length) item.content = [...item.content, ...images];
+    }
+    normalized.push(item);
+  }
+  return normalized;
+}
+
 function normalizeContent(value) {
   if (typeof value === "string") return value ? [{ type: "text", text: value }] : [];
   if (!Array.isArray(value)) return [];
@@ -287,8 +302,41 @@ function normalizeContent(value) {
     if (typeof item === "string") return { type: "text", text: item };
     if (!isRecord(item)) return null;
     if (item.type === "text") return { type: "text", text: String(item.text ?? "") };
+    if (item.type === "image" && normalizeText(item.mimeType) && normalizeText(item.data)) {
+      return { type: "image", mimeType: normalizeText(item.mimeType), data: normalizeText(item.data) };
+    }
     return { ...item };
   }).filter(Boolean);
+}
+
+async function materializeImageAttachments(attachments) {
+  const result = [];
+  for (const attachment of Array.isArray(attachments) ? attachments : []) {
+    if (!isImageAttachment(attachment)) continue;
+    const filePath = normalizeText(attachment?.filePath || attachment?.absolutePath || attachment?.path);
+    if (!filePath) throw protocolError("IMAGE_UNAVAILABLE", "An image attachment has no saved local path.");
+    let bytes;
+    try {
+      bytes = await fs.readFile(filePath);
+    } catch {
+      throw protocolError("IMAGE_UNAVAILABLE", "A saved image attachment could not be reopened.");
+    }
+    result.push({
+      type: "image",
+      mimeType: normalizeText(attachment?.mimeType || attachment?.contentType || attachment?.mime) || "image/jpeg",
+      data: bytes.toString("base64"),
+    });
+  }
+  return result;
+}
+
+function imageContent(message) {
+  return normalizeContent(message?.content).filter((item) => item.type === "image");
+}
+
+function isImageAttachment(value) {
+  const mimeType = normalizeText(value?.mimeType || value?.contentType || value?.mime).toLowerCase();
+  return value?.isImage === true || mimeType.startsWith("image/") || normalizeText(value?.kind).toLowerCase() === "image";
 }
 
 function normalizeTools(tools) {
@@ -470,6 +518,7 @@ module.exports = {
   joinUrl,
   jsonHeaders,
   normalizeMessage,
+  normalizeMessages,
   normalizeModels,
   normalizeTools,
   normalizedResult,
@@ -479,4 +528,5 @@ module.exports = {
   performStreamRequest,
   protocolError,
   textContent,
+  imageContent,
 };

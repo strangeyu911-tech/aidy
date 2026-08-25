@@ -218,14 +218,28 @@ function sanitizeEvent(value) {
       .filter(([key]) => !IMAGE_PAYLOAD_KEY.test(key))
       .map(([key, item]) => [key, sanitizeValue(item, key)]),
   );
-  sanitized.image = {
+  const suppliedMetadata = normalizeImageMetadata(source.imageMetadata);
+  delete sanitized.imageMetadata;
+  sanitized.image = bytes.length ? {
+      mimeType: normalizeText(source.mimeType) || suppliedMetadata.mimeType || "application/octet-stream",
+      byteLength: bytes.length,
+      ...(positiveInteger(source.width) ? { width: positiveInteger(source.width) } : {}),
+      ...(positiveInteger(source.height) ? { height: positiveInteger(source.height) } : {}),
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    } : suppliedMetadata;
+  return sanitized;
+}
+
+function normalizeImageMetadata(value) {
+  const source = isRecord(value) ? value : {};
+  const sha256 = normalizeText(source.sha256).toLowerCase();
+  return {
     mimeType: normalizeText(source.mimeType) || "application/octet-stream",
-    byteLength: bytes.length,
+    byteLength: positiveInteger(source.byteLength),
     ...(positiveInteger(source.width) ? { width: positiveInteger(source.width) } : {}),
     ...(positiveInteger(source.height) ? { height: positiveInteger(source.height) } : {}),
-    sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    ...(sha256 && /^[a-f0-9]{64}$/.test(sha256) ? { sha256 } : {}),
   };
-  return sanitized;
 }
 
 function sanitizeValue(value, key = "") {

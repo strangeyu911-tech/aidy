@@ -79,6 +79,25 @@ test("diagnostic vision capture omits image bytes and base64 payloads", async ()
   });
 });
 
+test("diagnostic vision capture accepts pre-hashed metadata without receiving original image bytes", async () => {
+  const capture = new DiagnosticCapture({ stateDir: makeStateDir(), protector: makeProtector() });
+  const digest = crypto.createHash("sha256").update("original-kept-outside-capture").digest("hex");
+  await capture.enable({ scope: "connection-test", durationMs: 60_000 });
+  await capture.record({
+    kind: "vision",
+    phase: "request",
+    imageMetadata: { mimeType: "image/webp", byteLength: 42, width: 20, height: 10, sha256: digest },
+    requestText: "describe the saved attachment",
+  });
+  assert.deepEqual((await capture.read())[0].image, {
+    mimeType: "image/webp",
+    byteLength: 42,
+    width: 20,
+    height: 10,
+    sha256: digest,
+  });
+});
+
 test("capture never records credentials or authorization values", async () => {
   const capture = new DiagnosticCapture({ stateDir: makeStateDir(), protector: makeProtector() });
   await capture.enable({ scope: "connection-test", durationMs: 60_000 });

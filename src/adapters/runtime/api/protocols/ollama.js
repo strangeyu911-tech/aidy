@@ -6,9 +6,10 @@ const {
   customHeaders,
   emitDelta,
   iterateJsonLines,
+  imageContent,
   joinUrl,
   jsonHeaders,
-  normalizeMessage,
+  normalizeMessages,
   normalizeModels,
   normalizeTools,
   normalizedResult,
@@ -35,7 +36,7 @@ async function listModels(requestContext, signal) {
 }
 
 async function streamTurn(requestContext, { messages = [], tools = [], signal, onDelta } = {}) {
-  const normalizedMessages = messages.map(normalizeMessage);
+  const normalizedMessages = await normalizeMessages(messages);
   const normalizedTools = normalizeTools(tools);
   const body = {
     model: requestContext.profile.modelId,
@@ -81,6 +82,8 @@ function ollamaMessage(message) {
     return { role: "tool", content: textContent(message), tool_call_id: message.toolCallId };
   }
   const result = { role: message.role, content: textContent(message) };
+  const images = imageContent(message);
+  if (images.length) result.images = images.map((image) => image.data);
   if (message.role === "assistant" && message.toolCalls.length) {
     result.tool_calls = message.toolCalls.map((call) => ({
       id: call.id,

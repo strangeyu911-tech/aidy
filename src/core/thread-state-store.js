@@ -71,6 +71,15 @@ class ThreadStateStore {
         next.status = "idle";
         next.turnId = event.payload.turnId || next.turnId;
         next.pendingApproval = null;
+        if (event.payload.profileId && event.payload.usage) {
+          next.usage = mergeUsageAttribution(next.usage, {
+            kind: "main",
+            operationId: event.payload.turnId || "",
+            turnId: event.payload.turnId || "",
+            profileId: event.payload.profileId,
+            tokens: event.payload.usage,
+          });
+        }
         break;
       case "runtime.turn.failed":
         next.status = "failed";
@@ -87,6 +96,20 @@ class ThreadStateStore {
 
   getThreadState(threadId) {
     return this.stateByThreadId.get(threadId) || null;
+  }
+
+  recordUsage(threadId, attribution) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    const profileId = normalizeProfileId(attribution?.profileId);
+    if (!normalizedThreadId || !profileId) return null;
+    const current = this.stateByThreadId.get(normalizedThreadId) || createEmptyThreadState(normalizedThreadId);
+    const next = {
+      ...current,
+      usage: mergeUsageAttribution(current.usage, { ...attribution, profileId }),
+      updatedAt: new Date().toISOString(),
+    };
+    this.stateByThreadId.set(normalizedThreadId, next);
+    return next.usage;
   }
 
   resolveApproval(threadId, status = "running") {
@@ -127,8 +150,60 @@ function createEmptyThreadState(threadId) {
     lastError: "",
     context: null,
     pendingApproval: null,
+    usage: emptyUsage(),
     updatedAt: new Date().toISOString(),
   };
+}
+
+function mergeUsageAttribution(current, attribution) {
+  const usage = current && typeof current === "object" ? current : emptyUsage();
+  const profileId = normalizeProfileId(attribution?.profileId);
+  if (!profileId) return usage;
+  const tokens = normalizeUsage(attribution?.tokens);
+  const byProfile = { ...(usage.byProfile || {}) };
+  byProfile[profileId] = addUsage(byProfile[profileId], tokens);
+  return {
+    total: addUsage(usage.total, tokens),
+    byProfile,
+    operations: [
+      ...(Array.isArray(usage.operations) ? usage.operations : []),
+      {
+        kind: normalizeProfileId(attribution?.kind) || "model",
+        operationId: normalizeThreadId(attribution?.operationId),
+        turnId: normalizeThreadId(attribution?.turnId),
+        parentTurnId: normalizeThreadId(attribution?.parentTurnId),
+        profileId,
+        tokens,
+      },
+    ],
+  };
+}
+
+function emptyUsage() {
+  return { total: { inputTokens: 0, outputTokens: 0 }, byProfile: {}, operations: [] };
+}
+
+function addUsage(left, right) {
+  return {
+    inputTokens: normalizeTokenCount(left?.inputTokens) + normalizeTokenCount(right?.inputTokens),
+    outputTokens: normalizeTokenCount(left?.outputTokens) + normalizeTokenCount(right?.outputTokens),
+  };
+}
+
+function normalizeUsage(value) {
+  return {
+    inputTokens: normalizeTokenCount(value?.inputTokens),
+    outputTokens: normalizeTokenCount(value?.outputTokens),
+  };
+}
+
+function normalizeTokenCount(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function normalizeProfileId(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function normalizeRuntimeId(value) {

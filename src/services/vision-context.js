@@ -3,14 +3,23 @@ const fs = require("fs/promises");
 const DEFAULT_VISION_TIMEOUT_MS = 30_000;
 const DEFAULT_VISION_PROMPT = "Describe this image concisely for a text-only assistant. Include visible text, people, objects, scene context, and whether it looks like a reusable chat sticker.";
 
-async function resolveVisionContext({ prepared, config = {}, runtimeAdapter = null, model = "" }) {
+async function resolveVisionContext({
+  prepared,
+  config = {},
+  runtimeAdapter = null,
+  model = "",
+  visionFallback = null,
+  parentTurn = {},
+  signal,
+}) {
   const attachments = Array.isArray(prepared?.attachments) ? prepared.attachments : [];
   const images = attachments.filter((item) => isImageAttachmentItem(item));
   if (!images.length) {
     return emptyVisionContext("none");
   }
 
-  const mode = normalizeVisionMode(config.visionMode);
+  const usesProfileFallback = Boolean(visionFallback && typeof visionFallback.describeAttachment === "function");
+  const mode = usesProfileFallback ? "auto" : normalizeVisionMode(config.visionMode);
   if (mode === "off") {
     return emptyVisionContext("none");
   }
@@ -47,6 +56,10 @@ async function resolveVisionContext({ prepared, config = {}, runtimeAdapter = nu
     };
   }
 
+  if (usesProfileFallback) {
+    return describeImagesWithProfile({ images, visionFallback, parentTurn, signal });
+  }
+
   if (!isCaptionProviderConfigured(config)) {
     return {
       route: "none",
@@ -60,6 +73,45 @@ async function resolveVisionContext({ prepared, config = {}, runtimeAdapter = nu
   }
 
   return captionImages({ images, config });
+}
+
+async function describeImagesWithProfile({ images, visionFallback, parentTurn, signal }) {
+  const items = [];
+  const errors = [];
+  const usageAttributions = [];
+  for (const image of images) {
+    const result = await visionFallback.describeAttachment({ attachment: image, parentTurn, signal });
+    if (!result?.ok) {
+      errors.push({
+        ...pickAttachmentLabel(result?.attachment || image),
+        reason: result?.error?.message || "The image could not be processed.",
+        code: result?.error?.code || "VISION_PROCESSING_FAILED",
+      });
+      return {
+        route: "none",
+        items: [],
+        errors,
+        runtimeAttachments: [],
+        usageAttributions,
+        blockingError: {
+          code: "VISION_PROCESSING_FAILED",
+          message: result?.error?.message || "The image could not be processed.",
+        },
+      };
+    }
+    items.push({
+      ...pickAttachmentLabel(result.attachment || image),
+      description: result.description,
+    });
+    if (result.usage) usageAttributions.push(result.usage);
+  }
+  return {
+    route: "caption",
+    items,
+    errors,
+    runtimeAttachments: [],
+    usageAttributions,
+  };
 }
 
 async function captionImages({ images, config }) {
