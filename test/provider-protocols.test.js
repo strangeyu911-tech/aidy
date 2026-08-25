@@ -285,3 +285,40 @@ test("unsupported protocols fail explicitly and never fall back to Codex", () =>
     (error) => error.code === "UNSUPPORTED_PROTOCOL",
   );
 });
+
+test("rejected asynchronous diagnostic capture never fails a successful provider request", async (t) => {
+  const server = await startServer((_request, response) => {
+    sendChunks(response, "text/event-stream", [
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+  });
+  t.after(server.close);
+
+  for (const captureKind of ["function", "object"]) {
+    await t.test(captureKind, async () => {
+      let handledRejections = 0;
+      const rejectCapture = () => {
+        const rejected = Promise.reject(new Error("synthetic capture failure"));
+        const originalThen = rejected.then.bind(rejected);
+        rejected.then = (onFulfilled, onRejected) => {
+          if (typeof onRejected === "function") handledRejections += 1;
+          return originalThen(onFulfilled, onRejected);
+        };
+        return rejected;
+      };
+      const capture = captureKind === "function" ? rejectCapture : { record: rejectCapture };
+      const client = createProtocolClient({
+        profile: profile("openai-chat", server.url),
+        secrets: {},
+        capture,
+      });
+
+      const result = await client.streamTurn({ messages: [{ role: "user", content: "ping" }] });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(result.message.content[0].text, "ok");
+      assert.equal(handledRejections, 2);
+    });
+  }
+});

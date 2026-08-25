@@ -427,8 +427,12 @@ function readHeader(headers, name) {
 
 function recordCapture(capture, type, metadata) {
   try {
-    if (typeof capture === "function") capture({ type, ...metadata });
-    else if (typeof capture?.record === "function") capture.record({ type, ...metadata });
+    let result;
+    if (typeof capture === "function") result = capture({ type, ...metadata });
+    else if (typeof capture?.record === "function") result = capture.record({ type, ...metadata });
+    if (result && typeof result.then === "function") {
+      Promise.resolve(result).then(undefined, () => {});
+    }
   } catch {}
 }
 
