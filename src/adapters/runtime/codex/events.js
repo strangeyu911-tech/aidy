@@ -76,6 +76,20 @@ function mapCodexMessageToRuntimeEvent(message) {
     };
   }
 
+  if (new Set(["item/started", "item/completed"]).has(method) && isMcpToolItem(params?.item)) {
+    const item = params.item;
+    return {
+      type: method === "item/started" ? "runtime.tool.started" : "runtime.tool.completed",
+      payload: {
+        threadId,
+        turnId,
+        toolCallId: normalizeString(item?.id || params?.itemId),
+        toolName: normalizeMcpToolName(item),
+        ...(method === "item/completed" ? { isError: mcpToolFailed(item) } : {}),
+      },
+    };
+  }
+
   if (method === "item/completed" && normalizeString(params?.item?.type).toLowerCase() === "agentmessage") {
     const text = extractAssistantText(params);
     return {
@@ -311,6 +325,22 @@ function formatToolParamValue(value) {
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function isMcpToolItem(item) {
+  const type = normalizeString(item?.type).replace(/[^a-z]/gi, "").toLowerCase();
+  return type === "mcptoolcall";
+}
+
+function normalizeMcpToolName(item) {
+  const server = normalizeString(item?.server || item?.serverName || item?.server_name);
+  const tool = normalizeString(item?.tool || item?.toolName || item?.tool_name || item?.name);
+  return server && tool ? `mcp__${server}__${tool}` : tool;
+}
+
+function mcpToolFailed(item) {
+  const status = normalizeString(item?.status).toLowerCase();
+  return Boolean(item?.error) || new Set(["failed", "error", "cancelled"]).has(status);
 }
 
 function normalizeLineEndings(value) {

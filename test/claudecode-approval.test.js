@@ -7,8 +7,42 @@ const fs = require("node:fs");
 const { CyberbossApp } = require("../src/core/app");
 const { mapClaudeCodeMessageToRuntimeEvent } = require("../src/adapters/runtime/claudecode/events");
 const { createClaudeCodeRuntimeAdapter } = require("../src/adapters/runtime/claudecode");
-const { ClaudeCodeProcessClient } = require("../src/adapters/runtime/claudecode/process-client");
+const { ClaudeCodeProcessClient, buildArgs } = require("../src/adapters/runtime/claudecode/process-client");
 const { SessionStore } = require("../src/adapters/runtime/codex/session-store");
+
+test("claudecode normalizes native tool use and result without forwarding output", () => {
+  const started = mapClaudeCodeMessageToRuntimeEvent({
+    type: "tool.use", sessionId: "thread-1", turnId: "turn-1", toolCallId: "tool-1",
+    toolName: "mcp__cyberboss_verifier__cyberboss_capability_echo",
+  });
+  const completed = mapClaudeCodeMessageToRuntimeEvent({
+    type: "tool.result", sessionId: "thread-1", turnId: "turn-1", toolCallId: "tool-1",
+    toolName: "mcp__cyberboss_verifier__cyberboss_capability_echo", toolResult: "private", isError: false,
+  });
+  assert.equal(started.type, "runtime.tool.started");
+  assert.deepEqual(completed, {
+    type: "runtime.tool.completed",
+    payload: {
+      threadId: "thread-1", turnId: "turn-1", toolCallId: "tool-1",
+      toolName: "mcp__cyberboss_verifier__cyberboss_capability_echo", isError: false,
+    },
+  });
+  assert.equal(JSON.stringify(completed).includes("private"), false);
+});
+
+test("claudecode verification CLI loads only the dedicated MCP tool", () => {
+  const tool = "mcp__cyberboss_verifier__cyberboss_capability_echo";
+  const args = buildArgs({
+    model: "claude-test",
+    permissionMode: "default",
+    disableVerbose: true,
+    mcpConfigPaths: ["C:/verification/.mcp.json"],
+    extraArgs: ["--strict-mcp-config", "--tools", tool, "--allowedTools", tool],
+  });
+  assert.equal(args.includes("--strict-mcp-config"), true);
+  assert.deepEqual(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2), ["--tools", tool]);
+  assert.deepEqual(args.slice(args.indexOf("--allowedTools"), args.indexOf("--allowedTools") + 2), ["--allowedTools", tool]);
+});
 
 test("claudecode approval events extract command tokens from exec_command input", () => {
   const event = mapClaudeCodeMessageToRuntimeEvent({

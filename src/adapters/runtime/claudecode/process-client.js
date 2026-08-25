@@ -22,6 +22,7 @@ class ClaudeCodeProcessClient {
     this.activeThreadId = "";
     this.alive = false;
     this.sessionWaiters = new Set();
+    this.pendingToolNames = new Map();
     this.suppressNextCloseEvent = false;
   }
 
@@ -173,9 +174,12 @@ class ClaudeCodeProcessClient {
       } else if (itemType === "tool_use") {
         const toolName = typeof item.name === "string" ? item.name : "";
         if (toolName === "AskUserQuestion") continue;
+        const toolCallId = typeof item.id === "string" ? item.id : "";
+        if (toolCallId && toolName) this.pendingToolNames.set(toolCallId, toolName);
         this.emit({
           type: "tool.use",
           toolName,
+          toolCallId,
           input: item.input || {},
           turnId: this.pendingTurnId,
           sessionId: this.activeThreadId || this.sessionId,
@@ -199,13 +203,17 @@ class ClaudeCodeProcessClient {
       if (item.type === "tool_result") {
         const isError = Boolean(item.is_error);
         const resultText = typeof item.content === "string" ? item.content : "";
+        const toolCallId = typeof item.tool_use_id === "string" ? item.tool_use_id : "";
         this.emit({
           type: "tool.result",
+          toolCallId,
+          toolName: this.pendingToolNames.get(toolCallId) || "",
           toolResult: resultText,
           isError,
           turnId: this.pendingTurnId,
           sessionId: this.activeThreadId || this.sessionId,
         }, raw);
+        if (toolCallId) this.pendingToolNames.delete(toolCallId);
       }
     }
   }
@@ -224,6 +232,7 @@ class ClaudeCodeProcessClient {
       text: typeof raw.result === "string" ? raw.result.trim() : "",
     }, raw);
     this.pendingTurnId = "";
+    this.pendingToolNames.clear();
     this.activeThreadId = "";
   }
 
@@ -441,4 +450,4 @@ function isPotentiallySensitive(text) {
   return SENSITIVE_KEYWORDS.test(text) || SENSITIVE_PATTERNS.test(text);
 }
 
-module.exports = { ClaudeCodeProcessClient };
+module.exports = { ClaudeCodeProcessClient, buildArgs };

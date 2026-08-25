@@ -16,6 +16,8 @@ const { createTimelineIntegration } = require("../integrations/timeline");
 const { ZhijiantimeClient, ZhijiantimeSyncService } = require("../integrations/zhijiantime");
 const { BackupService } = require("../services/backup-service");
 const { createOpenCodeRuntimeAdapter } = require("../adapters/runtime/opencode");
+const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
+const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
 const { ProviderCatalog } = require("../services/provider-catalog");
 const { ProviderVerifier } = require("../services/provider-verifier");
 const { CredentialVault } = require("../security/credential-vault");
@@ -28,6 +30,7 @@ const {
 const { RecordsService } = require("./records-service");
 const { ReportScheduler } = require("./report-scheduler");
 const { RuntimeSupervisor } = require("./runtime-supervisor");
+const { RuntimeProfileVerifier } = require("./runtime-profile-verifier");
 const { SupervisionDispatcher } = require("./supervision-dispatcher");
 const { WindowsTaskService } = require("./windows-task-service");
 
@@ -64,6 +67,12 @@ const providerVerifier = new ProviderVerifier({
   credentialVault,
   capture: diagnosticCapture,
 });
+const runtimeProfileVerifier = new RuntimeProfileVerifier({
+  profileStore,
+  credentialVault,
+  stateDir,
+  adapterFactory: createVerificationRuntimeAdapter,
+});
 const modelSettingsService = new ModelSettingsService({
   profileStore,
   credentialVault,
@@ -71,7 +80,7 @@ const modelSettingsService = new ModelSettingsService({
   verifier: providerVerifier,
   supervisor,
   diagnosticCapture,
-  runtimeVerifier: verifyOptionalRuntimeProfile,
+  runtimeVerifier: (profileId) => runtimeProfileVerifier.verify(profileId),
 });
 const dispatcher = new SupervisionDispatcher({ config, desktopStateStore: stateStore, planStore, logger });
 const reportLogger = new ComponentLogger({ logDir, component: "reports" });
@@ -361,35 +370,67 @@ async function listOpenCodeCatalog(profile, secrets, options = {}) {
   }
 }
 
-async function verifyOptionalRuntimeProfile(profileId) {
-  const profile = profileStore.get(profileId);
-  if (!profile) return { ok: false, error: { code: "PROFILE_NOT_FOUND" } };
-  if (profile.runtimeId !== "opencode") return { ok: false, error: { code: "RUNTIME_VERIFIER_UNAVAILABLE" } };
-  const secretGeneration = credentialVault.getGeneration(profile.id);
-  const secrets = await credentialVault.read(profile.id) || {};
-  const adapter = createOpenCodeRuntimeAdapter({
-    config: { stateDir, workspaceRoot: rootDir },
-    profile: { ...profile, secretGeneration },
-    secrets,
-  });
-  try {
-    await adapter.initialize();
-    const capabilities = {
-      authentication: true,
-      modelAccess: true,
-      streaming: true,
-      tools: true,
-      toolContinuation: true,
-      cancellation: true,
-      imageInput: adapter.getTurnCapabilities().nativeImageInput,
-    };
-    const verified = profileStore.markVerified(profile.id, { secretGeneration, capabilities });
-    return { ok: true, capabilities, verifiedAt: verified.verifiedAt };
-  } catch (error) {
-    return { ok: false, error: { code: error.code || "OPENCODE_UNHEALTHY" } };
-  } finally {
-    await adapter.close();
+function createVerificationRuntimeAdapter({ profile, secrets, workspaceRoot, verification }) {
+  const sessionsFile = path.join(workspaceRoot, "verification-sessions.json");
+  if (profile.runtimeId === "opencode") {
+    return createOpenCodeRuntimeAdapter({
+      config: {
+        ...config,
+        stateDir: path.join(workspaceRoot, "opencode-state"),
+        workspaceRoot,
+        verificationMode: true,
+        endpoint: profile.baseUrl || config.opencodeEndpoint,
+      },
+      profile,
+      secrets,
+    });
   }
+  if (profile.runtimeId === "codex") {
+    return createCodexRuntimeAdapter({
+      ...config,
+      stateDir: workspaceRoot,
+      sessionsFile,
+      codexEndpoint: profile.baseUrl || config.codexEndpoint,
+      codexModel: profile.modelId,
+      codexModelProvider: profile.options?.modelProvider || "",
+      codexVerificationMode: true,
+      codexVerificationMcpServer: verification.mcpServer,
+    });
+  }
+  if (profile.runtimeId === "claudecode") {
+    const mcpConfigPath = writeClaudeVerificationConfig(workspaceRoot, verification.mcpServer);
+    return createClaudeCodeRuntimeAdapter({
+      ...config,
+      stateDir: workspaceRoot,
+      sessionsFile,
+      claudeModel: profile.modelId,
+      claudeVerificationMode: true,
+      claudeVerificationMcpConfigPath: mcpConfigPath,
+    });
+  }
+  throw Object.assign(new Error("Unsupported runtime verification profile."), { code: "UNSUPPORTED_RUNTIME" });
+}
+
+function writeClaudeVerificationConfig(workspaceRoot, mcpServer) {
+  if (!mcpServer?.command || !Array.isArray(mcpServer.args)) {
+    throw Object.assign(new Error("The verification MCP server is invalid."), { code: "RUNTIME_INCOMPATIBLE" });
+  }
+  const configPath = path.join(workspaceRoot, "claude-verification-mcp.json");
+  const document = {
+    mcpServers: {
+      cyberboss_verifier: {
+        command: mcpServer.command,
+        args: [...mcpServer.args],
+        ...(mcpServer.env && Object.keys(mcpServer.env).length ? { env: { ...mcpServer.env } } : {}),
+      },
+    },
+  };
+  fs.writeFileSync(configPath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+  const reopened = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  if (reopened?.mcpServers?.cyberboss_verifier?.command !== mcpServer.command) {
+    throw Object.assign(new Error("The isolated Claude verification config could not be reopened."), { code: "RUNTIME_CONFIG_WRITE_FAILED" });
+  }
+  return configPath;
 }
 
 function resolveWechatStatus(runtime) {

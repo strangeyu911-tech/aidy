@@ -83,6 +83,17 @@ function buildCodexMcpConfigArgs(mcpServerConfig) {
         `mcp_servers.${name}.tool_timeout_sec=${config.toolTimeoutSec}`,
       );
     }
+    if (config.env && typeof config.env === "object" && !Array.isArray(config.env)) {
+      const env = Object.fromEntries(Object.entries(config.env)
+        .map(([key, value]) => [normalizeMcpEnvName(key), normalizeNonEmptyString(value)])
+        .filter(([key, value]) => key && value));
+      if (Object.keys(env).length) {
+        output.push(
+          "-c",
+          `mcp_servers.${name}.env=${formatTomlInlineTable(env)}`,
+        );
+      }
+    }
     const autoApproveTools = Array.isArray(config.autoApproveTools)
       ? config.autoApproveTools
       : name === "cyberboss_tools"
@@ -164,6 +175,15 @@ function quoteTomlString(value) {
 
 function formatTomlArray(values) {
   return `[${values.map((value) => quoteTomlString(value)).join(",")}]`;
+}
+
+function formatTomlInlineTable(value) {
+  return `{${Object.entries(value).map(([key, item]) => `${key}=${quoteTomlString(item)}`).join(",")}}`;
+}
+
+function normalizeMcpEnvName(value) {
+  const normalized = normalizeNonEmptyString(value);
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized) ? normalized : "";
 }
 
 function normalizeNonEmptyString(value) {

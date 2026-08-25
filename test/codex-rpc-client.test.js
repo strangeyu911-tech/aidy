@@ -48,7 +48,24 @@ test("codex rpc client sends image attachments as local images", async () => {
     { type: "text", text: "what is this image?" },
     {
       type: "localImage",
-      path: "/tmp/cyberboss image.jpg",
+      path: path.join("/tmp", "cyberboss image.jpg"),
     },
   ]);
+});
+
+test("codex verification turns use a read-only sandbox with no approval escalation", async () => {
+  const client = new CodexRpcClient({ endpoint: "ws://127.0.0.1:8765", extraWritableRoots: ["/must-not-be-writable"] });
+  const calls = [];
+  client.sendRequest = async (method, params) => {
+    calls.push({ method, params });
+    return { result: { turn: { id: "turn-verify" } } };
+  };
+  await client.sendUserMessage({
+    threadId: "thread-verify",
+    text: "verify",
+    workspaceRoot: "/isolated",
+    accessMode: "verification-read-only",
+  });
+  assert.equal(calls[0].params.approvalPolicy, "never");
+  assert.deepEqual(calls[0].params.sandboxPolicy, { type: "readOnly" });
 });

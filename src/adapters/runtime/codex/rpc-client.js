@@ -411,6 +411,9 @@ function buildTurnStartParams({ threadId, input, model, modelProvider, effort, a
 
 function normalizeAccessMode(value) {
   const normalized = normalizeNonEmptyString(value).toLowerCase();
+  if (normalized === "verification-read-only") {
+    return normalized;
+  }
   if (normalized === "default") {
     return "current";
   }
@@ -418,6 +421,12 @@ function normalizeAccessMode(value) {
 }
 
 function buildExecutionPolicies(accessMode, workspaceRoot, extraWritableRoots = []) {
+  if (accessMode === "verification-read-only") {
+    return {
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "readOnly" },
+    };
+  }
   if (accessMode === "full-access") {
     return {
       approvalPolicy: "never",

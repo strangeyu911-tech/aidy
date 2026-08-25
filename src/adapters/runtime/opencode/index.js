@@ -366,6 +366,10 @@ function createOpenCodeRuntimeAdapter({
           providerID: normalizedProfile.providerId,
           modelID: normalizedProfile.modelId,
         },
+        ...(config.verificationMode === true ? {
+          system: "CyberBoss read-only capability verification. Use only the enabled glob tool. Do not attempt any write, command, network, or configuration operation.",
+          tools: { "*": false, glob: true },
+        } : {}),
         parts,
       }, { directory });
       return { threadId, turnId };
@@ -374,7 +378,9 @@ function createOpenCodeRuntimeAdapter({
       if (!initialized) await this.initialize({ signal });
       const normalizedThreadId = requireText(threadId, "THREAD_ID_REQUIRED", "A threadId is required.");
       await getClient().abortSession(normalizedThreadId, { signal });
-      return { threadId: normalizedThreadId, turnId: normalizeText(turnId) };
+      const normalizedTurnId = normalizeText(turnId);
+      emit(failureEvent(normalizedThreadId, normalizedTurnId, "CANCELLED"));
+      return { threadId: normalizedThreadId, turnId: normalizedTurnId };
     },
     async respondApproval({ requestId, decision, remember = false, threadId = "", signal } = {}) {
       if (!initialized) await this.initialize({ signal });
@@ -607,6 +613,21 @@ function mapOpenCodeEventToRuntimeEvent(event) {
   if (type === "message.part.updated") {
     const part = isRecord(properties.part) ? properties.part : {};
     const delta = typeof properties.delta === "string" ? properties.delta : "";
+    if (part.type === "tool") {
+      const state = isRecord(part.state) ? part.state : {};
+      const status = normalizeText(state.status).toLowerCase();
+      if (!new Set(["running", "completed", "error"]).has(status)) return null;
+      return {
+        type: status === "running" ? "runtime.tool.started" : "runtime.tool.completed",
+        payload: {
+          threadId: normalizeText(part.sessionID),
+          turnId: normalizeText(part.messageID),
+          toolCallId: normalizeText(part.callID || part.id),
+          toolName: normalizeText(part.tool),
+          ...(status === "running" ? {} : { isError: status === "error" }),
+        },
+      };
+    }
     if (part.type !== "text" || !delta) return null;
     return {
       type: "runtime.reply.delta",
@@ -635,6 +656,7 @@ function mapOpenCodeEventToRuntimeEvent(event) {
         reason: normalizeText(properties.title) || normalizeText(properties.type) || "OpenCode permission",
         command: normalizeText(properties.title) || normalizeText(properties.type),
         commandTokens,
+        toolName: normalizeText(properties.type),
       },
     };
   }

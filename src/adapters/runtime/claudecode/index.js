@@ -52,10 +52,16 @@ function createClaudeCodeRuntimeAdapter(config) {
       }
       await closeWorkspaceClient(workspaceRoot);
     }
-    const projectSettings = ensureClaudeProjectMcpConfig({
-      workspaceRoot,
-      cyberbossHome: process.env.CYBERBOSS_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
-    });
+    const verificationMode = config.claudeVerificationMode === true;
+    const projectSettings = verificationMode
+      ? {
+        configPath: requireVerificationConfigPath(config.claudeVerificationMcpConfigPath),
+        serverName: "cyberboss_verifier",
+      }
+      : ensureClaudeProjectMcpConfig({
+        workspaceRoot,
+        cyberbossHome: process.env.CYBERBOSS_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
+      });
     console.log(
       `[claudecode-runtime] workspace=${workspaceRoot} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`
     );
@@ -66,7 +72,13 @@ function createClaudeCodeRuntimeAdapter(config) {
       model: desiredModel,
       permissionMode: config.claudePermissionMode || "default",
       disableVerbose: Boolean(config.claudeDisableVerbose),
-      extraArgs: config.claudeExtraArgs || [],
+      extraArgs: verificationMode
+        ? [
+          "--strict-mcp-config",
+          "--tools", "mcp__cyberboss_verifier__cyberboss_capability_echo",
+          "--allowedTools", "mcp__cyberboss_verifier__cyberboss_capability_echo",
+        ]
+        : config.claudeExtraArgs || [],
       mcpConfigPaths: [projectSettings.configPath],
       ipcServer,
       workspaceRoot,
@@ -81,7 +93,17 @@ function createClaudeCodeRuntimeAdapter(config) {
         }
         return;
       }
-      const mapped = mapClaudeCodeMessageToRuntimeEvent(event, raw);
+      const mapped = verificationMode && event.type === "assistant.text"
+        ? {
+          type: "runtime.reply.delta",
+          payload: {
+            threadId: event.sessionId,
+            turnId: event.turnId,
+            itemId: `item-${event.turnId}`,
+            text: event.text,
+          },
+        }
+        : mapClaudeCodeMessageToRuntimeEvent(event, raw);
       if (mapped?.payload && !mapped.payload.workspaceRoot) {
         mapped.payload.workspaceRoot = workspaceRoot;
       }
@@ -228,12 +250,20 @@ function createClaudeCodeRuntimeAdapter(config) {
     async cancelTurn({ threadId, turnId, workspaceRoot }) {
       if (workspaceRoot) {
         await closeWorkspaceClient(workspaceRoot);
+        globalListener?.({
+          type: "runtime.turn.failed",
+          payload: { threadId, turnId, workspaceRoot, code: "CANCELLED", text: "The Claude Code turn was cancelled." },
+        }, null);
         return { threadId, turnId };
       }
       for (const [workspaceRoot, client] of clientsByWorkspace.entries()) {
         if (client.sessionId === threadId) {
           await client.close();
           clientsByWorkspace.delete(workspaceRoot);
+          globalListener?.({
+            type: "runtime.turn.failed",
+            payload: { threadId, turnId, workspaceRoot, code: "CANCELLED", text: "The Claude Code turn was cancelled." },
+          }, null);
           return { threadId, turnId };
         }
       }
@@ -286,7 +316,7 @@ function createClaudeCodeRuntimeAdapter(config) {
         attached = await attachClientToThread(workspaceRoot, "", desiredModel);
       }
       const { client, threadId: activeThreadId } = attached;
-      const outboundText = openingTurn ? buildOpeningTurnText(config, text) : text;
+      const outboundText = openingTurn && !config.claudeVerificationMode ? buildOpeningTurnText(config, text) : text;
       const outboundThreadId = activeThreadId || threadId;
       if (outboundThreadId) {
         sessionStore.setThreadIdForWorkspace(
@@ -387,6 +417,14 @@ function normalizeThreadId(value) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function requireVerificationConfigPath(value) {
+  const configPath = normalizeText(value);
+  if (!configPath || !fs.existsSync(configPath)) {
+    throw new Error("Claude Code verification requires an isolated MCP config file.");
+  }
+  return configPath;
 }
 
 function extractClaudeMessageModel(raw) {

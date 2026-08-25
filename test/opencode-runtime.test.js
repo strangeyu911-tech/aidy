@@ -9,7 +9,7 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 
 const { OpenCodeClient } = require("../src/adapters/runtime/opencode/client");
-const { createOpenCodeRuntimeAdapter } = require("../src/adapters/runtime/opencode");
+const { createOpenCodeRuntimeAdapter, mapOpenCodeEventToRuntimeEvent } = require("../src/adapters/runtime/opencode");
 
 function makeStateDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-opencode-test-"));
@@ -520,6 +520,53 @@ test("SSE session, message, permission, failure, abort, and permission reply map
   assert.deepEqual(JSON.parse(permissionRequest.body), { response: "always" });
   assert.equal(requests.some((request) => request.path.endsWith("/session/session-1/abort")), true);
   await adapter.close();
+});
+
+test("verification mode exposes only glob and normalizes native tool lifecycle without output", async () => {
+  const started = mapOpenCodeEventToRuntimeEvent({
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "part-tool", sessionID: "session-1", messageID: "turn-1", type: "tool",
+        tool: "glob", callID: "call-1", state: { status: "running", input: { pattern: "*.none" } },
+      },
+    },
+  });
+  const completed = mapOpenCodeEventToRuntimeEvent({
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "part-tool", sessionID: "session-1", messageID: "turn-1", type: "tool",
+        tool: "glob", callID: "call-1", state: { status: "completed", output: "sensitive-output" },
+      },
+    },
+  });
+  assert.deepEqual(started, {
+    type: "runtime.tool.started",
+    payload: { threadId: "session-1", turnId: "turn-1", toolCallId: "call-1", toolName: "glob" },
+  });
+  assert.deepEqual(completed, {
+    type: "runtime.tool.completed",
+    payload: { threadId: "session-1", turnId: "turn-1", toolCallId: "call-1", toolName: "glob", isError: false },
+  });
+  assert.equal(JSON.stringify(completed).includes("sensitive-output"), false);
+
+  const requests = [];
+  const adapter = createOpenCodeRuntimeAdapter({
+    config: { stateDir: makeStateDir(), verificationMode: true, fetchImpl: createFetchRouter(requests) },
+    profile: externalProfile(),
+    secrets: { servicePassword: "service-password" },
+  });
+  try {
+    await adapter.initialize();
+    await adapter.sendTurn({ bindingKey: "verify", workspaceRoot: process.cwd(), text: "verify" });
+    const prompt = requests.find((request) => request.path.includes("/prompt_async"));
+    const body = JSON.parse(prompt.body);
+    assert.deepEqual(body.tools, { "*": false, glob: true });
+    assert.match(body.system, /read-only capability verification/i);
+  } finally {
+    await adapter.close();
+  }
 });
 
 test("adapter sends dynamically selected provider/model and reports managed process exit without stderr leakage", async () => {

@@ -31,6 +31,27 @@ function mapClaudeCodeMessageToRuntimeEvent(message, raw) {
           text: message.text,
         },
       };
+    case "tool.use":
+      return {
+        type: "runtime.tool.started",
+        payload: {
+          threadId: message.sessionId,
+          turnId: message.turnId,
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+        },
+      };
+    case "tool.result":
+      return {
+        type: "runtime.tool.completed",
+        payload: {
+          threadId: message.sessionId,
+          turnId: message.turnId,
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          isError: message.isError === true,
+        },
+      };
     case "turn.completed":
       return {
         type: "runtime.turn.completed",

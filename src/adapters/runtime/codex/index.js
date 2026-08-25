@@ -1,4 +1,5 @@
 const { CodexRpcClient } = require("./rpc-client");
+const { EventEmitter } = require("node:events");
 const { buildOpeningTurnText, buildInstructionRefreshText } = require("../shared-instructions");
 const { mapCodexMessageToRuntimeEvent } = require("./events");
 const {
@@ -19,6 +20,7 @@ const {
 
 function createCodexRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "codex" });
+  const emitter = new EventEmitter();
   let client = null;
   let readyState = null;
   const configuredModel = normalizeText(config.codexModel);
@@ -36,15 +38,22 @@ function createCodexRuntimeAdapter(config) {
 
   function ensureClient() {
     if (!client) {
+      const verificationMode = config.codexVerificationMode === true;
       client = new CodexRpcClient({
         endpoint: config.codexEndpoint,
         codexCommand: config.codexCommand,
         env: process.env,
-        extraWritableRoots: [config.stateDir],
-        mcpServerConfig: [
-          resolveCodexProjectToolMcpServerConfig(),
-          ...resolveAdditionalMcpServerConfigs({ filePath: config.codexMcpServersFile }),
-        ],
+        extraWritableRoots: verificationMode ? [] : [config.stateDir],
+        mcpServerConfig: verificationMode
+          ? [config.codexVerificationMcpServer].filter(Boolean)
+          : [
+            resolveCodexProjectToolMcpServerConfig(),
+            ...resolveAdditionalMcpServerConfigs({ filePath: config.codexMcpServersFile }),
+          ],
+      });
+      client.onMessage((message) => {
+        const event = mapCodexMessageToRuntimeEvent(message);
+        if (event) emitter.emit("event", event, message);
       });
     }
     return client;
@@ -68,13 +77,9 @@ function createCodexRuntimeAdapter(config) {
       if (typeof listener !== "function") {
         return () => {};
       }
-      const runtimeClient = ensureClient();
-      return runtimeClient.onMessage((message) => {
-        const event = mapCodexMessageToRuntimeEvent(message);
-        if (event) {
-          listener(event, message);
-        }
-      });
+      ensureClient();
+      emitter.on("event", listener);
+      return () => emitter.off("event", listener);
     },
     getSessionStore() {
       return sessionStore;
@@ -146,6 +151,10 @@ function createCodexRuntimeAdapter(config) {
       const runtimeClient = ensureClient();
       await this.initialize();
       await runtimeClient.cancelTurn({ threadId, turnId });
+      emitter.emit("event", {
+        type: "runtime.turn.failed",
+        payload: { threadId, turnId, code: "CANCELLED", text: "The Codex turn was cancelled." },
+      }, null);
       return { threadId, turnId };
     },
     async resumeThread({ threadId }) {
@@ -217,7 +226,7 @@ function createCodexRuntimeAdapter(config) {
           throw new Error("thread/start did not return a thread id");
         }
         sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, metadata);
-        outboundText = buildOpeningTurnText(config, text);
+        outboundText = config.codexVerificationMode === true ? text : buildOpeningTurnText(config, text);
       } else {
         await runtimeClient.resumeThread({
           threadId,
@@ -239,7 +248,7 @@ function createCodexRuntimeAdapter(config) {
             model: desiredModel,
             modelProvider: desiredModelProvider,
           });
-          outboundText = buildOpeningTurnText(config, text);
+          outboundText = config.codexVerificationMode === true ? text : buildOpeningTurnText(config, text);
         });
       }
 
@@ -249,6 +258,7 @@ function createCodexRuntimeAdapter(config) {
         attachments,
         model: desiredModel,
         modelProvider: desiredModelProvider,
+        accessMode: config.codexVerificationMode === true ? "verification-read-only" : null,
         workspaceRoot,
       });
       return {

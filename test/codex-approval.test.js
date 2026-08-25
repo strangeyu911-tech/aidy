@@ -5,6 +5,33 @@ const { CyberbossApp } = require("../src/core/app");
 const { mapCodexMessageToRuntimeEvent } = require("../src/adapters/runtime/codex/events");
 const { buildCodexMcpConfigArgs } = require("../src/adapters/runtime/codex/mcp-config");
 
+test("codex normalizes MCP tool start/completion without forwarding tool output", () => {
+  const started = mapCodexMessageToRuntimeEvent({
+    method: "item/started",
+    params: {
+      threadId: "thread-1", turnId: "turn-1",
+      item: { id: "tool-1", type: "mcpToolCall", server: "cyberboss_verifier", tool: "cyberboss_capability_echo" },
+    },
+  });
+  const completed = mapCodexMessageToRuntimeEvent({
+    method: "item/completed",
+    params: {
+      threadId: "thread-1", turnId: "turn-1",
+      item: { id: "tool-1", type: "mcpToolCall", server: "cyberboss_verifier", tool: "cyberboss_capability_echo", result: "private" },
+    },
+  });
+  assert.equal(started.type, "runtime.tool.started");
+  assert.equal(started.payload.toolName, "mcp__cyberboss_verifier__cyberboss_capability_echo");
+  assert.deepEqual(completed, {
+    type: "runtime.tool.completed",
+    payload: {
+      threadId: "thread-1", turnId: "turn-1", toolCallId: "tool-1",
+      toolName: "mcp__cyberboss_verifier__cyberboss_capability_echo", isError: false,
+    },
+  });
+  assert.equal(JSON.stringify(completed).includes("private"), false);
+});
+
 test("codex MCP config auto-approves cyberboss tools", () => {
   const args = buildCodexMcpConfigArgs({
     name: "cyberboss_tools",
@@ -34,6 +61,17 @@ test("codex MCP config auto-approves cyberboss tools", () => {
     args.join("\n"),
     /mcp_servers\.cyberboss_tools\.tools\.whereabouts_snapshot\.approval_mode="auto"/
   );
+});
+
+test("codex MCP config passes the narrow Electron-as-Node verifier environment", () => {
+  const args = buildCodexMcpConfigArgs({
+    name: "cyberboss_verifier",
+    command: "CyberBoss.exe",
+    args: ["runtime-verification-mcp-server.js", "--token", "token_1234"],
+    env: { ELECTRON_RUN_AS_NODE: "1", "invalid-name": "ignored" },
+    autoApproveTools: ["cyberboss_capability_echo"],
+  });
+  assert.equal(args.includes('mcp_servers.cyberboss_verifier.env={ELECTRON_RUN_AS_NODE="1"}'), true);
 });
 
 test("codex MCP elicitation approvals map to runtime approval events", () => {
