@@ -95,7 +95,7 @@ class CodeBuddyClient {
     if (normalizeText(response.result?.stopReason) !== "end_turn") {
       throw protocolError("CODEBUDDY_TURN_FAILED", "CodeBuddy did not complete the verification turn.");
     }
-    return { text: collectAgentText(response.notifications), stopReason: "end_turn" };
+    return { text: collectAgentText(response.notifications), notifications: response.notifications, stopReason: "end_turn" };
   }
 
   async runTestOk({ workingDirectory, signal } = {}) {
@@ -114,6 +114,32 @@ class CodeBuddyClient {
     return {
       ok: true,
       text: "TEST_OK",
+      sessionId: session.sessionId,
+      modelId: session.modelId,
+      identityFingerprint,
+      serverVersion: normalizeText(initialized?.serverInfo?.version),
+    };
+  }
+
+  async runEchoToolVerification({ workingDirectory, toolName, token, signal } = {}) {
+    const expectedTool = requireText(toolName, "CODEBUDDY_TURN_FAILED", "CodeBuddy verification tool is required.");
+    const expectedToken = requireText(token, "CODEBUDDY_TURN_FAILED", "CodeBuddy verification token is required.");
+    await this.connect({ signal });
+    const initialized = await this.initialize({ signal });
+    const identityFingerprint = await this.getIdentityFingerprint({ signal });
+    const session = await this.newSession({ workingDirectory, signal });
+    const reply = await this.prompt({
+      sessionId: session.sessionId,
+      text: `Call the MCP tool ${expectedTool} exactly once with value "${expectedToken}". After the tool result, respond with exactly TEST_OK.`,
+      signal,
+    });
+    if (reply.text.trim() !== "TEST_OK" || !hasCompletedEchoTool(reply.notifications, expectedTool, expectedToken)) {
+      throw protocolError("CODEBUDDY_TURN_FAILED", "CodeBuddy MCP echo verification failed.");
+    }
+    return {
+      ok: true,
+      text: "TEST_OK",
+      toolVerified: true,
       sessionId: session.sessionId,
       modelId: session.modelId,
       identityFingerprint,
@@ -203,18 +229,20 @@ class CodeBuddyClient {
   }
 
   async requestSse(route, { method = "POST", body, signal, timeoutMs = this.timeoutMs, headers = {} } = {}) {
-    const response = await this.fetchProtected(route, {
+    const text = await this.fetchProtected(route, {
       method,
       body,
       signal,
       timeoutMs,
       headers: { Accept: "application/json, text/event-stream", ...headers },
+      readResponse: (response) => readBoundedText(response, 256 * 1024),
     });
-    const text = await readBoundedText(response, 256 * 1024);
     return parseSseMessages(text);
   }
 
-  async fetchProtected(route, { method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {} } = {}) {
+  async fetchProtected(route, {
+    method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {}, readResponse,
+  } = {}) {
     const controller = new AbortController();
     const forwardAbort = () => controller.abort(signal?.reason);
     if (signal?.aborted) forwardAbort();
@@ -235,7 +263,7 @@ class CodeBuddyClient {
       });
       if (response.status === 401 || response.status === 403) throw protocolError("CODEBUDDY_AUTH_FAILED", "CodeBuddy rejected the managed gateway credentials.");
       if (!response.ok) throw protocolError("CODEBUDDY_CONNECTION_LOST", `CodeBuddy public API returned HTTP ${Number(response.status) || 0}.`);
-      return response;
+      return typeof readResponse === "function" ? await readResponse(response) : response;
     } catch (error) {
       if (error?.code) throw error;
       if (controller.signal.aborted) throw protocolError("CODEBUDDY_START_TIMEOUT", "CodeBuddy public API did not respond in time.");
@@ -279,6 +307,23 @@ function collectAgentText(messages) {
     if (update.content?.type === "text") return normalizeText(update.content.text);
     return normalizeText(update.text);
   }).join("");
+}
+
+function hasCompletedEchoTool(messages, toolName, token) {
+  let namedCallSeen = false;
+  let completedEchoSeen = false;
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const update = message?.method === "session/update" ? message.params?.update : null;
+    if (!update || !new Set(["tool_call", "tool_call_update"]).has(update.sessionUpdate)) continue;
+    const serialized = safeSerialize(update);
+    if (serialized.includes(toolName)) namedCallSeen = true;
+    if (normalizeText(update.status).toLowerCase() === "completed" && serialized.includes(token)) completedEchoSeen = true;
+  }
+  return namedCallSeen && completedEchoSeen;
+}
+
+function safeSerialize(value) {
+  try { return JSON.stringify(value); } catch { return ""; }
 }
 
 function normalizeLoopbackEndpoint(value) {

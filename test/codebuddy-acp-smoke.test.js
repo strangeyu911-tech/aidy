@@ -117,3 +117,58 @@ test("CodeBuddy 2.115 session creation stays isolated behind its versioned publi
   await client.newSession({ workingDirectory: "D:\\CyberBoss" });
   assert.deepEqual(JSON.parse(calls[2].options.body).params, { cwd: "D:\\CyberBoss", mcpServers: [] });
 });
+
+test("ACP echo verification requires a completed named tool call containing the echo result", async () => {
+  const token = "verification_token_123";
+  const responses = [
+    jsonResponse({ connectionId: "c", sessionToken: "t" }),
+    sseResponse([{ jsonrpc: "2.0", id: "rpc-1", result: { protocolVersion: 1, serverInfo: {} } }]),
+    sseResponse([{ jsonrpc: "2.0", id: "rpc-2", result: { userInfo: { userId: "user-1" } } }]),
+    sseResponse([{ jsonrpc: "2.0", id: "rpc-3", result: { sessionId: "s", models: { currentModelId: "auto" } } }]),
+    sseResponse([
+      { jsonrpc: "2.0", method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "tool_call", toolCallId: "tool-1", title: "cyberboss_capability_echo", rawInput: { value: token }, status: "in_progress" } } },
+      { jsonrpc: "2.0", method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "tool_call_update", toolCallId: "tool-1", status: "completed", rawOutput: { text: token } } } },
+      { jsonrpc: "2.0", method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "TEST_OK" } } } },
+      { jsonrpc: "2.0", id: "rpc-4", result: { stopReason: "end_turn" } },
+    ]),
+  ];
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44129",
+    servicePassword: "gateway-secret",
+    cliVersion: "2.115.0",
+    randomUUID: (() => { let value = 0; return () => `rpc-${++value}`; })(),
+    fetchImpl: async () => responses.shift(),
+  });
+
+  const result = await client.runEchoToolVerification({
+    workingDirectory: "D:\\CyberBoss",
+    toolName: "cyberboss_capability_echo",
+    token,
+  });
+  assert.equal(result.toolVerified, true);
+  assert.equal(result.text, "TEST_OK");
+  assert.equal(JSON.stringify(result).includes(token), false);
+});
+
+test("ACP timeout remains active while the SSE response body is streaming", async () => {
+  let call = 0;
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44130",
+    servicePassword: "gateway-secret",
+    timeoutMs: 20,
+    randomUUID: () => "rpc-timeout",
+    fetchImpl: async (_url, options) => {
+      call += 1;
+      if (call === 1) return jsonResponse({ connectionId: "c", sessionToken: "t" });
+      return {
+        ok: true,
+        status: 200,
+        text: () => new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        }),
+      };
+    },
+  });
+  await client.connect();
+  await assert.rejects(client.initialize(), (error) => error.code === "CODEBUDDY_START_TIMEOUT");
+});

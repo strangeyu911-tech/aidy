@@ -35,7 +35,7 @@ class CodeBuddyProcessHost {
     this.closing = false;
   }
 
-  async start({ distribution, workspaceRoot, servicePassword } = {}) {
+  async start({ distribution, workspaceRoot, servicePassword, mcpServers = {}, allowedTools = [] } = {}) {
     if (this.child) throw hostError("CODEBUDDY_START_TIMEOUT", "Managed CodeBuddy is already running.");
     const selected = requireDistribution(distribution);
     const password = requireText(servicePassword, "CODEBUDDY_AUTH_FAILED", "CodeBuddy service password is required.");
@@ -50,12 +50,13 @@ class CodeBuddyProcessHost {
       const overlayPath = path.join(overlayDir, "settings.json");
       const mcpConfigPath = path.join(overlayDir, "mcp.json");
       await writeAndReopenJson(this.fs, overlayPath, { gateway: { auth: "password", password } });
-      await writeAndReopenJson(this.fs, mcpConfigPath, { mcpServers: {} });
+      await writeAndReopenJson(this.fs, mcpConfigPath, { mcpServers: normalizeMcpServers(mcpServers) });
       const args = [
         ...selected.argsPrefix,
         "--serve", "--host", "127.0.0.1", "--port", String(port),
         "--settings", overlayPath,
         "--strict-mcp-config", "--mcp-config", mcpConfigPath,
+        ...buildToolRestrictionArgs(allowedTools),
       ];
       const child = this.spawnImpl(selected.command, args, {
         cwd,
@@ -92,7 +93,7 @@ class CodeBuddyProcessHost {
         this.healthProbe({ endpoint, servicePassword: password, child, timeoutMs: this.startTimeoutMs }),
         earlyExit,
       ]);
-      return { endpoint, port, health, overlayPath, pid: Number(child.pid) || 0 };
+      return { endpoint, port, health, overlayPath, mcpConfigPath, pid: Number(child.pid) || 0 };
     } catch (error) {
       await this.stop();
       if (error?.code) throw error;
@@ -187,6 +188,34 @@ function requireDistribution(value) {
     command,
     argsPrefix: Array.isArray(source.argsPrefix) ? source.argsPrefix.map((item) => String(item)) : [],
   };
+}
+
+function normalizeMcpServers(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw hostError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy MCP configuration is invalid.");
+  }
+  const result = {};
+  for (const [name, server] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || !server || typeof server !== "object" || Array.isArray(server)) {
+      throw hostError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy MCP server configuration is invalid.");
+    }
+    const command = requireText(server.command, "CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy MCP server command is required.");
+    const args = Array.isArray(server.args) ? server.args.map((item) => String(item)) : [];
+    const env = server.env && typeof server.env === "object" && !Array.isArray(server.env)
+      ? Object.fromEntries(Object.entries(server.env).map(([key, item]) => [String(key), String(item)]))
+      : {};
+    result[name] = { type: "stdio", command, args, ...(Object.keys(env).length ? { env } : {}) };
+  }
+  return result;
+}
+
+function buildToolRestrictionArgs(value) {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  const tools = value.map((item) => String(item).trim());
+  if (tools.some((item) => !/^[a-zA-Z0-9_.:-]{1,160}$/.test(item))) {
+    throw hostError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy tool allowlist is invalid.");
+  }
+  return ["--allowedTools", ...tools];
 }
 
 function redactDiagnostic(value, forbiddenValues) {

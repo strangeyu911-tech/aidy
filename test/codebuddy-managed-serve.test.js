@@ -58,6 +58,15 @@ test("managed serve uses loopback, a protected file overlay, and no command-line
     distribution: distribution(),
     workspaceRoot: stateDir,
     servicePassword: "not-on-command-line",
+    mcpServers: {
+      cyberboss_verifier: {
+        type: "stdio",
+        command: process.execPath,
+        args: ["D:\\CyberBoss\\src\\desktop\\runtime-verification-mcp-server.js", "--token", "echo_token_123"],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      },
+    },
+    allowedTools: ["mcp__cyberboss_verifier__cyberboss_capability_echo"],
   });
 
   assert.equal(started.endpoint, "http://127.0.0.1:44123");
@@ -76,10 +85,23 @@ test("managed serve uses loopback, a protected file overlay, and no command-line
   assert.equal(spawns[0].options.env.CODEBUDDY_GATEWAY_AUTH, "password");
   assert.equal("CODEBUDDY_GATEWAY_PASSWORD" in spawns[0].options.env, false);
   assert.equal(spawns[0].args.join(" ").includes("not-on-command-line"), false);
+  assert.deepEqual(spawns[0].args.slice(-2), [
+    "--allowedTools", "mcp__cyberboss_verifier__cyberboss_capability_echo",
+  ]);
 
   const overlayPath = started.overlayPath;
   const overlay = JSON.parse(fs.readFileSync(overlayPath, "utf8"));
   assert.deepEqual(overlay, { gateway: { auth: "password", password: "not-on-command-line" } });
+  assert.deepEqual(JSON.parse(fs.readFileSync(started.mcpConfigPath, "utf8")), {
+    mcpServers: {
+      cyberboss_verifier: {
+        type: "stdio",
+        command: process.execPath,
+        args: ["D:\\CyberBoss\\src\\desktop\\runtime-verification-mcp-server.js", "--token", "echo_token_123"],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      },
+    },
+  });
   assert.equal(fs.existsSync(overlayPath), true);
   await host.stop();
   assert.equal(fs.existsSync(path.dirname(overlayPath)), false);

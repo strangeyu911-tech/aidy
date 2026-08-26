@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { verifyCodeBuddyTestOk } = require("../src/adapters/runtime/codebuddy");
+const { verifyCodeBuddyEchoTool, verifyCodeBuddyTestOk } = require("../src/adapters/runtime/codebuddy");
 
 test("compatibility verifier owns discovery, managed process, ACP TEST_OK, and cleanup", async () => {
   const calls = [];
@@ -76,4 +76,41 @@ test("compatibility verifier always closes resources and rejects incomplete prof
     profile: { runtimeId: "codex", modelId: "auto" },
     secrets: { servicePassword: "gateway-secret" },
   }), (error) => error.code === "INVALID_PROFILE");
+});
+
+test("echo verifier injects only the token-bound MCP server and returns no token or session", async () => {
+  const starts = [];
+  const token = "verification_token_789";
+  const result = await verifyCodeBuddyEchoTool({
+    config: {
+      stateDir: "D:\\state",
+      workspaceRoot: "D:\\CyberBoss",
+      verificationServerPath: "D:\\CyberBoss\\src\\desktop\\runtime-verification-mcp-server.js",
+    },
+    profile: { runtimeId: "codebuddy", modelId: "auto", options: {} },
+    secrets: { servicePassword: "gateway-secret" },
+    randomToken: () => token,
+    locateDistribution: async () => ({ source: "path", sourceLabel: "CodeBuddy", version: "2.115.0", command: "codebuddy.exe", argsPrefix: [] }),
+    processHostFactory: () => ({
+      async start(input) { starts.push(input); return { endpoint: "http://127.0.0.1:1", health: { ok: true, status: "ok" } }; },
+      async stop() {},
+    }),
+    clientFactory: () => ({
+      async runEchoToolVerification(input) {
+        assert.equal(input.toolName, "cyberboss_capability_echo");
+        assert.equal(input.token, token);
+        return { ok: true, text: "TEST_OK", toolVerified: true, modelId: "auto", identityFingerprint: "b".repeat(64), sessionId: "private" };
+      },
+      async disconnect() {},
+    }),
+  });
+
+  assert.deepEqual(Object.keys(starts[0].mcpServers), ["cyberboss_verifier"]);
+  assert.deepEqual(starts[0].allowedTools, ["mcp__cyberboss_verifier__cyberboss_capability_echo"]);
+  assert.deepEqual(starts[0].mcpServers.cyberboss_verifier.args, [
+    "D:\\CyberBoss\\src\\desktop\\runtime-verification-mcp-server.js", "--token", token,
+  ]);
+  assert.equal(result.toolVerified, true);
+  assert.equal(JSON.stringify(result).includes(token), false);
+  assert.equal(JSON.stringify(result).includes("private"), false);
 });
