@@ -1,0 +1,119 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { CodeBuddyClient } = require("../src/adapters/runtime/codebuddy/client");
+
+function jsonResponse(value, status = 200) {
+  return { ok: status >= 200 && status < 300, status, async text() { return JSON.stringify(value); } };
+}
+
+function sseResponse(messages, status = 200) {
+  const body = [":ok", "", ...messages.flatMap((message) => ["event: message", `data: ${JSON.stringify(message)}`, ""])].join("\n");
+  return { ok: status >= 200 && status < 300, status, async text() { return body; } };
+}
+
+test("minimal ACP smoke returns TEST_OK and never exposes upstream identity tokens", async () => {
+  const calls = [];
+  const responses = [
+    jsonResponse({ connectionId: "connection-1", sessionToken: "sensitive-session-token" }),
+    sseResponse([{ jsonrpc: "2.0", id: "rpc-1", result: {
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true },
+      serverInfo: { name: "CodeBuddy Code", version: "2.115.0" },
+    } }]),
+    sseResponse([{ jsonrpc: "2.0", id: "rpc-2", result: { userInfo: {
+      userId: "user-123", userName: "worker", userNickname: "Worker",
+      token: "must-not-leak", accessToken: "also-must-not-leak",
+    } } }]),
+    sseResponse([{ jsonrpc: "2.0", id: "rpc-3", result: {
+      sessionId: "session-1",
+      models: { currentModelId: "hy3", availableModels: [{ modelId: "hy3", name: "HY3" }] },
+    } }]),
+    sseResponse([
+      { jsonrpc: "2.0", method: "session/update", params: { sessionId: "session-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "TEST_" } } } },
+      { jsonrpc: "2.0", method: "session/update", params: { sessionId: "session-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "OK" } } } },
+      { jsonrpc: "2.0", id: "rpc-4", result: { stopReason: "end_turn" } },
+    ]),
+    jsonResponse({ ok: true }),
+  ];
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44126",
+    servicePassword: "gateway-secret",
+    randomUUID: (() => { let value = 0; return () => `rpc-${++value}`; })(),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    },
+  });
+
+  const result = await client.runTestOk({ workingDirectory: "D:\\CyberBoss" });
+  await client.disconnect();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "TEST_OK");
+  assert.equal(result.sessionId, "session-1");
+  assert.equal(result.modelId, "hy3");
+  assert.match(result.identityFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(result).includes("user-123"), false);
+  assert.equal(JSON.stringify(result).includes("must-not-leak"), false);
+  assert.equal(JSON.stringify(client).includes("must-not-leak"), false);
+  assert.equal(JSON.stringify(client).includes("sensitive-session-token"), false);
+  assert.equal(JSON.stringify(client).includes("gateway-secret"), false);
+
+  assert.equal(calls[0].url.endsWith("/api/v1/acp/connect"), true);
+  for (const call of calls.slice(1, 5)) {
+    assert.equal(call.options.headers["acp-connection-id"], "connection-1");
+  }
+  assert.equal(calls[1].options.headers.Accept, "application/json, text/event-stream");
+  const promptRequest = JSON.parse(calls[4].options.body);
+  assert.equal(promptRequest.method, "session/prompt");
+  assert.deepEqual(promptRequest.params.prompt, [{ type: "text", text: "Respond with exactly TEST_OK and nothing else." }]);
+});
+
+test("ACP smoke rejects mismatched ids, missing login, and non-exact model output", async () => {
+  const base = {
+    endpoint: "http://127.0.0.1:44127",
+    servicePassword: "gateway-secret",
+    randomUUID: () => "expected-id",
+  };
+  const mismatched = new CodeBuddyClient({
+    ...base,
+    fetchImpl: async (url) => url.endsWith("/connect")
+      ? jsonResponse({ connectionId: "c", sessionToken: "t" })
+      : sseResponse([{ jsonrpc: "2.0", id: "wrong-id", result: {} }]),
+  });
+  await mismatched.connect();
+  await assert.rejects(mismatched.initialize(), (error) => error.code === "CODEBUDDY_API_INCOMPATIBLE");
+
+  const noLoginResponses = [
+    jsonResponse({ connectionId: "c", sessionToken: "t" }),
+    sseResponse([{ jsonrpc: "2.0", id: "expected-id", result: { protocolVersion: 1 } }]),
+    sseResponse([{ jsonrpc: "2.0", id: "expected-id", result: { userInfo: {} } }]),
+  ];
+  const noLogin = new CodeBuddyClient({ ...base, fetchImpl: async () => noLoginResponses.shift() });
+  await noLogin.connect();
+  await noLogin.initialize();
+  await assert.rejects(noLogin.getIdentityFingerprint(), (error) => error.code === "CODEBUDDY_LOGIN_REQUIRED");
+});
+
+test("CodeBuddy 2.115 session creation stays isolated behind its versioned public parameter shape", async () => {
+  const calls = [];
+  const responses = [
+    jsonResponse({ connectionId: "c", sessionToken: "t" }),
+    sseResponse([{ jsonrpc: "2.0", id: "id", result: { protocolVersion: 1 } }]),
+    sseResponse([{ jsonrpc: "2.0", id: "id", result: { sessionId: "s", models: {} } }]),
+  ];
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44128",
+    servicePassword: "gateway-secret",
+    cliVersion: "2.115.0",
+    randomUUID: () => "id",
+    fetchImpl: async (url, options) => { calls.push({ url, options }); return responses.shift(); },
+  });
+  await client.connect();
+  await client.initialize();
+  await client.newSession({ workingDirectory: "D:\\CyberBoss" });
+  assert.deepEqual(JSON.parse(calls[2].options.body).params, { cwd: "D:\\CyberBoss", mcpServers: [] });
+});

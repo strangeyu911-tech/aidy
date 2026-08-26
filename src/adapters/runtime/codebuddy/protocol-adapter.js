@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 const PUBLIC_ROUTES = Object.freeze({
   health: "/api/v1/health",
   acpConnect: "/api/v1/acp/connect",
@@ -20,6 +22,63 @@ function decodeHealth(value) {
   };
 }
 
+function decodeConnect(value) {
+  const root = isRecord(value) ? value : {};
+  const data = isRecord(root.data) ? root.data : root;
+  const connectionId = normalizeText(data.connectionId);
+  if (!connectionId || !normalizeText(data.sessionToken)) {
+    throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP connect response is incompatible.");
+  }
+  return { connectionId };
+}
+
+function parseSseMessages(value) {
+  const messages = [];
+  let dataLines = [];
+  for (const line of String(value || "").split(/\r?\n/)) {
+    if (line === "") {
+      flush();
+      continue;
+    }
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  }
+  flush();
+  return messages;
+
+  function flush() {
+    if (!dataLines.length) return;
+    const text = dataLines.join("\n");
+    dataLines = [];
+    try {
+      const parsed = JSON.parse(text);
+      if (isRecord(parsed)) messages.push(parsed);
+    } catch {
+      throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP returned malformed SSE JSON.");
+    }
+  }
+}
+
+function fingerprintAccountIdentity(value) {
+  const source = isRecord(value) ? value : {};
+  const userId = normalizeText(source.userId);
+  if (!userId) throw protocolError("CODEBUDDY_LOGIN_REQUIRED", "CodeBuddy login is required.");
+  const canonical = JSON.stringify({
+    userId,
+    userName: normalizeText(source.userName),
+    userNickname: normalizeText(source.userNickname),
+  });
+  return crypto.createHash("sha256").update(canonical).digest("hex");
+}
+
+function encodeNewSessionParams({ workingDirectory, version = "" } = {}) {
+  const directory = normalizeText(workingDirectory);
+  if (!directory) throw protocolError("CODEBUDDY_SESSION_FAILED", "CodeBuddy working directory is required.");
+  if (/^2\.115\./.test(normalizeText(version))) {
+    return { cwd: directory, mcpServers: [] };
+  }
+  return { workingDirectory: directory, mcpServers: [] };
+}
+
 function protocolError(code, message) {
   return Object.assign(new Error(message), { code });
 }
@@ -27,4 +86,12 @@ function protocolError(code, message) {
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
 function isRecord(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 
-module.exports = { PUBLIC_ROUTES, decodeHealth, protocolError };
+module.exports = {
+  PUBLIC_ROUTES,
+  decodeConnect,
+  decodeHealth,
+  encodeNewSessionParams,
+  fingerprintAccountIdentity,
+  parseSseMessages,
+  protocolError,
+};
