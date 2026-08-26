@@ -104,6 +104,7 @@ test("CodeBuddy 2.115 session creation stays isolated behind its versioned publi
     jsonResponse({ connectionId: "c", sessionToken: "t" }),
     sseResponse([{ jsonrpc: "2.0", id: "id", result: { protocolVersion: 1 } }]),
     sseResponse([{ jsonrpc: "2.0", id: "id", result: { sessionId: "s", models: {} } }]),
+    sseResponse([{ jsonrpc: "2.0", id: "id", result: {} }]),
   ];
   const client = new CodeBuddyClient({
     endpoint: "http://127.0.0.1:44128",
@@ -115,7 +116,9 @@ test("CodeBuddy 2.115 session creation stays isolated behind its versioned publi
   await client.connect();
   await client.initialize();
   await client.newSession({ workingDirectory: "D:\\CyberBoss" });
+  await client.resumeSession({ sessionId: "s", workingDirectory: "D:\\CyberBoss" });
   assert.deepEqual(JSON.parse(calls[2].options.body).params, { cwd: "D:\\CyberBoss", mcpServers: [] });
+  assert.deepEqual(JSON.parse(calls[3].options.body).params, { sessionId: "s", cwd: "D:\\CyberBoss", mcpServers: [] });
 });
 
 test("ACP echo verification requires a completed named tool call containing the echo result", async () => {

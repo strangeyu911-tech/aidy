@@ -104,6 +104,18 @@ function encodeNewSessionParams({ workingDirectory, version = "" } = {}) {
   return { workingDirectory: directory, mcpServers: [] };
 }
 
+function encodeResumeSessionParams({ sessionId, workingDirectory, version = "" } = {}) {
+  const normalizedSessionId = normalizeText(sessionId);
+  const directory = normalizeText(workingDirectory);
+  if (!normalizedSessionId || !directory) {
+    throw protocolError("CODEBUDDY_SESSION_FAILED", "CodeBuddy resume requires a session and working directory.");
+  }
+  if (/^2\.115\./.test(normalizeText(version))) {
+    return { sessionId: normalizedSessionId, cwd: directory, mcpServers: [] };
+  }
+  return { sessionId: normalizedSessionId, workingDirectory: directory, mcpServers: [] };
+}
+
 function protocolError(code, message) {
   return Object.assign(new Error(message), { code });
 }
@@ -117,6 +129,7 @@ module.exports = {
   decodeHealth,
   createSseMessageParser,
   encodeNewSessionParams,
+  encodeResumeSessionParams,
   fingerprintAccountIdentity,
   parseSseMessages,
   protocolError,

@@ -6,6 +6,7 @@ const path = require("node:path");
 const { CodeBuddyClient } = require("./client");
 const { locateCodeBuddyDistribution } = require("./distribution-locator");
 const { CodeBuddyProcessHost } = require("./process-host");
+const { createCodeBuddyRuntimeAdapter } = require("./runtime-adapter");
 
 async function verifyCodeBuddyTestOk({
   config = {},
@@ -141,4 +142,4 @@ function normalizeText(value) { return typeof value === "string" ? value.trim() 
 function requireText(value, code, message) { const text = normalizeText(value); if (!text) throw runtimeError(code, message); return text; }
 function runtimeError(code, message) { return Object.assign(new Error(message), { code }); }
 
-module.exports = { verifyCodeBuddyEchoTool, verifyCodeBuddyTestOk };
+module.exports = { createCodeBuddyRuntimeAdapter, verifyCodeBuddyEchoTool, verifyCodeBuddyTestOk };

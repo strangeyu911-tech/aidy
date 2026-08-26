@@ -8,6 +8,7 @@ const {
   decodeConnect,
   decodeHealth,
   encodeNewSessionParams,
+  encodeResumeSessionParams,
   fingerprintAccountIdentity,
   protocolError,
 } = require("./protocol-adapter");
@@ -85,6 +86,15 @@ class CodeBuddyClient {
         })).filter((model) => model.id)
         : [],
     };
+  }
+
+  async resumeSession({ sessionId, workingDirectory, signal } = {}) {
+    await this.rpc("session/resume", encodeResumeSessionParams({
+      sessionId,
+      workingDirectory,
+      version: this.cliVersion,
+    }), { signal });
+    return { sessionId: requireText(sessionId, "CODEBUDDY_SESSION_FAILED", "CodeBuddy session is required.") };
   }
 
   async prompt({ sessionId, text, signal, onNotification } = {}) {
@@ -338,8 +348,8 @@ function collectAgentText(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => {
     const update = message?.method === "session/update" ? message.params?.update : null;
     if (update?.sessionUpdate !== "agent_message_chunk") return "";
-    if (update.content?.type === "text") return normalizeText(update.content.text);
-    return normalizeText(update.text);
+    if (update.content?.type === "text" && typeof update.content.text === "string") return update.content.text;
+    return typeof update.text === "string" ? update.text : "";
   }).join("");
 }
 
