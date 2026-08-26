@@ -97,15 +97,21 @@ class CodeBuddyClient {
     return { sessionId: requireText(sessionId, "CODEBUDDY_SESSION_FAILED", "CodeBuddy session is required.") };
   }
 
-  async prompt({ sessionId, text, signal, onNotification } = {}) {
+  async prompt({ sessionId, text, signal, onNotification, onRequest } = {}) {
     const response = await this.rpc("session/prompt", {
       sessionId: requireText(sessionId, "CODEBUDDY_SESSION_FAILED", "CodeBuddy session is required."),
       prompt: [{ type: "text", text: requireText(text, "CODEBUDDY_TURN_FAILED", "CodeBuddy prompt is required.") }],
-    }, { signal, onNotification });
-    if (normalizeText(response.result?.stopReason) !== "end_turn") {
+    }, { signal, onNotification, onRequest });
+    const stopReason = normalizeText(response.result?.stopReason);
+    if (!new Set(["end_turn", "cancelled"]).has(stopReason)) {
       throw protocolError("CODEBUDDY_TURN_FAILED", "CodeBuddy did not complete the verification turn.");
     }
-    return { text: collectAgentText(response.notifications), notifications: response.notifications, stopReason: "end_turn" };
+    return {
+      text: collectAgentText(response.notifications),
+      notifications: response.notifications,
+      stopReason,
+      usage: response.result?.usage,
+    };
   }
 
   async runTestOk({ workingDirectory, signal } = {}) {
@@ -157,7 +163,7 @@ class CodeBuddyClient {
     };
   }
 
-  async rpc(method, params, { signal, onNotification } = {}) {
+  async rpc(method, params, { signal, onNotification, onRequest } = {}) {
     if (!this.connectionId) throw protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy ACP is not connected.");
     const id = requireText(this.randomUUID(), "CODEBUDDY_API_INCOMPATIBLE", "ACP request ID is unavailable.");
     const messages = await this.requestSse(PUBLIC_ROUTES.acp, {
@@ -166,7 +172,9 @@ class CodeBuddyClient {
       headers: { "acp-connection-id": this.connectionId },
       body: { jsonrpc: "2.0", id, method, params },
       onMessage: (message) => {
-        if (message?.method && typeof onNotification === "function") onNotification(message);
+        if (!message?.method) return;
+        if (message.id != null && typeof onRequest === "function") onRequest(message);
+        else if (typeof onNotification === "function") onNotification(message);
       },
     });
     const response = messages.find((message) => String(message.id ?? "") === id);
@@ -190,6 +198,26 @@ class CodeBuddyClient {
       throw error;
     }
     return { result: response.result || {}, notifications: messages.filter((message) => message !== response) };
+  }
+
+  async respondPermission({ requestId, outcome, sessionId = "", signal } = {}) {
+    const id = requireRpcId(requestId);
+    const selected = requireText(outcome, "CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy permission outcome is required.");
+    await this.fetchProtected(PUBLIC_ROUTES.acp, {
+      method: "POST",
+      signal,
+      headers: {
+        "acp-connection-id": this.connectionId,
+        ...(normalizeText(sessionId) ? { "acp-session-id": normalizeText(sessionId) } : {}),
+      },
+      body: { jsonrpc: "2.0", id, result: { outcome: selected } },
+      readResponse: async (response) => {
+        if ([202, 204].includes(Number(response.status))) return true;
+        await readBoundedJson(response);
+        return true;
+      },
+    });
+    return { requestId: id, outcome: selected };
   }
 
   async disconnect({ signal } = {}) {
@@ -387,6 +415,12 @@ function requireText(value, code, message) {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) throw protocolError(code, message);
   return text;
+}
+function requireRpcId(value) {
+  if (!(typeof value === "string" || typeof value === "number") || String(value).trim() === "") {
+    throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy permission request ID is required.");
+  }
+  return value;
 }
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
 function sanitizeDiagnosticText(value) {

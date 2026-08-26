@@ -2308,7 +2308,8 @@ function buildApprovalResponsePayload(approval, commandName) {
   if (requestId == null || String(requestId).trim() === "") {
     return null;
   }
-  if (approval?.kind === "mcp_tool_call" || approval?.kind === "mcp_elicitation") {
+  if (approval?.responseTemplate?.responseByCommand
+    && typeof approval.responseTemplate.responseByCommand === "object") {
     const responseByCommand = approval?.responseTemplate?.responseByCommand;
     const effectiveCommandName = commandName === "always" ? "yes" : commandName;
     const result = responseByCommand && typeof responseByCommand === "object"

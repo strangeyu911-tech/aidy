@@ -267,3 +267,37 @@ test("ACP incremental stream enforces the total response byte limit", async () =
   client.connectionId = "c";
   await assert.rejects(client.initialize(), (error) => error.code === "CODEBUDDY_API_INCOMPATIBLE");
 });
+
+test("ACP permission requests are separated from notifications and receive the standard JSON-RPC outcome", async () => {
+  const calls = [];
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44133",
+    servicePassword: "gateway-secret",
+    randomUUID: () => "prompt-id",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (options.method === "POST" && JSON.parse(options.body).result) return jsonResponse({ ok: true });
+      return sseResponse([
+        { jsonrpc: "2.0", id: "permission-1", method: "session/request_permission", params: { sessionId: "s", options: [] } },
+        { jsonrpc: "2.0", method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } } } },
+        { jsonrpc: "2.0", id: "prompt-id", result: { stopReason: "end_turn" } },
+      ]);
+    },
+  });
+  client.connectionId = "connection-1";
+  const requests = [];
+  const result = await client.prompt({
+    sessionId: "s",
+    text: "hello",
+    onRequest: (request) => requests.push(request),
+  });
+  assert.equal(result.text, "done");
+  assert.equal(requests[0].method, "session/request_permission");
+  await client.respondPermission({ requestId: "permission-1", outcome: "allow_once", sessionId: "s" });
+  const responseCall = calls[1];
+  assert.equal(responseCall.options.headers["acp-connection-id"], "connection-1");
+  assert.equal(responseCall.options.headers["acp-session-id"], "s");
+  assert.deepEqual(JSON.parse(responseCall.options.body), {
+    jsonrpc: "2.0", id: "permission-1", result: { outcome: "allow_once" },
+  });
+});

@@ -8,6 +8,11 @@ const { SessionStore } = require("../codex/session-store");
 const { CodeBuddyClient } = require("./client");
 const { locateCodeBuddyDistribution } = require("./distribution-locator");
 const { CodeBuddyProcessHost } = require("./process-host");
+const {
+  mapCodeBuddyFailure,
+  mapCodeBuddyNotification,
+  normalizeCodeBuddyUsage,
+} = require("./events");
 
 function createCodeBuddyRuntimeAdapter({
   config = {},
@@ -32,6 +37,7 @@ function createCodeBuddyRuntimeAdapter({
   const randomUUID = typeof config.randomUUID === "function" ? config.randomUUID : crypto.randomUUID;
   const activeTurns = new Map();
   const attachedSessions = new Set();
+  const pendingApprovals = new Map();
 
   let distribution = null;
   let host = null;
@@ -40,6 +46,7 @@ function createCodeBuddyRuntimeAdapter({
   let readyPromise = null;
   let closed = false;
   let liveIdentity = "";
+  let agentCapabilities = {};
 
   function runtimeScope() {
     return {
@@ -89,6 +96,7 @@ function createCodeBuddyRuntimeAdapter({
       });
       await client.connect({ signal });
       const initialized = await client.initialize({ signal });
+      agentCapabilities = isRecord(initialized?.agentCapabilities) ? { ...initialized.agentCapabilities } : {};
       await verifyLiveIdentity(signal);
       ready = Object.freeze({
         endpoint: started.endpoint,
@@ -96,6 +104,7 @@ function createCodeBuddyRuntimeAdapter({
         cliVersion: normalizeText(distribution.version),
         serverVersion: normalizeText(initialized?.serverInfo?.version),
         identityVerified: true,
+        compactionSupported: hasCompactionCapability(agentCapabilities, client),
       });
       return ready;
     })();
@@ -142,17 +151,35 @@ function createCodeBuddyRuntimeAdapter({
   }
 
   function forwardNotification(message, { threadId, turnId, workspaceRoot }) {
-    if (message?.method !== "session/update") return;
-    const reportedSessionId = normalizeText(message.params?.sessionId);
-    if (reportedSessionId && reportedSessionId !== threadId) return;
-    const update = message.params?.update;
-    if (update?.sessionUpdate !== "agent_message_chunk") return;
-    const text = textChunk(update);
-    if (!text) return;
-    emit({
-      type: "runtime.reply.delta",
-      payload: runtimePayload({ threadId, turnId, workspaceRoot, text }),
-    }, message);
+    forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
+  }
+
+  function forwardProtocolRequest(message, { threadId, turnId, workspaceRoot }) {
+    forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
+  }
+
+  function forwardMappedEvents(message, { threadId, turnId, workspaceRoot }) {
+    const events = mapCodeBuddyNotification(message, { threadId, turnId, workspaceRoot });
+    for (const event of events) {
+      if (event?.type === "runtime.approval.requested") {
+        pendingApprovals.set(normalizeRpcId(event.payload.requestId), {
+          threadId,
+          rpcId: message?.id,
+          responseTemplate: event.payload.responseTemplate,
+        });
+      }
+      emit({
+        ...event,
+        payload: runtimePayload({ ...event.payload, workspaceRoot }),
+      }, message);
+      if (event?.type === "runtime.approval.denied" && event.payload.response?.outcome) {
+        Promise.resolve(client?.respondPermission?.({
+          requestId: message?.id ?? event.payload.requestId,
+          outcome: event.payload.response.outcome,
+          sessionId: threadId,
+        })).catch(() => {});
+      }
+    }
   }
 
   async function runTurn({ threadId, turnId, workspaceRoot, text, controller }) {
@@ -162,26 +189,39 @@ function createCodeBuddyRuntimeAdapter({
         text,
         signal: controller.signal,
         onNotification: (message) => forwardNotification(message, { threadId, turnId, workspaceRoot }),
+        onRequest: (message) => forwardProtocolRequest(message, { threadId, turnId, workspaceRoot }),
       });
+      const normalizedUsage = hasUsageFields(reply.usage) ? normalizeCodeBuddyUsage(reply.usage) : {};
+      const completionPayload = {
+        threadId,
+        turnId,
+        workspaceRoot,
+        text: reply.text,
+        ...(normalizedUsage.usage ? { usage: normalizedUsage.usage } : {}),
+        ...(normalizedUsage.vendorUsage ? { vendorUsage: normalizedUsage.vendorUsage } : {}),
+      };
+      if (reply.stopReason === "cancelled") {
+        emit({
+          type: "runtime.turn.failed",
+          payload: runtimePayload({ ...completionPayload, code: "CANCELLED", text: "The CodeBuddy turn was cancelled." }),
+        });
+        return;
+      }
       emit({
         type: "runtime.reply.completed",
-        payload: runtimePayload({ threadId, turnId, workspaceRoot, text: reply.text }),
+        payload: runtimePayload(completionPayload),
       });
       emit({
         type: "runtime.turn.completed",
-        payload: runtimePayload({ threadId, turnId, workspaceRoot, text: reply.text }),
+        payload: runtimePayload(completionPayload),
       });
     } catch (error) {
       const cancelled = controller.signal.aborted;
+      const failure = mapCodeBuddyFailure(cancelled ? { code: "CANCELLED" } : error, { threadId, turnId });
       emit({
-        type: "runtime.turn.failed",
-        payload: runtimePayload({
-          threadId,
-          turnId,
-          workspaceRoot,
-          code: cancelled ? "CANCELLED" : normalizeText(error?.code) || "CODEBUDDY_TURN_FAILED",
-          text: cancelled ? "The CodeBuddy turn was stopped during runtime cleanup." : publicErrorText(error),
-        }),
+        ...failure,
+        payload: runtimePayload({ ...failure.payload, workspaceRoot,
+          ...(cancelled ? { text: "The CodeBuddy turn was stopped during runtime cleanup." } : {}) }),
       });
     }
   }
@@ -250,8 +290,30 @@ function createCodeBuddyRuntimeAdapter({
       active?.controller.abort();
       return { threadId: normalizeText(active?.threadId), turnId: normalizedTurnId };
     },
-    async respondApproval() {
-      throw runtimeError("APPROVAL_NOT_FOUND", "No pending CodeBuddy approval matches that request.");
+    async respondApproval({ requestId, decision, result = null, signal } = {}) {
+      const normalizedRequestId = normalizeRpcId(requestId);
+      if (!normalizedRequestId) throw runtimeError("APPROVAL_NOT_FOUND", "A CodeBuddy approval request ID is required.");
+      const pending = pendingApprovals.get(normalizedRequestId);
+      if (!pending) throw runtimeError("APPROVAL_NOT_FOUND", "No pending CodeBuddy approval matches that request.");
+      const optionByCommand = isRecord(pending.responseTemplate?.optionByCommand)
+        ? pending.responseTemplate.optionByCommand
+        : {};
+      const templateResult = isRecord(result) && normalizeText(result.outcome) ? result : null;
+      const accepted = decision === "accept" || result?.action === "accept";
+      const command = accepted && result?.remember === true ? "always"
+        : accepted ? "yes" : "no";
+      const outcome = normalizeText(templateResult?.outcome || optionByCommand[command]);
+      if (!outcome || typeof client?.respondPermission !== "function") {
+        throw runtimeError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy permission response is unavailable.");
+      }
+      await client.respondPermission({
+        requestId: pending.rpcId ?? normalizedRequestId,
+        outcome,
+        sessionId: pending.threadId,
+        signal,
+      });
+      pendingApprovals.delete(normalizedRequestId);
+      return { requestId: normalizedRequestId, decision: accepted ? "accept" : "decline" };
     },
     async resumeThread({ threadId, workspaceRoot, signal } = {}) {
       await initialize({ signal });
@@ -265,8 +327,25 @@ function createCodeBuddyRuntimeAdapter({
       attachedSessions.add(normalizedThreadId);
       return { threadId: normalizedThreadId };
     },
-    async compactThread({ threadId } = {}) {
-      throw runtimeError("CODEBUDDY_COMPACTION_UNSUPPORTED", `CodeBuddy compaction is unavailable for session ${normalizeText(threadId)}.`);
+    async compactThread({ threadId, workspaceRoot, signal } = {}) {
+      await initialize({ signal });
+      const normalizedThreadId = requireText(threadId, "CODEBUDDY_SESSION_FAILED", "A CodeBuddy session is required.");
+      if (!ready?.compactionSupported || typeof client?.compactSession !== "function") {
+        throw runtimeError("CODEBUDDY_COMPACTION_UNSUPPORTED", `CodeBuddy compaction is unavailable for session ${normalizedThreadId}.`);
+      }
+      await verifyLiveIdentity(signal);
+      const directory = path.resolve(normalizeText(workspaceRoot) || defaultWorkspaceRoot);
+      const result = await client.compactSession({
+        sessionId: normalizedThreadId,
+        workingDirectory: directory,
+        signal,
+        onNotification: (message) => forwardNotification(message, {
+          threadId: normalizedThreadId,
+          turnId: normalizeText(message?.params?.turnId),
+          workspaceRoot: directory,
+        }),
+      });
+      return { threadId: normalizedThreadId, ...(isRecord(result) ? result : {}) };
     },
     async startFreshThreadDraft({ bindingKey, workspaceRoot } = {}) {
       const binding = normalizeText(bindingKey);
@@ -288,6 +367,8 @@ function createCodeBuddyRuntimeAdapter({
       client = null;
       host = null;
       ready = null;
+      agentCapabilities = {};
+      pendingApprovals.clear();
       attachedSessions.clear();
     },
   };
@@ -312,9 +393,15 @@ function requireCodeBuddyProfile(value) {
   return profile;
 }
 
-function textChunk(update) {
-  if (update?.content?.type === "text" && typeof update.content.text === "string") return update.content.text;
-  return typeof update?.text === "string" ? update.text : "";
+function hasCompactionCapability(capabilities, client) {
+  return Boolean(
+    typeof client?.compactSession === "function"
+      && (capabilities?.sessionCompaction === true || capabilities?.compaction === true),
+  );
+}
+
+function hasUsageFields(value) {
+  return isRecord(value) && ["inputTokens", "outputTokens"].some((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 function sanitizeHealth(value) {
@@ -330,6 +417,10 @@ function publicErrorText(error) {
 function normalizeIdentity(value) {
   const text = normalizeText(value).toLowerCase();
   return /^[a-f0-9]{64}$/.test(text) ? text : "";
+}
+
+function normalizeRpcId(value) {
+  return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
 }
 
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }

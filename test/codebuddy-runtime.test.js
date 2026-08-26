@@ -170,6 +170,83 @@ test("production adapter blocks a changed OS-user CodeBuddy identity and invalid
   assert.equal(calls.some(([name]) => name === "guard.stop"), true);
 });
 
+test("production adapter routes CodeBuddy permissions and terminal usage through the shared runtime events", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-approval-"));
+  const sessionsFile = path.join(root, "sessions.json");
+  const { adapter, calls } = createHarness({
+    sessionsFile,
+    clientOverrides: {
+      async prompt(input) {
+        input.onRequest({
+          jsonrpc: "2.0",
+          id: "permission-1",
+          method: "session/request_permission",
+          params: {
+            sessionId: input.sessionId,
+            toolCall: { title: "Run command", rawInput: { command: ["node", "build.js"] } },
+            options: [
+              { optionId: "allow-once", kind: "allow_once" },
+              { optionId: "allow-always", kind: "allow_always" },
+              { optionId: "reject", kind: "reject_once" },
+            ],
+          },
+        });
+        input.onNotification({
+          method: "session/update",
+          params: { sessionId: input.sessionId, update: { sessionUpdate: "usage_update", used: 32, size: 100 } },
+        });
+        return {
+          text: "done",
+          stopReason: "end_turn",
+          usage: { inputTokens: 12, outputTokens: 5, workbuddyPromotion: "not interpreted" },
+        };
+      },
+      async respondPermission(input) { calls.push(["permission.response", input]); },
+    },
+  });
+  const events = [];
+  adapter.onEvent((event) => events.push(event));
+
+  await adapter.sendTurn({ bindingKey: "binding", workspaceRoot: "D:\\CyberBoss", text: "run" });
+  await waitFor(() => events.some((event) => event.type === "runtime.turn.completed"));
+  const approval = events.find((event) => event.type === "runtime.approval.requested");
+  const context = events.find((event) => event.type === "runtime.context.updated");
+  const completed = events.find((event) => event.type === "runtime.turn.completed");
+  assert.equal(approval.payload.requestId, "permission-1");
+  assert.equal(context.payload.currentTokens, 32);
+  assert.deepEqual(completed.payload.usage, { inputTokens: 12, outputTokens: 5 });
+  assert.equal(completed.payload.vendorUsage.workbuddyPromotion, "not interpreted");
+
+  await adapter.respondApproval({ requestId: "permission-1", decision: "accept", result: { remember: true } });
+  assert.equal(calls.find(([name]) => name === "permission.response")[1].outcome, "allow-always");
+  await adapter.close();
+});
+
+test("CodeBuddy compaction remains unsupported unless an explicit client capability is present", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-compact-"));
+  const sessionsFile = path.join(root, "sessions.json");
+  const calls = [];
+  const { adapter } = createHarness({
+    sessionsFile,
+    clientOverrides: {
+      async initialize() { return { protocolVersion: 1, agentCapabilities: { sessionCompaction: true } }; },
+      async compactSession(input) { calls.push(input); return { compacted: true }; },
+    },
+  });
+  await adapter.initialize();
+  const result = await adapter.compactThread({ threadId: "session-1", workspaceRoot: "D:\\CyberBoss" });
+  assert.deepEqual(result, { threadId: "session-1", compacted: true });
+  assert.equal(calls.length, 1);
+  await adapter.close();
+
+  const unsupported = createHarness({ sessionsFile: path.join(root, "unsupported.json") });
+  await assert.rejects(
+    unsupported.adapter.compactThread({ threadId: "session-1", workspaceRoot: "D:\\CyberBoss" }),
+    (error) => error.code === "CODEBUDDY_COMPACTION_UNSUPPORTED",
+  );
+  await unsupported.adapter.close();
+});
+
 async function waitFor(predicate, timeoutMs = 1_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
