@@ -197,12 +197,16 @@ class ConversationStore {
 
 function buildRuntimeScopeKey(scope) {
   const normalized = normalizeRuntimeScope(scope);
-  const readable = JSON.stringify([
+  const identity = [
     normalized.runtimeId,
     normalized.profileId,
     normalized.modelId,
     normalized.secretGeneration,
-  ]);
+  ];
+  if (normalized.runtimeIdentityFingerprint) {
+    identity.push(normalized.runtimeIdentityFingerprint);
+  }
+  const readable = JSON.stringify(identity);
   return crypto.createHash("sha256").update(readable).digest("hex");
 }
 
@@ -212,13 +216,19 @@ function normalizeRuntimeScope(value) {
   const profileId = normalizeText(source.profileId);
   const modelId = normalizeText(source.modelId);
   const secretGeneration = Number(source.secretGeneration);
+  const runtimeIdentityFingerprint = normalizeRuntimeIdentityFingerprint(source.runtimeIdentityFingerprint);
   if (!runtimeId || !profileId || !modelId || !Number.isSafeInteger(secretGeneration) || secretGeneration < 0) {
     throw makeError(
       "Runtime scope requires runtimeId, profileId, modelId, and a non-negative integer secretGeneration.",
       "INVALID_RUNTIME_SCOPE",
     );
   }
-  return { runtimeId, profileId, modelId, secretGeneration };
+  return { runtimeId, profileId, modelId, secretGeneration, runtimeIdentityFingerprint };
+}
+
+function normalizeRuntimeIdentityFingerprint(value) {
+  const fingerprint = normalizeText(value).toLowerCase();
+  return /^[a-f0-9]{64}$/.test(fingerprint) ? fingerprint : "";
 }
 
 function normalizeConversationState(value) {
@@ -359,7 +369,8 @@ function sameRuntimeScope(left, right) {
   return left.runtimeId === right.runtimeId
     && left.profileId === right.profileId
     && left.modelId === right.modelId
-    && left.secretGeneration === right.secretGeneration;
+    && left.secretGeneration === right.secretGeneration
+    && left.runtimeIdentityFingerprint === right.runtimeIdentityFingerprint;
 }
 
 function requireTurnId(value) {

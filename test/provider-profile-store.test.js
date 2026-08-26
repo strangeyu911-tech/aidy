@@ -130,6 +130,57 @@ test("markUnverified and delete clear the active selection", () => {
   assert.equal(store.delete(draft.id), false);
 });
 
+test("markRuntimeProfilesUnverified invalidates only matching runtime profiles atomically", () => {
+  const { store } = makeProfileStore();
+  const firstCodeBuddy = store.upsertDraft(validDraft({
+    name: "CodeBuddy primary",
+    runtimeId: "codebuddy",
+    providerId: "codebuddy",
+    protocolId: "codebuddy-acp",
+    baseUrl: "",
+    modelId: "codebuddy/default",
+  }));
+  const secondCodeBuddy = store.upsertDraft(validDraft({
+    name: "CodeBuddy secondary",
+    runtimeId: "codebuddy",
+    providerId: "codebuddy",
+    protocolId: "codebuddy-acp",
+    baseUrl: "",
+    modelId: "codebuddy/fast",
+  }));
+  const codex = store.upsertDraft(validDraft({
+    name: "Codex",
+    runtimeId: "codex",
+    providerId: "openai",
+    protocolId: "codex-app-server",
+    baseUrl: "",
+    modelId: "gpt-5",
+  }));
+
+  for (const profile of [firstCodeBuddy, secondCodeBuddy, codex]) {
+    store.markVerified(profile.id, {
+      secretGeneration: 2,
+      capabilities: { tools: true, runtime: profile.runtimeId },
+    });
+  }
+  store.activate(firstCodeBuddy.id);
+  const codexBefore = store.get(codex.id);
+
+  const invalidated = store.markRuntimeProfilesUnverified(" CODEBUDDY ", "account_identity_changed");
+
+  assert.deepEqual(invalidated.map((profile) => profile.id), [firstCodeBuddy.id, secondCodeBuddy.id]);
+  for (const profileId of [firstCodeBuddy.id, secondCodeBuddy.id]) {
+    const profile = store.get(profileId);
+    assert.equal(profile.status, "unverified");
+    assert.equal(profile.verifiedFingerprint, "");
+    assert.deepEqual(profile.capabilities, {});
+    assert.equal(profile.verifiedAt, "");
+    assert.equal(profile.verificationError, "account_identity_changed");
+  }
+  assert.equal(store.getActive(), null);
+  assert.deepEqual(store.get(codex.id), codexBefore);
+});
+
 test("a secret write records the new generation, masks references, and requires reverification", () => {
   const { store } = makeProfileStore();
   const draft = store.upsertDraft({ runtimeId: "builtin-api", providerId: "openai", modelId: "gpt-5" });

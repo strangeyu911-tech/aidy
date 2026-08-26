@@ -9,14 +9,19 @@ const {
   listRuntimeDefinitions,
 } = require("../src/core/runtime-registry");
 
-test("runtime registry exposes only the four approved runtime IDs", () => {
-  assert.deepEqual(RUNTIME_IDS, ["builtin-api", "opencode", "codex", "claudecode"]);
+test("runtime registry exposes only the five approved runtime IDs", () => {
+  assert.deepEqual(RUNTIME_IDS, ["builtin-api", "opencode", "codex", "claudecode", "codebuddy"]);
   assert.deepEqual(
     listRuntimeDefinitions().map((definition) => definition.id),
     RUNTIME_IDS,
   );
   assert.equal(getRuntimeDefinition(" BUILTIN-API ").processKind, "none");
   assert.equal(getRuntimeDefinition("opencode").processKind, "opencode");
+  assert.deepEqual(getRuntimeDefinition(" CODEBUDDY "), {
+    id: "codebuddy",
+    name: "CodeBuddy",
+    processKind: "codebuddy",
+  });
 });
 
 test("unknown runtime never falls back to codex", () => {

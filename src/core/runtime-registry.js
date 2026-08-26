@@ -1,12 +1,13 @@
 "use strict";
 
-const RUNTIME_IDS = Object.freeze(["builtin-api", "opencode", "codex", "claudecode"]);
+const RUNTIME_IDS = Object.freeze(["builtin-api", "opencode", "codex", "claudecode", "codebuddy"]);
 
 const RUNTIME_DEFINITIONS = Object.freeze([
   Object.freeze({ id: "builtin-api", name: "Built-in API", processKind: "none" }),
   Object.freeze({ id: "opencode", name: "OpenCode", processKind: "opencode" }),
   Object.freeze({ id: "codex", name: "Codex", processKind: "codex" }),
   Object.freeze({ id: "claudecode", name: "Claude Code", processKind: "claudecode" }),
+  Object.freeze({ id: "codebuddy", name: "CodeBuddy", processKind: "codebuddy" }),
 ]);
 
 const DEFINITION_BY_ID = new Map(RUNTIME_DEFINITIONS.map((definition) => [definition.id, definition]));

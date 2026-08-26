@@ -163,6 +163,36 @@ class ProviderProfileStore {
     return updated;
   }
 
+  markRuntimeProfilesUnverified(runtimeId, reason = "") {
+    const normalizedRuntimeId = getRuntimeDefinition(runtimeId).id;
+    const normalizedReason = normalizeText(reason);
+    const updatedAt = this.nowIso();
+    let invalidated = [];
+
+    this.store.update((state) => {
+      const matchingProfileIds = new Set(
+        state.profiles
+          .filter((profile) => profile.runtimeId === normalizedRuntimeId)
+          .map((profile) => profile.id),
+      );
+      const profiles = state.profiles.map((profile) => {
+        if (!matchingProfileIds.has(profile.id)) return profile;
+        return clearVerification(
+          { ...profile, updatedAt },
+          "unverified",
+          normalizedReason,
+        );
+      });
+      invalidated = profiles.filter((profile) => matchingProfileIds.has(profile.id));
+      return {
+        ...state,
+        activeProfileId: matchingProfileIds.has(state.activeProfileId) ? "" : state.activeProfileId,
+        profiles,
+      };
+    });
+    return invalidated;
+  }
+
   markSecretWritten(id, { generation, secretRefs } = {}) {
     const profileId = normalizeText(id);
     const secretGeneration = normalizeNonNegativeInteger(generation);

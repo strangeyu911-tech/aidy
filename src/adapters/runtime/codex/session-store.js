@@ -778,7 +778,8 @@ function sameRuntimeScope(left, right) {
     && left.runtimeId === right.runtimeId
     && left.profileId === right.profileId
     && left.modelId === right.modelId
-    && left.secretGeneration === right.secretGeneration;
+    && left.secretGeneration === right.secretGeneration
+    && left.runtimeIdentityFingerprint === right.runtimeIdentityFingerprint;
 }
 
 module.exports = { SessionStore, migrateLegacyBinding };

@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -19,14 +20,36 @@ function scopeFor(profileId = "p1", modelId = "gpt-5", secretGeneration = 2, run
   return { runtimeId, profileId, modelId, secretGeneration };
 }
 
-test("runtime scope keys bind all four readable identity fields", () => {
+test("runtime scope keys bind account identity without changing empty-fingerprint keys", () => {
   const base = scopeFor();
   const key = buildRuntimeScopeKey(base);
+  const legacyReadable = JSON.stringify([base.runtimeId, base.profileId, base.modelId, base.secretGeneration]);
   assert.match(key, /^[a-f0-9]{64}$/);
+  assert.equal(key, crypto.createHash("sha256").update(legacyReadable).digest("hex"));
   assert.notEqual(key, buildRuntimeScopeKey({ ...base, runtimeId: "codex" }));
   assert.notEqual(key, buildRuntimeScopeKey({ ...base, profileId: "p2" }));
   assert.notEqual(key, buildRuntimeScopeKey({ ...base, modelId: "gpt-5-mini" }));
   assert.notEqual(key, buildRuntimeScopeKey({ ...base, secretGeneration: 3 }));
+  assert.equal(key, buildRuntimeScopeKey({ ...base, runtimeIdentityFingerprint: "" }));
+  assert.equal(key, buildRuntimeScopeKey({ ...base, runtimeIdentityFingerprint: "NOT-A-SHA256" }));
+  assert.notEqual(key, buildRuntimeScopeKey({ ...base, runtimeIdentityFingerprint: "a".repeat(64) }));
+  assert.notEqual(
+    buildRuntimeScopeKey({ ...base, runtimeIdentityFingerprint: "a".repeat(64) }),
+    buildRuntimeScopeKey({ ...base, runtimeIdentityFingerprint: "b".repeat(64) }),
+  );
+});
+
+test("conversation history cannot cross runtime account identities", () => {
+  const filePath = makeFilePath();
+  const store = new ConversationStore({ filePath, randomUUID: () => "identity-turn" });
+  const firstIdentity = { ...scopeFor(), runtimeIdentityFingerprint: "a".repeat(64) };
+  const secondIdentity = { ...scopeFor(), runtimeIdentityFingerprint: "b".repeat(64) };
+  const turn = store.beginTurn(firstIdentity, { role: "user", text: "account one" });
+  store.commitAssistant(turn.id, { role: "assistant", text: "private history" });
+
+  const reopened = new ConversationStore({ filePath });
+  assert.deepEqual(reopened.resume(firstIdentity).messages.map((message) => message.text), ["account one", "private history"]);
+  assert.deepEqual(reopened.resume(secondIdentity).messages, []);
 });
 
 test("only committed history resumes for an exact profile scope", () => {
@@ -89,7 +112,7 @@ test("reopening aborts inflight turns and never replays their tool or approval s
   const persisted = JSON.parse(fs.readFileSync(filePath, "utf8"));
   assert.equal(persisted.schemaVersion, 1);
   assert.equal(persisted.conversations[0].scopeKey, buildRuntimeScopeKey(scope));
-  assert.deepEqual(persisted.conversations[0].scope, scope);
+  assert.deepEqual(persisted.conversations[0].scope, { ...scope, runtimeIdentityFingerprint: "" });
   assert.equal(persisted.conversations[0].turns[0].status, "aborted");
 });
 

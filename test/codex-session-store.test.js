@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
+const crypto = require("node:crypto");
 const os = require("os");
 const path = require("path");
 
@@ -85,6 +86,7 @@ function runtimeScope(overrides = {}) {
     profileId: "codex-profile",
     modelId: "gpt-5",
     secretGeneration: 4,
+    runtimeIdentityFingerprint: "",
     ...overrides,
   };
 }
@@ -124,11 +126,37 @@ test("exact-scope lookup never reuses a thread across model, profile, runtime, o
   assert.equal(store.getThreadIdForScope("binding-1", "/workspace", { ...scope, profileId: "other" }), "");
   assert.equal(store.getThreadIdForScope("binding-1", "/workspace", { ...scope, modelId: "gpt-5-mini" }), "");
   assert.equal(store.getThreadIdForScope("binding-1", "/workspace", { ...scope, secretGeneration: 5 }), "");
+  assert.equal(store.getThreadIdForScope("binding-1", "/workspace", {
+    ...scope,
+    runtimeIdentityFingerprint: "a".repeat(64),
+  }), "");
 
   const persisted = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  const record = Object.values(persisted.bindings["binding-1"].threadScopes)[0];
-  assert.deepEqual(record.scope, scope);
+  const [scopeKey, record] = Object.entries(persisted.bindings["binding-1"].threadScopes)[0];
+  const legacyReadable = JSON.stringify([scope.runtimeId, scope.profileId, scope.modelId, scope.secretGeneration]);
+  assert.equal(scopeKey, crypto.createHash("sha256").update(legacyReadable).digest("hex"));
+  assert.deepEqual(record.scope, { ...scope, runtimeIdentityFingerprint: "" });
   assert.deepEqual(record.threadIdByWorkspaceRoot, { "/workspace": "scoped-thread" });
+});
+
+test("exact-scope session lookup cannot cross runtime account identities", () => {
+  const filePath = createTempFile("sessions.json");
+  const store = new SessionStore({ filePath, runtimeId: "codebuddy" });
+  const firstIdentity = runtimeScope({
+    runtimeId: "codebuddy",
+    profileId: "codebuddy-profile",
+    runtimeIdentityFingerprint: "a".repeat(64),
+  });
+  const secondIdentity = {
+    ...firstIdentity,
+    runtimeIdentityFingerprint: "b".repeat(64),
+  };
+
+  store.setThreadIdForScope("binding-1", "/workspace", firstIdentity, "account-one-thread");
+
+  const reopened = new SessionStore({ filePath, runtimeId: "codebuddy" });
+  assert.equal(reopened.getThreadIdForScope("binding-1", "/workspace", firstIdentity), "account-one-thread");
+  assert.equal(reopened.getThreadIdForScope("binding-1", "/workspace", secondIdentity), "");
 });
 
 test("ambiguous or unactivated legacy sessions stay read-only and request a fresh scoped session", () => {
@@ -219,6 +247,7 @@ test("legacy Claude Code sessions remain readable and bind only to an explicit C
     profileId: "claude-profile",
     modelId: "claude-sonnet-4-5",
     secretGeneration: 0,
+    runtimeIdentityFingerprint: "",
   });
 
   const wrongRuntime = migrateLegacyBinding(binding, [

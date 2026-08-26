@@ -32,7 +32,7 @@ test("renderer profile snapshot contains flags but no secret material", async ()
 test("runtime options have no default and include the complete approved provider set", async () => {
   const options = await createHarness().service.listRuntimeOptions();
   assert.equal(options.defaultRuntimeId, "");
-  assert.deepEqual(options.runtimes.map((item) => item.id), ["builtin-api", "opencode", "codex", "claudecode"]);
+  assert.deepEqual(options.runtimes.map((item) => item.id), ["builtin-api", "opencode", "codex", "claudecode", "codebuddy"]);
   for (const id of ["openai", "openrouter", "anthropic", "gemini", "ollama", "deepseek", "kimi", "glm", "minimax", "hunyuan", "mimo", "qwen", "custom-openai"]) {
     assert.equal(options.providers.some((item) => item.id === id), true, id);
   }
