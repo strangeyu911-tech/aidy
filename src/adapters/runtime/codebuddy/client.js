@@ -4,11 +4,11 @@ const crypto = require("node:crypto");
 
 const {
   PUBLIC_ROUTES,
+  createSseMessageParser,
   decodeConnect,
   decodeHealth,
   encodeNewSessionParams,
   fingerprintAccountIdentity,
-  parseSseMessages,
   protocolError,
 } = require("./protocol-adapter");
 
@@ -87,11 +87,11 @@ class CodeBuddyClient {
     };
   }
 
-  async prompt({ sessionId, text, signal } = {}) {
+  async prompt({ sessionId, text, signal, onNotification } = {}) {
     const response = await this.rpc("session/prompt", {
       sessionId: requireText(sessionId, "CODEBUDDY_SESSION_FAILED", "CodeBuddy session is required."),
       prompt: [{ type: "text", text: requireText(text, "CODEBUDDY_TURN_FAILED", "CodeBuddy prompt is required.") }],
-    }, { signal });
+    }, { signal, onNotification });
     if (normalizeText(response.result?.stopReason) !== "end_turn") {
       throw protocolError("CODEBUDDY_TURN_FAILED", "CodeBuddy did not complete the verification turn.");
     }
@@ -147,7 +147,7 @@ class CodeBuddyClient {
     };
   }
 
-  async rpc(method, params, { signal } = {}) {
+  async rpc(method, params, { signal, onNotification } = {}) {
     if (!this.connectionId) throw protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy ACP is not connected.");
     const id = requireText(this.randomUUID(), "CODEBUDDY_API_INCOMPATIBLE", "ACP request ID is unavailable.");
     const messages = await this.requestSse(PUBLIC_ROUTES.acp, {
@@ -155,6 +155,9 @@ class CodeBuddyClient {
       signal,
       headers: { "acp-connection-id": this.connectionId },
       body: { jsonrpc: "2.0", id, method, params },
+      onMessage: (message) => {
+        if (message?.method && typeof onNotification === "function") onNotification(message);
+      },
     });
     const response = messages.find((message) => String(message.id ?? "") === id);
     if (!response) throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP response correlation failed.");
@@ -228,16 +231,17 @@ class CodeBuddyClient {
     }
   }
 
-  async requestSse(route, { method = "POST", body, signal, timeoutMs = this.timeoutMs, headers = {} } = {}) {
-    const text = await this.fetchProtected(route, {
+  async requestSse(route, {
+    method = "POST", body, signal, timeoutMs = this.timeoutMs, headers = {}, onMessage,
+  } = {}) {
+    return this.fetchProtected(route, {
       method,
       body,
       signal,
       timeoutMs,
       headers: { Accept: "application/json, text/event-stream", ...headers },
-      readResponse: (response) => readBoundedText(response, 256 * 1024),
+      readResponse: (response) => readSseMessages(response, 256 * 1024, onMessage),
     });
-    return parseSseMessages(text);
   }
 
   async fetchProtected(route, {
@@ -289,15 +293,45 @@ async function readBoundedJson(response) {
   throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy returned no JSON body.");
 }
 
-async function readBoundedText(response, maxBytes) {
+async function readSseMessages(response, maxBytes, onMessage) {
+  const parser = createSseMessageParser({ onMessage });
+  let totalBytes = 0;
+  const append = (text, bytes = Buffer.byteLength(text, "utf8")) => {
+    totalBytes += bytes;
+    if (totalBytes > maxBytes) {
+      throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP response exceeds the compatibility limit.");
+    }
+    parser.push(text);
+  };
+
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk?.done) break;
+        const bytes = chunk?.value instanceof Uint8Array
+          ? chunk.value
+          : Buffer.from(String(chunk?.value ?? ""), "utf8");
+        append(decoder.decode(bytes, { stream: true }), bytes.byteLength);
+      }
+      append(decoder.decode(), 0);
+      return parser.finish();
+    } catch (error) {
+      await Promise.resolve(reader.cancel?.()).catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock?.();
+    }
+  }
+
   if (typeof response.text !== "function") {
     throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP returned no SSE body.");
   }
   const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > maxBytes) {
-    throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP response exceeds the compatibility limit.");
-  }
-  return text;
+  append(text);
+  return parser.finish();
 }
 
 function collectAgentText(messages) {

@@ -33,28 +33,53 @@ function decodeConnect(value) {
 }
 
 function parseSseMessages(value) {
+  const parser = createSseMessageParser();
+  parser.push(String(value || ""));
+  return parser.finish();
+}
+
+function createSseMessageParser({ onMessage } = {}) {
   const messages = [];
+  let pending = "";
   let dataLines = [];
-  for (const line of String(value || "").split(/\r?\n/)) {
+
+  return Object.freeze({
+    push(value) {
+      pending += String(value || "");
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        consumeLine(pending.slice(0, newline).replace(/\r$/, ""));
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf("\n");
+      }
+    },
+    finish() {
+      if (pending) consumeLine(pending.replace(/\r$/, ""));
+      pending = "";
+      flushEvent();
+      return messages.slice();
+    },
+  });
+
+  function consumeLine(line) {
     if (line === "") {
-      flush();
-      continue;
+      flushEvent();
+      return;
     }
     if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
   }
-  flush();
-  return messages;
 
-  function flush() {
+  function flushEvent() {
     if (!dataLines.length) return;
     const text = dataLines.join("\n");
     dataLines = [];
-    try {
-      const parsed = JSON.parse(text);
-      if (isRecord(parsed)) messages.push(parsed);
-    } catch {
+    let parsed;
+    try { parsed = JSON.parse(text); } catch {
       throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP returned malformed SSE JSON.");
     }
+    if (!isRecord(parsed)) return;
+    messages.push(parsed);
+    if (typeof onMessage === "function") onMessage(parsed);
   }
 }
 
@@ -90,6 +115,7 @@ module.exports = {
   PUBLIC_ROUTES,
   decodeConnect,
   decodeHealth,
+  createSseMessageParser,
   encodeNewSessionParams,
   fingerprintAccountIdentity,
   parseSseMessages,

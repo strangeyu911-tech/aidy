@@ -172,3 +172,95 @@ test("ACP timeout remains active while the SSE response body is streaming", asyn
   await client.connect();
   await assert.rejects(client.initialize(), (error) => error.code === "CODEBUDDY_START_TIMEOUT");
 });
+
+test("ACP notifications are delivered incrementally across chunk boundaries before the correlated response", async () => {
+  const encoder = new TextEncoder();
+  const first = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: { sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "HEL" } } },
+  });
+  const second = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: { sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "LO" } } },
+  });
+  const terminal = JSON.stringify({ jsonrpc: "2.0", id: "stream-id", result: { stopReason: "end_turn" } });
+  const chunks = [
+    ": heartbeat\r\n\r\nevent: message\r\nda",
+    `ta: ${first.slice(0, 31)}`,
+    `${first.slice(31)}\r\n\r\n`,
+    `data: ${second}\n\ndata: ${terminal}\n\n`,
+  ];
+  let readIndex = 0;
+  let releaseTerminal;
+  const terminalGate = new Promise((resolve) => { releaseTerminal = resolve; });
+  const response = {
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (readIndex === 3) await terminalGate;
+            if (readIndex >= chunks.length) return { done: true };
+            return { done: false, value: encoder.encode(chunks[readIndex++]) };
+          },
+          async cancel() {},
+          releaseLock() {},
+        };
+      },
+    },
+  };
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44131",
+    servicePassword: "gateway-secret",
+    randomUUID: () => "stream-id",
+    fetchImpl: async () => response,
+  });
+  client.connectionId = "c";
+  const notifications = [];
+  let firstObservedResolve;
+  const firstObserved = new Promise((resolve) => { firstObservedResolve = resolve; });
+  const pending = client.prompt({
+    sessionId: "s",
+    text: "hello",
+    onNotification(message) {
+      notifications.push(message);
+      if (notifications.length === 1) firstObservedResolve();
+    },
+  });
+
+  await firstObserved;
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].params.update.content.text, "HEL");
+  releaseTerminal();
+  const result = await pending;
+  assert.equal(result.text, "HELLO");
+  assert.equal(notifications.length, 2);
+});
+
+test("ACP incremental stream enforces the total response byte limit", async () => {
+  const encoder = new TextEncoder();
+  let sent = false;
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44132",
+    servicePassword: "gateway-secret",
+    randomUUID: () => "oversized-id",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      body: { getReader: () => ({
+        async read() {
+          if (sent) return { done: true };
+          sent = true;
+          return { done: false, value: encoder.encode(`data: ${"x".repeat(257 * 1024)}\n\n`) };
+        },
+        async cancel() {},
+        releaseLock() {},
+      }) },
+    }),
+  });
+  client.connectionId = "c";
+  await assert.rejects(client.initialize(), (error) => error.code === "CODEBUDDY_API_INCOMPATIBLE");
+});
