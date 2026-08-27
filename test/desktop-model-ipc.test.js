@@ -46,11 +46,18 @@ test("preload exposes the model whitelist and UI contains first-run gates", () =
   for (const channel of MODEL_IPC_CHANNELS) assert.match(preload, new RegExp(channel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(html, /id="first-run-setup"/);
   assert.match(html, /id="model-profile-list"/);
+  assert.match(html, /id="profile-editor-status"/);
+  assert.match(html, /id="profile-editor-title"/);
+  assert.match(html, /id="profile-editor-state"/);
   assert.match(html, /id="profile-api-key"[^>]*type="password"[^>]*autocomplete="off"/);
   assert.match(html, /id="profile-service-password-label"/);
   assert.match(html, /外部 OpenCode[^<]*provider 凭据[^<]*外部实例/);
   assert.match(renderer, /configurationRequired/);
   assert.match(renderer, /finally\s*{[^}]*\.value\s*=\s*""/s);
+  assert.match(renderer, /profileTestResults = new Map/);
+  assert.match(renderer, /正在编辑：\$\{state\.name\}/);
+  assert.match(renderer, /profileEditorState\.formatProfileTestFailure/);
+  assert.match(renderer, /if \(modelProfiles\.length\) \{[\s\S]*renderModelProfiles\(\);[\s\S]*renderProfileEditorStatus\(\);/);
 });
 
 test("renderer maps CodeBuddy to the existing compatibility profile form", () => {

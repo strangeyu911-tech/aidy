@@ -91,6 +91,7 @@
           <div id="model-profile-list" class="profile-list empty-state">正在读取模型配置…</div>
           <form id="model-profile-editor" class="profile-editor hidden">
             <input id="profile-id" type="hidden">
+            <div id="profile-editor-status" class="profile-editor-status" role="status" aria-live="polite"><strong id="profile-editor-title">正在编辑：—</strong><span id="profile-editor-state"></span></div>
             <ol class="setup-steps">
               <li>
                 <strong>选择运行方式</strong>
@@ -191,6 +192,7 @@
     <div class="modal"><h3 id="modal-title">确认停止？</h3><p id="modal-description">停止后，微信回复、查岗、同步、日记和报表都会暂停。桌面控制中心会继续留在托盘中。</p><div class="modal-actions"><button id="modal-cancel" type="button">取消</button><button id="modal-stop-now" class="hidden" type="button">立即停止当前工作</button><button id="modal-confirm" class="danger" type="button">停止 CyberBoss</button></div></div>
   </div>
   <div id="toast" class="toast hidden"><span id="toast-text"></span><button id="toast-undo" type="button">撤销</button></div>
+  <script src="./profile-editor-state.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

@@ -7,6 +7,8 @@ let runtimeOptions = { runtimes: [], providers: [] };
 let modelProfiles = [];
 let editorProfile = null;
 let loadedModels = [];
+const profileEditorState = window.cyberbossProfileEditorState;
+const profileTestResults = new Map();
 
 const COMPATIBILITY_RUNTIME_IDS = Object.freeze(["codex", "claudecode", "codebuddy"]);
 const RUNTIME_DISPLAY_ORDER = Object.freeze({ codebuddy: 0, "builtin-api": 1, codex: 2, claudecode: 3, opencode: 4 });
@@ -89,6 +91,11 @@ function bindControls() {
   $("#profile-ownership").addEventListener("change", renderProfileFields);
   $("#profile-provider").addEventListener("change", applyProviderDefaults);
   $("#profile-model-search").addEventListener("input", renderModelOptions);
+  $("#profile-name").addEventListener("input", renderProfileEditorStatus);
+  $("#profile-model-id").addEventListener("input", () => {
+    $("#profile-test-result").classList.add("hidden");
+    renderProfileEditorStatus();
+  });
   $("#profile-model-id").addEventListener("change", selectOpenCodeProviderForModel);
   $("#refresh-profile-models").addEventListener("click", refreshProfileModels);
   $("#test-model-profile").addEventListener("click", testModelProfile);
@@ -155,6 +162,10 @@ function renderSnapshot(nextSnapshot) {
   renderRecent(snapshot.supervision.recent);
   renderSettings();
   renderBackfill();
+  if (modelProfiles.length) {
+    renderModelProfiles();
+    renderProfileEditorStatus();
+  }
 }
 
 function stateDisplay(phase, desired) {
@@ -241,14 +252,14 @@ function renderModelProfiles() {
     list.textContent = "还没有模型配置。请新增、测试并激活一个配置。";
     return;
   }
-  const activeId = snapshot?.engine?.activeProfile?.id || modelProfiles.find((item) => item.id === snapshot?.runtime?.selectedProfileId)?.id || "";
+  const activeId = resolveActiveProfileId();
   list.className = "profile-list";
   list.innerHTML = modelProfiles.map((profile) => {
     const active = profile.id === activeId;
     const engineDetail = profile.runtimeId === "codebuddy"
       ? `WorkBuddy / CodeBuddy · ${profile.modelId || "未选模型"}`
       : `${runtimeLabel(profile.runtimeId)} · ${providerLabel(profile.providerId)} · ${profile.modelId || "未选模型"}`;
-    return `<article class="profile-card ${active ? "active" : ""}"><div><span class="profile-state">${active ? "当前使用" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(engineDetail)}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button type="button" data-activate-profile="${escapeHtml(profile.id)}" ${profile.status === "verified" ? "" : "disabled"}>激活</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
+    return `<article class="profile-card ${active ? "active" : ""}"><div><span class="profile-state">${active ? "当前使用 · 已验证" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(engineDetail)}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button type="button" data-activate-profile="${escapeHtml(profile.id)}" ${profile.status === "verified" ? "" : "disabled"}>激活</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
   }).join("");
   list.querySelectorAll("[data-edit-profile]").forEach((button) => button.addEventListener("click", () => openProfileEditor(button.dataset.editProfile)));
   list.querySelectorAll("[data-test-profile]").forEach((button) => button.addEventListener("click", () => testExistingProfile(button.dataset.testProfile)));
@@ -280,9 +291,12 @@ function openProfileEditor(profileId = "") {
   $("#profile-api-key").value = "";
   $("#profile-service-password").value = "";
   $("#profile-sensitive-headers").value = "";
-  $("#profile-test-result").classList.add("hidden");
+  const previousTest = profileTestResults.get(editorProfile?.id);
+  if (previousTest?.modelId === $("#profile-model-id").value) setProfileResult(previousTest.text, previousTest.isError);
+  else $("#profile-test-result").classList.add("hidden");
   $("#activate-model-profile").disabled = editorProfile?.status !== "verified";
   $("#model-profile-editor").classList.remove("hidden");
+  renderProfileEditorStatus();
   $("#model-profile-editor").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -326,6 +340,7 @@ function renderProfileFields() {
     ? "WorkBuddy / CodeBuddy 目前不提供稳定的模型目录。请照抄 CodeBuddy 中显示的模型 ID；例如 auto（以你当前版本显示的名称为准），测试连接会确认它是否可用。"
     : strict ? "此运行方式必须从最新实时目录选择模型，不能使用手动 ID。" : "可从目录选择；目录不可用时也可以手动填写模型 ID。";
   renderRuntimeGuide(runtimeId);
+  renderProfileEditorStatus();
 }
 
 function renderRuntimeGuide(runtimeId) {
@@ -404,10 +419,16 @@ async function testModelProfile() {
     editorProfile = modelProfiles.find((item) => item.id === saved.id) || null;
     if (result.ok) {
       $("#activate-model-profile").disabled = false;
-      setProfileResult("连接测试通过。现在可以激活此配置。", false);
+      const text = "连接测试通过。现在可以激活此配置。";
+      profileTestResults.set(saved.id, { profileId: saved.id, modelId: saved.modelId, isError: false, text });
+      setProfileResult(text, false);
     } else {
       $("#activate-model-profile").disabled = true;
-      setProfileResult(`${result.error.summary} 修复建议：${result.error.repairAction}（${result.error.code}）`, true);
+      const current = modelProfiles.find((item) => item.id === saved.id) || saved;
+      const active = modelProfiles.find((item) => item.id === resolveActiveProfileId()) || null;
+      const text = profileEditorState.formatProfileTestFailure({ profile: current, activeProfile: active, error: result.error });
+      profileTestResults.set(saved.id, { profileId: saved.id, modelId: saved.modelId, isError: true, text });
+      setProfileResult(text, true);
     }
   } catch (error) {
     setProfileResult(error.message || "连接测试失败。", true);
@@ -517,6 +538,32 @@ function setProfileResult(text, isError) {
   result.textContent = text;
   result.classList.remove("hidden");
   result.classList.toggle("error-result", Boolean(isError));
+  renderProfileEditorStatus();
+}
+
+function renderProfileEditorStatus() {
+  const container = $("#profile-editor-status");
+  if (!container) return;
+  const id = $("#profile-id")?.value || "";
+  const state = profileEditorState.resolveProfileEditorState({
+    profiles: modelProfiles,
+    profileId: id,
+    activeProfileId: resolveActiveProfileId(),
+    testResult: profileTestResults.get(id) || null,
+  });
+  const currentModelId = $("#profile-model-id")?.value.trim() || "";
+  const testMatches = state.testResult && state.modelId === currentModelId;
+  $("#profile-editor-title").textContent = `正在编辑：${state.name}`;
+  $("#profile-editor-state").textContent = testMatches?.isError
+    ? `${state.status} · 模型 ID：${currentModelId}`
+    : state.active ? state.status : `状态：${state.status}`;
+  container.classList.toggle("error-result", Boolean(testMatches?.isError));
+}
+
+function resolveActiveProfileId() {
+  return snapshot?.engine?.activeProfile?.id
+    || modelProfiles.find((item) => item.id === snapshot?.runtime?.selectedProfileId)?.id
+    || "";
 }
 
 function renderEngine(engine, runtime) {
@@ -545,7 +592,7 @@ async function updateDiagnosticCapture(action) {
 
 function runtimeLabel(id, fallback = "") { return ({ "builtin-api": "内置 API", opencode: "OpenCode", codex: "Codex（兼容）", claudecode: "Claude Code（兼容）", codebuddy: "CodeBuddy" })[id] || fallback || id || "—"; }
 function providerLabel(id) { return runtimeOptions.providers.find((item) => item.id === id)?.displayName || id || "—"; }
-function profileStatusLabel(status) { return ({ verified: "已验证", draft: "需要测试", unverified: "验证已失效" })[status] || "需要测试"; }
+function profileStatusLabel(status) { return profileEditorState.profileStatusLabel(status); }
 function switchPhaseLabel(phase) { return ({ draining: "等待当前工作完成", aborting: "停止超时工作", stopping_old: "停止原模型", starting_new: "启动新模型", probing_new: "确认新模型状态", rolling_back: "恢复原模型" })[phase] || "切换模型"; }
 
 async function saveSettings() {

@@ -85,6 +85,11 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .profile-card p, .profile-card small { display: block; margin: 0; color: var(--muted); font-size: 12px; }
 .profile-state { color: var(--green); font-size: 11px; font-weight: 800; }
 .profile-editor { margin-top: 18px; border-top: 1px solid var(--line); }
+.profile-editor-status { display: grid; gap: 4px; margin-top: 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: #faf9f4; }
+.profile-editor-status strong { color: var(--ink); }
+.profile-editor-status span { color: var(--muted); font-size: 12px; }
+.profile-editor-status.error-result { border-color: #e6b9b2; background: #fff5f2; }
+.profile-editor-status.error-result span { color: var(--danger); }
 .setup-steps { margin: 0; padding: 0; list-style: none; counter-reset: setup; }
 .setup-steps > li { counter-increment: setup; padding: 20px 0 6px 46px; position: relative; border-top: 1px solid var(--line); }
 .setup-steps > li:first-child { border-top: 0; }
