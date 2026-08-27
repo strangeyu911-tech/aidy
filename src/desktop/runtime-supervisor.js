@@ -1,6 +1,7 @@
 const { EventEmitter } = require("events");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
+const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const path = require("path");
@@ -340,16 +341,17 @@ class RuntimeSupervisor extends EventEmitter {
     for (const [key, value] of Object.entries(childEnv)) {
       if (value === undefined) delete childEnv[key];
     }
-    const processHost = process.platform === "win32"
-      ? path.join(this.rootDir, "native", "win32", "CyberBoss.ProcessHost.exe")
-      : "";
-    const useProcessHost = Boolean(processHost && require("fs").existsSync(processHost));
-    const spawnCommand = useProcessHost ? processHost : command;
-    const spawnArgs = useProcessHost ? [String(process.pid), command, ...args] : args;
-    const child = spawn(spawnCommand, spawnArgs, {
-      cwd: this.rootDir,
+    const spawnSpec = resolveOwnedSpawnSpec({ rootDir: this.rootDir, command, args });
+    this.logger?.info(`${component}.spawn_spec`, {
+      command: spawnSpec.command,
+      args: spawnSpec.args,
+      cwd: spawnSpec.cwd,
+      jobObject: spawnSpec.useProcessHost,
+    });
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
+      cwd: spawnSpec.cwd,
       env: childEnv,
-      shell: useProcessHost ? false : shell,
+      shell: spawnSpec.useProcessHost ? false : shell,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -370,7 +372,7 @@ class RuntimeSupervisor extends EventEmitter {
           component,
           pid: child.pid,
           childPid: 0,
-          executablePath: spawnCommand,
+          executablePath: spawnSpec.command,
           commandPath: command,
           parentPid: process.pid,
           instanceToken: this.instanceToken,
@@ -378,7 +380,13 @@ class RuntimeSupervisor extends EventEmitter {
         },
       ],
     }));
-    this.logger?.info(`${component}.spawned`, { pid: child.pid, jobObject: useProcessHost });
+    this.logger?.info(`${component}.spawned`, {
+      pid: child.pid,
+      jobObject: spawnSpec.useProcessHost,
+      command: spawnSpec.command,
+      args: spawnSpec.args,
+      cwd: spawnSpec.cwd,
+    });
     this.emitState();
     return child;
   }
@@ -696,11 +704,50 @@ function normalizeWindowsPath(value) {
   return path.resolve(String(value || "")).toLowerCase();
 }
 
+function resolveOwnedSpawnSpec({
+  rootDir,
+  command,
+  args = [],
+  platform = process.platform,
+  resourcesPath = process.resourcesPath,
+  processHostAvailable,
+} = {}) {
+  const processHost = platform === "win32"
+    ? path.join(rootDir, "native", "win32", "CyberBoss.ProcessHost.exe")
+    : "";
+  const packagedAsar = isAsarPath(rootDir);
+  const canUseProcessHost = processHostAvailable === undefined
+    ? Boolean(processHost && fs.existsSync(processHost))
+    : processHostAvailable;
+  const useProcessHost = Boolean(processHost && !packagedAsar && canUseProcessHost);
+  const spawnCommand = useProcessHost ? processHost : command;
+  const spawnArgs = useProcessHost ? [String(process.pid), command, ...args] : args;
+  const cwd = packagedAsar ? resolvePackagedSpawnCwd(rootDir, resourcesPath) : rootDir;
+  return {
+    command: spawnCommand,
+    args: spawnArgs,
+    cwd,
+    processHost,
+    useProcessHost,
+    packagedAsar,
+  };
+}
+
+function resolvePackagedSpawnCwd(rootDir, resourcesPath) {
+  if (resourcesPath && !isAsarPath(resourcesPath) && fs.existsSync(resourcesPath)) return resourcesPath;
+  return path.dirname(rootDir);
+}
+
+function isAsarPath(value) {
+  return /(?:^|[\\/])app\.asar(?:[\\/]|$)/i.test(String(value || ""));
+}
+
 module.exports = {
   RuntimeSupervisor,
   checkReady,
   friendlyProcessError,
   normalizeGraceMs,
   normalizeProcessRegistry,
+  resolveOwnedSpawnSpec,
   waitUntil,
 };
