@@ -36,6 +36,23 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .setup-panel { margin-bottom: 18px; border: 1px solid #d9bd72; background: #fff8e7; border-radius: 22px; padding: 24px 26px; }
 .setup-panel h2 { margin: 0 0 8px; }
 .setup-panel p, .section-help { color: var(--muted); line-height: 1.6; }
+.onboarding-progress { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0; padding: 0; list-style: none; }
+.onboarding-progress li { border: 1px solid #e7d9b7; border-radius: 13px; padding: 11px 12px; background: rgba(255,255,255,.55); color: var(--muted); }
+.onboarding-progress li strong, .onboarding-progress li small { display: block; }
+.onboarding-progress li small { margin-top: 4px; font-size: 11px; }
+.onboarding-progress li.current { border-color: var(--green); background: #f0f7f4; color: var(--green); }
+.onboarding-progress li.complete { border-color: #a9c6ba; background: #edf6f1; color: var(--green); }
+.onboarding-actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+.secondary-action { border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); padding: 9px 14px; font-weight: 700; }
+.environment-status { margin-top: 12px; padding: 12px 14px; border: 1px solid #b9d3c8; border-radius: 13px; background: #f0f7f4; display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+.environment-status strong, .environment-status p { display: block; }
+.environment-status p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.environment-status button { flex: 0 0 auto; }
+.advanced-settings { margin-top: 18px; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,253,248,.72); }
+.advanced-settings > summary { cursor: pointer; padding: 17px 22px; color: var(--green); font-weight: 800; list-style-position: inside; }
+.advanced-settings[open] > summary { border-bottom: 1px solid var(--line); }
+.advanced-settings > .panel { margin: 0; border: 0; border-radius: 0; border-bottom: 1px solid var(--line); }
+.advanced-settings > .panel:last-of-type { border-bottom: 0; }
 .primary-action { border: 0 !important; border-radius: 10px; background: var(--green) !important; color: #fff !important; padding: 9px 14px; font-weight: 700; }
 .mode-card, .panel, .action-panel { margin-top: 18px; border: 1px solid var(--line); background: var(--card); border-radius: 20px; }
 .mode-card { padding: 20px 22px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
@@ -109,6 +126,9 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .model-picker { display: flex; gap: 9px; }
 .model-picker input { flex: 1; }
 .model-picker button, .setup-steps button, .profile-card button { border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 9px 12px; }
+.profile-card .profile-activate-button:disabled,
+.profile-card .profile-activate-button:disabled:hover,
+.profile-card .profile-activate-button:disabled:active { border-color: #d8d5cb; background: #edece7; color: var(--muted); box-shadow: none; }
 .editor-actions { display: flex; justify-content: flex-end; gap: 9px; }
 .error-result { color: var(--danger) !important; }
 .diagnostic-capture { display: grid; gap: 12px; }

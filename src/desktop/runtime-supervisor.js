@@ -332,7 +332,7 @@ class RuntimeSupervisor extends EventEmitter {
       },
     });
     const ready = await waitForBridgeReady(child, 45_000);
-    if (!ready) throw processError("BRIDGE_NOT_READY", "微信桥接未能完成启动。", "bridge");
+    if (!ready) throw child.__cyberbossError || processError("BRIDGE_NOT_READY", "微信桥接未能完成启动。", "bridge");
     this.bridgeClient = this.bridgeClientFactory({ port: this.bridgeControlPort, token: this.bridgeControlToken });
   }
 
@@ -394,6 +394,11 @@ class RuntimeSupervisor extends EventEmitter {
   handleOutput(component, chunk, isError) {
     const output = String(chunk || "");
     const child = this.children.get(component);
+    if (child && component === "bridge" && /No saved WeChat account was found|WeChat account is missing a token/i.test(output)) {
+      child.__cyberbossError = processError("WECHAT_LOGIN_REQUIRED", "尚未连接微信。", "wechat");
+    } else if (child && component === "bridge" && /Multiple WeChat accounts were detected/i.test(output)) {
+      child.__cyberbossError = processError("WECHAT_ACCOUNT_SELECTION_REQUIRED", "检测到多个微信账号，需要先选择一个账号。", "wechat");
+    }
     if (child && component === "bridge" && output.includes("bridge loop started")) {
       child.__cyberbossReady = true;
     }
@@ -634,9 +639,30 @@ function normalizeText(value) {
 }
 
 function friendlyProcessError(error) {
+  const code = error?.code || "PROCESS_ERROR";
+  if (code === "WECHAT_LOGIN_REQUIRED") {
+    return {
+      category: "configuration",
+      code,
+      capability: "wechat",
+      summary: "尚未连接微信。",
+      repairAction: "点击“连接微信”并扫码登录",
+      timestamp: new Date().toISOString(),
+    };
+  }
+  if (code === "WECHAT_ACCOUNT_SELECTION_REQUIRED") {
+    return {
+      category: "configuration",
+      code,
+      capability: "wechat",
+      summary: "检测到多个微信账号。",
+      repairAction: "设置默认微信账号后重试",
+      timestamp: new Date().toISOString(),
+    };
+  }
   return {
     category: "process",
-    code: error?.code || "PROCESS_ERROR",
+    code,
     capability: error?.capability || "runtime",
     summary: error?.message || "后台服务启动失败。",
     repairAction: "重试启动",

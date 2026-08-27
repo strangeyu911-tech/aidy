@@ -2,6 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
+const { spawn } = require("child_process");
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } = require("electron");
 const dotenv = require("dotenv");
@@ -20,6 +21,8 @@ const { createOpenCodeRuntimeAdapter } = require("../adapters/runtime/opencode")
 const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
 const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
 const { verifyCodeBuddyEchoTool } = require("../adapters/runtime/codebuddy");
+const { locateCodeBuddyDistribution } = require("../adapters/runtime/codebuddy/distribution-locator");
+const { listWeixinAccounts, loadWeixinAccount } = require("../adapters/channel/weixin/account-store");
 const { ProviderCatalog } = require("../services/provider-catalog");
 const { ProviderVerifier } = require("../services/provider-verifier");
 const { CredentialVault } = require("../security/credential-vault");
@@ -35,6 +38,7 @@ const { RuntimeSupervisor } = require("./runtime-supervisor");
 const { RuntimeProfileVerifier } = require("./runtime-profile-verifier");
 const { SupervisionDispatcher } = require("./supervision-dispatcher");
 const { WindowsTaskService } = require("./windows-task-service");
+const { resolveOnboardingStatus, resolveWeixinAccountStatus } = require("./onboarding-state");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 loadEnvironment(rootDir);
@@ -122,6 +126,8 @@ let mainWindow = null;
 let tray = null;
 let quitting = false;
 let shutdownStarted = false;
+let wechatLoginProcess = null;
+let codeBuddyStatus = { state: "not_checked", label: "尚未检查 WorkBuddy / CodeBuddy" };
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -251,6 +257,9 @@ function registerIpc() {
   ipcMain.handle("desktop:get-snapshot", () => buildSnapshot());
   ipcMain.handle("desktop:set-state", (_event, desiredState) => applyDesiredState(desiredState));
   ipcMain.handle("desktop:retry", async () => { await supervisor.retry(); return buildSnapshot(); });
+  ipcMain.handle("desktop:check-codebuddy", async () => checkCodeBuddyEnvironment());
+  ipcMain.handle("desktop:start-wechat-login", () => startWeixinLogin());
+  ipcMain.handle("desktop:refresh-onboarding", () => buildSnapshot());
   ipcMain.handle("desktop:update-settings", (_event, patch) => updateSettings(patch));
   ipcMain.handle("desktop:list-diary", (_event, options) => recordsService.listDiary(options));
   ipcMain.handle("desktop:list-reports", () => recordsService.listReports());
@@ -342,11 +351,18 @@ function buildSnapshot() {
     ? { ...supervisorRuntime, phase: "configuration_required" }
     : supervisorRuntime;
   const engine = buildEngineSnapshot({ activeProfile: profileStore.getActive(), runtime });
+  const wechat = resolveWechatStatus(runtime, resolveWeixinAccountStatus({
+    config,
+    listAccounts: listWeixinAccounts,
+    loadAccount: loadWeixinAccount,
+  }));
   return {
     settings,
     runtime,
     engine,
-    wechat: resolveWechatStatus(runtime),
+    wechat,
+    onboarding: resolveOnboardingStatus({ engine, runtime, wechat, settings }),
+    codeBuddy: codeBuddyStatus,
     supervision: {
       random: {
         enabled: settings.randomCheckinsEnabled,
@@ -365,6 +381,52 @@ function buildSnapshot() {
     startupTaskError,
     stateDir,
   };
+}
+
+async function checkCodeBuddyEnvironment() {
+  codeBuddyStatus = { state: "checking", label: "正在检查 WorkBuddy / CodeBuddy…" };
+  publishSnapshot();
+  try {
+    const distribution = await locateCodeBuddyDistribution();
+    codeBuddyStatus = {
+      state: "installed",
+      label: `已检测到 ${distribution.sourceLabel || "WorkBuddy / CodeBuddy"}`,
+      detail: distribution.version ? `版本 ${distribution.version}。登录状态和模型可用性会在连接测试中确认。` : "已检测到可用安装。登录状态和模型可用性会在连接测试中确认。",
+    };
+  } catch (error) {
+    codeBuddyStatus = {
+      state: "missing",
+      code: error.code || "CODEBUDDY_BINARY_NOT_FOUND",
+      label: "未检测到 WorkBuddy / CodeBuddy",
+      detail: "请先安装并登录 WorkBuddy / CodeBuddy，然后重新检查。",
+    };
+  }
+  publishSnapshot();
+  return codeBuddyStatus;
+}
+
+function startWeixinLogin() {
+  if (wechatLoginProcess && wechatLoginProcess.exitCode == null) {
+    return { started: false, alreadyRunning: true, message: "微信登录窗口已经打开。完成扫码后关闭窗口，再回到这里检查。" };
+  }
+  if (process.platform !== "win32") {
+    return { started: false, message: "请在 CyberBoss 项目目录运行 npm run login。" };
+  }
+  const command = process.env.ComSpec || "cmd.exe";
+  const child = spawn(command, ["/d", "/k", "npm.cmd", "run", "login"], {
+    cwd: rootDir,
+    env: process.env,
+    detached: true,
+    windowsHide: false,
+    stdio: "ignore",
+  });
+  wechatLoginProcess = child;
+  child.once("exit", () => {
+    if (wechatLoginProcess === child) wechatLoginProcess = null;
+    publishSnapshot();
+  });
+  child.unref();
+  return { started: true, message: "微信登录窗口已打开。完成扫码后关闭窗口，再回到这里检查。" };
 }
 
 async function listOpenCodeCatalog(profile, secrets, options = {}) {
@@ -493,11 +555,12 @@ function writeClaudeVerificationConfig(workspaceRoot, mcpServer) {
   return configPath;
 }
 
-function resolveWechatStatus(runtime) {
-  if (["running", "quiet"].includes(runtime.phase)) return { state: "connected", label: "已连接" };
-  if (runtime.phase === "starting") return { state: "reconnecting", label: "正在连接" };
-  if (runtime.phase === "error") return { state: "error", label: "连接异常" };
-  return { state: "stopped", label: "已停止" };
+function resolveWechatStatus(runtime, account) {
+  if (["running", "quiet"].includes(runtime.phase)) return { ...account, state: "connected", label: "已连接", detail: "微信回复和监管安排已启用。" };
+  if (runtime.phase === "starting") return { ...account, state: "connecting", label: "正在连接", detail: "正在连接微信和模型服务。" };
+  if (runtime.phase === "error" && account.configured) return { ...account, state: "error", label: "连接异常", detail: "微信连接没有成功，请检查状态并重试。" };
+  if (!account.configured) return account;
+  return { ...account, state: "ready", label: "已登录", detail: "启动 CyberBoss 后会连接微信。" };
 }
 
 function publishSnapshot() {

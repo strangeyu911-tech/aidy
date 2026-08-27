@@ -45,6 +45,11 @@ test("preload exposes the model whitelist and UI contains first-run gates", () =
   const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "desktop", "renderer", "renderer.js"), "utf8");
   for (const channel of MODEL_IPC_CHANNELS) assert.match(preload, new RegExp(channel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(html, /id="first-run-setup"/);
+  assert.match(html, /id="onboarding-progress"/);
+  assert.match(html, /id="onboarding-primary-action"/);
+  assert.match(html, /id="profile-connection-step"/);
+  assert.match(html, /id="advanced-settings"/);
+  assert.match(html, /id="codebuddy-environment"/);
   assert.match(html, /id="model-profile-list"/);
   assert.match(html, /id="profile-editor-status"/);
   assert.match(html, /id="profile-editor-title"/);

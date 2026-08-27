@@ -33,7 +33,7 @@ const RUNTIME_SETUP_GUIDES = Object.freeze({
     title: "推荐：WorkBuddy / CodeBuddy",
     body: "这是 CyberBoss 面向新用户的推荐路径。安装并登录 WorkBuddy 后回到这里，填写它显示的模型并测试连接。CyberBoss 会自动管理本机连接所需的安全凭据。",
     steps: ["安装 WorkBuddy（或单独安装 CodeBuddy）", "在 WorkBuddy / CodeBuddy 中登录", "回到这里填写模型并点击“保存并测试连接”", "测试通过后激活配置"],
-    notice: "CodeBuddy 登录属于当前 Windows 用户；所有 CyberBoss CodeBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\nCodeBuddy 的 HTTP API 目前为 Beta。上游升级可能暂时造成不兼容；CyberBoss 不会尝试内部接口或猜测降级。\n\nCyberBoss 只展示 CodeBuddy 返回的用量信息，不合并或推断 WorkBuddy 活动额度。",
+    notice: "CodeBuddy 登录属于当前 Windows 用户；所有 CyberBoss CodeBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\n连接能力可能随 WorkBuddy / CodeBuddy 版本变化；如果遇到连接问题，请先更新 WorkBuddy / CodeBuddy 后再次测试。",
   },
 });
 
@@ -83,6 +83,9 @@ function bindControls() {
   $("#sync-zhijian").addEventListener("click", async () => renderSnapshot(await api.syncZhijiantime()));
   $("#authorize-zhijian").addEventListener("click", authorizeZhijiantime);
   $("#exit-app").addEventListener("click", () => api.exit());
+  $("#onboarding-primary-action").addEventListener("click", handleOnboardingPrimaryAction);
+  $("#onboarding-secondary-action").addEventListener("click", refreshOnboarding);
+  $("#check-codebuddy-environment").addEventListener("click", checkCodeBuddyEnvironment);
   $$('[data-open-model-setup]').forEach((button) => button.addEventListener("click", openModelSettings));
   $("#new-model-profile").addEventListener("click", () => openProfileEditor());
   $("#cancel-model-profile").addEventListener("click", closeProfileEditor);
@@ -138,7 +141,7 @@ function renderSnapshot(nextSnapshot) {
   snapshot = nextSnapshot;
   const desired = snapshot.settings.desiredState;
   const phase = snapshot.runtime.phase;
-  const display = stateDisplay(phase, desired);
+  const display = stateDisplay(phase, desired, snapshot.onboarding);
   $("#state-title").textContent = display.title;
   $("#state-description").textContent = display.description;
   $("#header-state").textContent = display.short;
@@ -146,14 +149,15 @@ function renderSnapshot(nextSnapshot) {
   $("#power-button").classList.toggle("stop", desired !== "stopped");
   const configurationRequired = snapshot.engine?.configurationRequired !== false;
   $("#first-run-setup").classList.toggle("hidden", !configurationRequired);
-  $("#power-button").disabled = configurationRequired || snapshot.engine?.canRun === false;
+  const onboardingBlocked = ["model", "wechat"].includes(snapshot.onboarding?.step);
+  $("#power-button").disabled = configurationRequired || onboardingBlocked || snapshot.engine?.canRun === false;
   $$("[data-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === desired);
-    button.disabled = configurationRequired || phase === "switching";
+    button.disabled = configurationRequired || onboardingBlocked || phase === "switching";
   });
   renderEngine(snapshot.engine, snapshot.runtime);
   $("#wechat-state").textContent = snapshot.wechat.label;
-  $("#wechat-detail").textContent = phase === "quiet" ? "回复保留，主动推送静默" : "后台连接状态";
+  $("#wechat-detail").textContent = phase === "quiet" ? "回复保留，主动推送静默" : snapshot.wechat.detail || "后台连接状态";
   $("#random-range").textContent = snapshot.supervision.random.enabled
     ? `${snapshot.supervision.random.minMinutes}–${snapshot.supervision.random.maxMinutes} 分钟`
     : "已关闭";
@@ -162,18 +166,28 @@ function renderSnapshot(nextSnapshot) {
   renderRecent(snapshot.supervision.recent);
   renderSettings();
   renderBackfill();
+  renderOnboarding(snapshot);
   if (modelProfiles.length) {
     renderModelProfiles();
     renderProfileEditorStatus();
   }
 }
 
-function stateDisplay(phase, desired) {
-  if (phase === "configuration_required") return { title: "需要设置模型", short: "未配置", description: "请先新增配置、完成实时连接测试并激活模型。" };
+function stateDisplay(phase, desired, onboarding = null) {
+  if (onboarding?.complete && ["running", "quiet"].includes(phase)) {
+    return { title: "CyberBoss 已配置完成并正在运行", short: "运行中", description: "AI 模型已连接，微信已连接。现在可以关闭控制中心，CyberBoss 会继续在托盘运行。" };
+  }
+  if (onboarding?.step === "wechat" && phase !== "starting") {
+    return { title: "还差微信连接", short: "待连接", description: "模型已经准备好。连接微信后，才能接收和回复消息。" };
+  }
+  if (onboarding?.step === "start" && phase === "stopped") {
+    return { title: "准备启动", short: "待启动", description: "模型和微信都已准备好，启动 CyberBoss 后才会开始工作。" };
+  }
+  if (phase === "configuration_required") return { title: "需要设置模型", short: "未配置", description: "请先连接 AI 模型并完成测试。" };
   if (phase === "switching") return { title: "正在切换模型", short: "切换中", description: "正在等待当前回复与工具安全结束，然后切换模型服务。" };
   if (phase === "starting") return { title: "正在启动", short: "启动中", description: "正在依次连接模型服务与微信，完成后会自动进入监管状态。" };
   if (phase === "stopping") return { title: "正在停止", short: "停止中", description: "正在安全关闭后台服务和当前任务。" };
-  if (phase === "error") return { title: "需要处理", short: "异常", description: "桌面控制中心仍在运行，你可以查看下面的修复建议。" };
+  if (phase === "error") return { title: "需要处理", short: "异常", description: "请按下面的修复建议完成连接。" };
   if (desired === "quiet") return { title: "静默运行中", short: "静默", description: "会回复你的消息，并继续同步、日记和报表；不会主动发起查岗。" };
   if (desired === "running") return { title: "监管运行中", short: "运行", description: "微信回复、随机查岗和固定安排都已启用。关闭窗口后仍会在托盘运行。" };
   return { title: "已停止", short: "停止", description: "后台服务已停止；控制中心仍留在托盘，可随时重新启动。" };
@@ -182,11 +196,65 @@ function stateDisplay(phase, desired) {
 function renderError(error) {
   const card = $("#error-card");
   if (!error) { card.classList.add("hidden"); card.textContent = ""; return; }
-  const capabilityLabel = error.capability === "bridge" ? "微信连接" : error.capability;
+  const capabilityLabel = ["bridge", "wechat"].includes(error.capability) ? "微信连接" : error.capability;
   const summary = error.code === "BRIDGE_NOT_READY" ? "微信连接组件未能启动。" : error.summary;
   card.classList.remove("hidden");
   card.innerHTML = `<strong>${escapeHtml(summary)}</strong><p>受影响：${escapeHtml(capabilityLabel)}。建议：${escapeHtml(error.repairAction)}。</p><button id="retry-button" type="button">重试启动</button>`;
   $("#retry-button").addEventListener("click", async () => renderSnapshot(await api.retry()));
+}
+
+function renderOnboarding(currentSnapshot) {
+  const onboarding = currentSnapshot.onboarding || { step: "model", complete: false, title: "先连接一个你能使用的模型", description: "完成模型连接测试并激活后，下一步是连接微信。" };
+  const panel = $("#first-run-setup");
+  panel.classList.toggle("hidden", Boolean(onboarding.complete));
+  $("#onboarding-description").textContent = onboarding.description;
+  $$("[data-onboarding-step]").forEach((item) => {
+    const step = item.dataset.onboardingStep;
+    item.classList.toggle("current", step === onboarding.step);
+    item.classList.toggle("complete", ["wechat", "start", "complete"].includes(onboarding.step) && step === "model"
+      || onboarding.step === "start" && step === "wechat"
+      || onboarding.step === "complete" && ["model", "wechat", "start"].includes(step));
+  });
+  const primary = $("#onboarding-primary-action");
+  const secondary = $("#onboarding-secondary-action");
+  primary.textContent = onboarding.step === "model" ? "开始设置模型"
+    : onboarding.step === "wechat" ? "连接微信"
+      : "启动 CyberBoss";
+  primary.classList.toggle("hidden", onboarding.complete);
+  secondary.classList.toggle("hidden", onboarding.step !== "wechat" || onboarding.complete);
+}
+
+function handleOnboardingPrimaryAction() {
+  const step = snapshot?.onboarding?.step || "model";
+  if (step === "model") return openModelSettings();
+  if (step === "wechat") return connectWeChat();
+  if (step === "start") return changeState("running");
+  return null;
+}
+
+async function connectWeChat() {
+  const result = $("#onboarding-action-result");
+  try {
+    const response = await api.startWeChatLogin();
+    result.textContent = response.message || "微信登录窗口已打开。完成扫码后回到这里检查。";
+    result.classList.remove("hidden", "error-result");
+  } catch (error) {
+    result.textContent = friendlyUiError(error);
+    result.classList.remove("hidden");
+    result.classList.add("error-result");
+  }
+}
+
+async function refreshOnboarding() {
+  try {
+    renderSnapshot(await api.refreshOnboarding());
+    $("#onboarding-action-result").textContent = "已重新检查微信连接状态。";
+    $("#onboarding-action-result").classList.remove("hidden", "error-result");
+  } catch (error) {
+    $("#onboarding-action-result").textContent = friendlyUiError(error);
+    $("#onboarding-action-result").classList.remove("hidden");
+    $("#onboarding-action-result").classList.add("error-result");
+  }
 }
 
 function renderCheckpoints(items) {
@@ -274,6 +342,7 @@ function openModelSettings() {
   else if ($("#model-profile-editor").classList.contains("hidden")) {
     openProfileEditor(snapshot?.engine?.activeProfile?.id || modelProfiles[0].id);
   }
+  if ($("#profile-runtime").value === "codebuddy") void checkCodeBuddyEnvironment();
 }
 
 function openProfileEditor(profileId = "") {
@@ -317,6 +386,7 @@ function renderProfileFields() {
   $("#profile-service-password-row").classList.toggle("hidden", !external);
   $("#profile-service-password-label").textContent = isCodeBuddy ? "CodeBuddy 网关密码" : "OpenCode 服务密码";
   $("#external-opencode-notice").classList.toggle("hidden", !external);
+  $("#profile-connection-step").classList.toggle("hidden", isCodeBuddy);
   $("#profile-base-url-row").classList.toggle("hidden", isCodeBuddy);
   $("#profile-api-key-row").classList.toggle("hidden", external || isCompatibilityRuntime);
   $("#profile-sensitive-headers-row").classList.toggle("hidden", external || isCompatibilityRuntime);
@@ -340,6 +410,8 @@ function renderProfileFields() {
     ? "WorkBuddy / CodeBuddy 目前不提供稳定的模型目录。请照抄 CodeBuddy 中显示的模型 ID；例如 auto（以你当前版本显示的名称为准），测试连接会确认它是否可用。"
     : strict ? "此运行方式必须从最新实时目录选择模型，不能使用手动 ID。" : "可从目录选择；目录不可用时也可以手动填写模型 ID。";
   renderRuntimeGuide(runtimeId);
+  $("#codebuddy-environment").classList.toggle("hidden", !isCodeBuddy);
+  renderCodeBuddyEnvironment();
   renderProfileEditorStatus();
 }
 
@@ -350,6 +422,65 @@ function renderRuntimeGuide(runtimeId) {
   step.classList.remove("hidden");
   $("#runtime-guide-title").textContent = guide.title;
   $("#runtime-guide-content").innerHTML = `<p>${escapeHtml(guide.body)}</p>${guide.steps ? `<ol>${guide.steps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>` : ""}${guide.notice ? `<p class="notice">${escapeHtml(guide.notice)}</p>` : ""}`;
+}
+
+function renderCodeBuddyEnvironment() {
+  const container = $("#codebuddy-environment");
+  if (!container) return;
+  const status = snapshot?.codeBuddy || { state: "not_checked", label: "尚未检查 WorkBuddy / CodeBuddy", detail: "检查安装后，再通过连接测试确认登录和模型可用性。" };
+  const profile = modelProfiles.find((item) => item.id === $("#profile-id")?.value) || editorProfile;
+  const test = profileTestResults.get(profile?.id || "");
+  const verified = profile?.status === "verified" || test?.code === "";
+  const loginRequired = test?.code === "CODEBUDDY_LOGIN_REQUIRED";
+  const title = verified
+    ? "已登录且可用"
+    : loginRequired ? "需要登录 WorkBuddy / CodeBuddy" : status.label || "WorkBuddy / CodeBuddy 环境";
+  const detail = verified
+    ? "连接测试已通过，当前模型可以使用。"
+    : loginRequired
+      ? "未检测到 WorkBuddy / CodeBuddy 登录，请先登录后再次测试。"
+      : status.detail || "登录状态和模型可用性会在连接测试中确认。";
+  $("#codebuddy-environment-title").textContent = title;
+  $("#codebuddy-environment-detail").textContent = detail;
+  $("#check-codebuddy-environment").disabled = status.state === "checking";
+}
+
+async function checkCodeBuddyEnvironment() {
+  const button = $("#check-codebuddy-environment");
+  button.disabled = true;
+  try {
+    const status = await api.checkCodeBuddy();
+    snapshot = { ...(snapshot || {}), codeBuddy: status };
+    renderCodeBuddyEnvironment();
+  } catch (error) {
+    $("#codebuddy-environment-detail").textContent = friendlyUiError(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function missingRequiredApiKey() {
+  if ($("#profile-runtime").value !== "builtin-api") return false;
+  const provider = runtimeOptions.providers.find((item) => item.id === $("#profile-provider").value);
+  if (!provider?.requiresApiKey || $("#profile-api-key").value.trim()) return false;
+  return !(editorProfile?.providerId === provider.id && editorProfile?.hasApiKey === true);
+}
+
+function friendlyUiError(error) {
+  const raw = String(error?.message || "");
+  if (/Credential encryption failed|CREDENTIAL_ENCRYPT_FAILED|DPAPI/i.test(raw)) {
+    return "无法安全保存凭据。请使用当前 Windows 用户重新登录后再试。";
+  }
+  if (/No saved WeChat account|WECHAT_LOGIN_REQUIRED|微信账号.*缺失/i.test(raw)) {
+    return "尚未连接微信。请点击“连接微信”并扫码登录。";
+  }
+  if (/Multiple WeChat accounts|WECHAT_ACCOUNT_SELECTION_REQUIRED/i.test(raw)) {
+    return "检测到多个微信账号，请先设置默认账号后再试。";
+  }
+  if (/Error invoking remote method|IPC_/i.test(raw)) {
+    return "控制中心暂时无法完成此操作，请稍后重试或查看诊断详情。";
+  }
+  return raw || "操作失败，请按页面提示修复后重试。";
 }
 
 function applyProviderDefaults() {
@@ -364,7 +495,7 @@ async function saveModelDraft(event) {
     const saved = await persistEditor({ includeSecrets: true });
     setProfileResult(`草稿“${saved.name}”已安全保存。还需要测试并激活。`, false);
   } catch (error) {
-    setProfileResult(error.message || "保存失败。", true);
+    setProfileResult(friendlyUiError(error), true);
   } finally {
     $("#profile-api-key").value = "";
     $("#profile-service-password").value = "";
@@ -384,7 +515,7 @@ async function refreshProfileModels() {
     renderModelOptions();
     setProfileResult(result.stale ? "只取得旧目录，不能用于激活。请检查连接后重试。" : `已加载 ${loadedModels.length} 个实时模型。`, result.stale);
   } catch (error) {
-    setProfileResult(error.message || "刷新模型失败。", true);
+    setProfileResult(friendlyUiError(error), true);
   } finally {
     clearSecretInputs();
     button.disabled = false;
@@ -411,7 +542,12 @@ function selectOpenCodeProviderForModel() {
 async function testModelProfile() {
   const button = $("#test-model-profile");
   button.disabled = true;
-  setProfileResult($("#profile-runtime").value === "codebuddy" ? "正在验证 WorkBuddy / CodeBuddy 登录、模型和连接…" : "正在检查凭据、模型、流式回复、工具和取消能力…", false);
+  if (missingRequiredApiKey()) {
+    setProfileResult("还没有填写 API Key。请在上面的 API Key 字段中填写，然后再次测试连接。", true);
+    button.disabled = false;
+    return;
+  }
+  setProfileResult($("#profile-runtime").value === "codebuddy" ? "正在验证 WorkBuddy / CodeBuddy 登录、模型和连接…" : "正在检查模型能否完整回复、执行必要操作并继续任务…", false);
   try {
     const saved = await persistEditor({ includeSecrets: true });
     const result = await api.testProfile(saved.id);
@@ -420,18 +556,20 @@ async function testModelProfile() {
     if (result.ok) {
       $("#activate-model-profile").disabled = false;
       const text = "连接测试通过。现在可以激活此配置。";
-      profileTestResults.set(saved.id, { profileId: saved.id, modelId: saved.modelId, isError: false, text });
+      profileTestResults.set(saved.id, { profileId: saved.id, modelId: saved.modelId, isError: false, text, code: "" });
       setProfileResult(text, false);
+      renderCodeBuddyEnvironment();
     } else {
       $("#activate-model-profile").disabled = true;
       const current = modelProfiles.find((item) => item.id === saved.id) || saved;
       const active = modelProfiles.find((item) => item.id === resolveActiveProfileId()) || null;
       const text = profileEditorState.formatProfileTestFailure({ profile: current, activeProfile: active, error: result.error });
-      profileTestResults.set(saved.id, { profileId: saved.id, modelId: saved.modelId, isError: true, text });
+      profileTestResults.set(saved.id, { profileId: saved.id, modelId: saved.modelId, isError: true, text, code: result.error?.code || "" });
       setProfileResult(text, true);
+      renderCodeBuddyEnvironment();
     }
   } catch (error) {
-    setProfileResult(error.message || "连接测试失败。", true);
+    setProfileResult(friendlyUiError(error), true);
   } finally {
     clearSecretInputs();
     button.disabled = false;
@@ -452,12 +590,14 @@ async function activateExistingProfile(id) {
     await reloadProfiles();
     renderSnapshot(await api.getSnapshot());
     setProfileResult("模型配置已激活。", false);
+    $("#nav-control").click();
+    window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (error) {
     await reloadProfiles();
     editorProfile = modelProfiles.find((item) => item.id === previousActiveId) || editorProfile;
     renderSnapshot(await api.getSnapshot());
     const previous = modelProfiles.find((item) => item.id === previousActiveId);
-    setProfileResult(`切换失败；${previous ? `仍在使用“${previous.name}”` : "未改变原选择"}。${error.message || "请按状态提示修复后重试。"}`, true);
+    setProfileResult(`切换失败；${previous ? `仍在使用“${previous.name}”` : "未改变原选择"}。${friendlyUiError(error)}`, true);
   }
 }
 
@@ -474,7 +614,7 @@ async function deleteModelProfile(id) {
     if (editorProfile?.id === id) closeProfileEditor();
     await reloadProfiles();
   } catch (error) {
-    setProfileResult(error.message || "删除失败。", true);
+    setProfileResult(friendlyUiError(error), true);
   }
 }
 
@@ -575,7 +715,7 @@ function renderEngine(engine, runtime) {
   } else {
     $("#engine-detail").textContent = active
       ? (active.runtimeId === "codebuddy" ? `WorkBuddy / CodeBuddy · ${active.modelId}` : `${providerLabel(active.providerId)} · ${active.modelId}`)
-      : "请先新增、验证并激活";
+      : "请先连接 AI 模型";
   }
 }
 

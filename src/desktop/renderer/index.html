@@ -23,10 +23,19 @@
       <section id="view-control" class="view active" aria-labelledby="nav-control">
         <div id="error-card" class="error-card hidden"></div>
         <section id="first-run-setup" class="setup-panel hidden" aria-labelledby="first-run-title">
-          <span class="eyebrow">首次设置 · 推荐从 WorkBuddy / CodeBuddy 开始</span>
-          <h2 id="first-run-title">先连接一个你能使用的模型</h2>
-          <p>选择一个你能使用的模型引擎，按页面提示完成连接测试并激活；成功前“运行”和“静默”不会开启。</p>
-          <button class="primary-action" type="button" data-open-model-setup>开始设置模型</button>
+          <span id="onboarding-eyebrow" class="eyebrow">首次设置 · 共 3 步</span>
+          <h2 id="first-run-title">让 CyberBoss 开始工作</h2>
+          <p id="onboarding-description">先连接一个你能使用的模型。</p>
+          <ol id="onboarding-progress" class="onboarding-progress" aria-label="首次设置进度">
+            <li data-onboarding-step="model"><strong>AI 模型</strong><small>连接并激活</small></li>
+            <li data-onboarding-step="wechat"><strong>微信</strong><small>扫码连接</small></li>
+            <li data-onboarding-step="start"><strong>启动</strong><small>开始工作</small></li>
+          </ol>
+          <div class="onboarding-actions">
+            <button id="onboarding-primary-action" class="primary-action" type="button">开始设置模型</button>
+            <button id="onboarding-secondary-action" class="secondary-action hidden" type="button">我已完成，重新检查</button>
+          </div>
+          <p id="onboarding-action-result" class="operation-result hidden" role="status" aria-live="polite"></p>
         </section>
         <section class="hero-card">
           <div>
@@ -104,8 +113,12 @@
               <li id="runtime-guide-step" class="hidden">
                 <strong id="runtime-guide-title">配置提示</strong>
                 <div id="runtime-guide-content" class="runtime-guide-content"></div>
+                <div id="codebuddy-environment" class="environment-status hidden" role="status" aria-live="polite">
+                  <div><strong id="codebuddy-environment-title">WorkBuddy / CodeBuddy 环境</strong><p id="codebuddy-environment-detail">尚未检查。</p></div>
+                  <button id="check-codebuddy-environment" type="button">检查环境</button>
+                </div>
               </li>
-              <li>
+              <li id="profile-connection-step">
                 <strong>填写供应商与连接信息</strong>
                 <div class="form-grid">
                   <label id="profile-provider-row">供应商<select id="profile-provider" required></select></label>
@@ -128,7 +141,7 @@
               </li>
               <li>
                 <strong>测试完整连接能力</strong>
-                <p>会实时检查凭据、模型访问、流式回复、工具调用、工具结果续接和取消；图片能力为可选项。</p>
+                <p>会检查 AI 能否完整回复、执行必要操作，并在操作后继续完成任务；图片能力为可选项。</p>
                 <button id="test-model-profile" type="button">保存并测试连接</button>
                 <p id="profile-test-result" class="operation-result hidden" role="status"></p>
               </li>
@@ -140,7 +153,9 @@
             </ol>
           </form>
         </section>
-        <section class="panel settings-list">
+        <details id="advanced-settings" class="advanced-settings">
+          <summary>高级设置（以后再调整）</summary>
+          <section class="panel settings-list">
           <div class="setting-row"><span><strong>模型配置指引</strong><small>重新查看 WorkBuddy / CodeBuddy、API 或其他引擎的配置说明</small></span><button id="reopen-model-guide" type="button">打开指引</button></div>
           <label class="setting-row"><span><strong>随 Windows 启动</strong><small>由唯一的后台启动任务负责</small></span><input id="startup-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>随机查岗</strong><small>只显示范围，不提前透露具体时间</small></span><input id="random-setting" type="checkbox"></label>
@@ -150,12 +165,12 @@
           <label class="setting-row"><span><strong>洗澡后查岗</strong><small>没有明确时间时使用</small></span><span class="number-field"><input id="shower-duration" type="number" min="1" max="1440"><em>分钟</em></span></label>
           <div class="setting-row"><span><strong>指尖时光</strong><small id="zhijian-detail">正在读取连接状态</small></span><span class="integration-control"><b id="zhijian-state">—</b><button id="sync-zhijian" type="button">立即同步</button></span></div>
           <div id="zhijian-auth-row" class="credential-row hidden"><p>重新授权只会把 token 交给你本机的指尖时光 MCP，并用当前 Windows 用户的 DPAPI 加密保存。不会写入 CyberBoss 日志或备份。</p><div><input id="zhijian-token" type="password" autocomplete="off" placeholder="粘贴指尖时光 token"><button id="authorize-zhijian" type="button">重新授权</button></div><small id="zhijian-auth-result"></small></div>
-        </section>
-        <section class="panel action-panel">
+          </section>
+          <section class="panel action-panel">
           <div><h3>本地数据</h3><p id="data-dir">—</p></div>
           <button id="open-data" type="button">打开数据文件夹</button>
-        </section>
-        <section class="panel data-actions">
+          </section>
+          <section class="panel data-actions">
           <div><h3>备份与恢复</h3><p>备份不包含微信/Codex 登录信息、附件收件箱或日志。</p></div>
           <div class="data-action-buttons">
             <button type="button" data-backup-kind="manual">创建备份</button>
@@ -164,20 +179,21 @@
             <button id="restore-backup" type="button">恢复</button>
           </div>
           <p id="backup-result" class="operation-result hidden"></p>
-        </section>
-        <section class="panel action-panel">
+          </section>
+          <section class="panel action-panel">
           <div><h3>诊断</h3><p>日志默认脱敏保存，最多展示最近事件。</p></div>
           <button id="load-logs" type="button">查看最近日志</button>
-        </section>
-        <section class="panel diagnostic-capture">
+          </section>
+          <section class="panel diagnostic-capture">
           <div><h3>临时连接诊断</h3><p>仅在你明确同意后记录一次连接测试或最长 15 分钟。内容可能含私人提示词和回复，但永远不记录凭据、Authorization 或图片原始字节；24 小时后自动删除且不进入备份。</p></div>
           <label><input id="diagnostic-consent" type="checkbox"> 我同意临时记录本次诊断</label>
           <label>时长<select id="diagnostic-duration"><option value="300000">5 分钟</option><option value="900000">15 分钟</option></select></label>
           <div class="data-action-buttons"><button id="enable-diagnostic-capture" type="button">启用</button><button id="disable-diagnostic-capture" type="button">停止记录</button><button id="delete-diagnostic-capture" type="button">立即删除</button></div>
           <p id="diagnostic-capture-result" class="operation-result hidden"></p>
-        </section>
-        <div id="log-list" class="log-list hidden"></div>
-        <button id="exit-app" class="danger-link" type="button">彻底退出 CyberBoss</button>
+          </section>
+          <div id="log-list" class="log-list hidden"></div>
+          <button id="exit-app" class="danger-link" type="button">彻底退出 CyberBoss</button>
+        </details>
       </section>
     </main>
 

@@ -6,7 +6,19 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { resolveOwnedSpawnSpec } = require("../src/desktop/runtime-supervisor");
+const { friendlyProcessError, resolveOwnedSpawnSpec } = require("../src/desktop/runtime-supervisor");
+
+test("missing WeChat account becomes an actionable desktop error", () => {
+  const result = friendlyProcessError(Object.assign(new Error("raw account error"), {
+    code: "WECHAT_LOGIN_REQUIRED",
+    capability: "wechat",
+  }));
+
+  assert.deepEqual(
+    { code: result.code, capability: result.capability, summary: result.summary, repairAction: result.repairAction },
+    { code: "WECHAT_LOGIN_REQUIRED", capability: "wechat", summary: "尚未连接微信。", repairAction: "点击“连接微信”并扫码登录" },
+  );
+});
 
 test("packaged app.asar bridge falls back to Electron Node with a real cwd", () => {
   const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-resources-"));
