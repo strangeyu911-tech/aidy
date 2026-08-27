@@ -62,6 +62,9 @@ test("preload exposes the model whitelist and UI contains first-run gates", () =
   assert.match(renderer, /profileTestResults = new Map/);
   assert.match(renderer, /正在编辑：\$\{state\.name\}/);
   assert.match(renderer, /profileEditorState\.formatProfileTestFailure/);
+  assert.match(renderer, /profileEditorState\.resolveProfileCardState/);
+  assert.match(renderer, /\$\{cardState\.label\}/);
+  assert.match(renderer, /cardState\.disabled \? "disabled" : ""/);
   assert.match(renderer, /if \(modelProfiles\.length\) \{[\s\S]*renderModelProfiles\(\);[\s\S]*renderProfileEditorStatus\(\);/);
 });
 

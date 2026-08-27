@@ -323,11 +323,14 @@ function renderModelProfiles() {
   const activeId = resolveActiveProfileId();
   list.className = "profile-list";
   list.innerHTML = modelProfiles.map((profile) => {
-    const active = profile.id === activeId;
+    const cardState = profileEditorState.resolveProfileCardState({
+      profile,
+      activeProfileId: activeId,
+    });
     const engineDetail = profile.runtimeId === "codebuddy"
       ? `WorkBuddy / CodeBuddy · ${profile.modelId || "未选模型"}`
       : `${runtimeLabel(profile.runtimeId)} · ${providerLabel(profile.providerId)} · ${profile.modelId || "未选模型"}`;
-    return `<article class="profile-card ${active ? "active" : ""}"><div><span class="profile-state">${active ? "当前使用 · 已验证" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(engineDetail)}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button type="button" data-activate-profile="${escapeHtml(profile.id)}" ${profile.status === "verified" ? "" : "disabled"}>激活</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
+    return `<article class="profile-card ${cardState.active ? "active" : ""}"><div><span class="profile-state">${cardState.active ? "当前使用 · 已验证" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(engineDetail)}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button class="profile-activate-button" type="button" data-activate-profile="${escapeHtml(profile.id)}" ${cardState.disabled ? "disabled" : ""}>${cardState.label}</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
   }).join("");
   list.querySelectorAll("[data-edit-profile]").forEach((button) => button.addEventListener("click", () => openProfileEditor(button.dataset.editProfile)));
   list.querySelectorAll("[data-test-profile]").forEach((button) => button.addEventListener("click", () => testExistingProfile(button.dataset.testProfile)));

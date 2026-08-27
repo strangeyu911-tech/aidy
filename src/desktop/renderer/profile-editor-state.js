@@ -37,7 +37,21 @@
     return ({ verified: "已验证", draft: "草稿 · 需要测试", unverified: "验证已失效" })[status] || "草稿 · 需要测试";
   }
 
-  const api = { formatProfileTestFailure, profileStatusLabel, resolveProfileEditorState };
+  function resolveProfileCardState({ profile = null, activeProfileId = "" } = {}) {
+    const active = Boolean(profile?.id) && profile.id === activeProfileId;
+    return {
+      active,
+      label: active ? "已激活" : "激活",
+      disabled: active || profile?.status !== "verified",
+    };
+  }
+
+  const api = {
+    formatProfileTestFailure,
+    profileStatusLabel,
+    resolveProfileCardState,
+    resolveProfileEditorState,
+  };
   global.cyberbossProfileEditorState = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 }(typeof window !== "undefined" ? window : globalThis));

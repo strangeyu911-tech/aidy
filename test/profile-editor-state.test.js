@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   formatProfileTestFailure,
+  resolveProfileCardState,
   resolveProfileEditorState,
 } = require("../src/desktop/renderer/profile-editor-state");
 
@@ -107,4 +108,30 @@ test("does not read model details when no profile is selected", () => {
 
   assert.equal(state.profile, null);
   assert.equal(state.status, "草稿 · 需要测试");
+});
+
+test("active profile card is labeled 已激活 and disabled", () => {
+  assert.deepEqual(resolveProfileCardState({ profile: activeProfile, activeProfileId: "a" }), {
+    active: true,
+    label: "已激活",
+    disabled: true,
+  });
+});
+
+test("verified inactive profile card remains an enabled 激活 action", () => {
+  assert.deepEqual(resolveProfileCardState({ profile: { ...activeProfile, id: "b" }, activeProfileId: "a" }), {
+    active: false,
+    label: "激活",
+    disabled: false,
+  });
+});
+
+test("profile card states follow the real active profile when activation switches", () => {
+  const profileA = { ...activeProfile, id: "a" };
+  const profileB = { ...activeProfile, id: "b" };
+
+  assert.equal(resolveProfileCardState({ profile: profileA, activeProfileId: "a" }).label, "已激活");
+  assert.equal(resolveProfileCardState({ profile: profileB, activeProfileId: "a" }).label, "激活");
+  assert.equal(resolveProfileCardState({ profile: profileA, activeProfileId: "b" }).label, "激活");
+  assert.equal(resolveProfileCardState({ profile: profileB, activeProfileId: "b" }).label, "已激活");
 });
