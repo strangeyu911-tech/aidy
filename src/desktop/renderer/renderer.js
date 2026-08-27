@@ -171,8 +171,10 @@ function stateDisplay(phase, desired) {
 function renderError(error) {
   const card = $("#error-card");
   if (!error) { card.classList.add("hidden"); card.textContent = ""; return; }
+  const capabilityLabel = error.capability === "bridge" ? "微信连接" : error.capability;
+  const summary = error.code === "BRIDGE_NOT_READY" ? "微信连接组件未能启动。" : error.summary;
   card.classList.remove("hidden");
-  card.innerHTML = `<strong>${escapeHtml(error.summary)}</strong><p>受影响：${escapeHtml(error.capability)}。建议：${escapeHtml(error.repairAction)}。</p><button id="retry-button" type="button">重试启动</button>`;
+  card.innerHTML = `<strong>${escapeHtml(summary)}</strong><p>受影响：${escapeHtml(capabilityLabel)}。建议：${escapeHtml(error.repairAction)}。</p><button id="retry-button" type="button">重试启动</button>`;
   $("#retry-button").addEventListener("click", async () => renderSnapshot(await api.retry()));
 }
 
