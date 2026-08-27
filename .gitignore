@@ -10,3 +10,7 @@ tmp/
 npm-debug.log*
 third_party/
 firmware/
+
+# Local design-tool state and machine-specific launch helper
+.superpowers/
+scripts/cyberboss-background.ps1
