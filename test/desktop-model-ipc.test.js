@@ -47,9 +47,19 @@ test("preload exposes the model whitelist and UI contains first-run gates", () =
   assert.match(html, /id="first-run-setup"/);
   assert.match(html, /id="model-profile-list"/);
   assert.match(html, /id="profile-api-key"[^>]*type="password"[^>]*autocomplete="off"/);
+  assert.match(html, /id="profile-service-password-label"/);
   assert.match(html, /外部 OpenCode[^<]*provider 凭据[^<]*外部实例/);
   assert.match(renderer, /configurationRequired/);
   assert.match(renderer, /finally\s*{[^}]*\.value\s*=\s*""/s);
+});
+
+test("renderer maps CodeBuddy to the existing compatibility profile form", () => {
+  const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "desktop", "renderer", "renderer.js"), "utf8");
+  assert.match(renderer, /\["codex", "claudecode", "codebuddy"\]/);
+  assert.match(renderer, /runtimeId === "codebuddy"/);
+  assert.match(renderer, /profile-service-password-label/);
+  assert.match(renderer, /codebuddy: "CodeBuddy"/);
+  assert.doesNotMatch(renderer, /\["codex", "claudecode"\]\.includes\(runtimeId\)/);
 });
 
 const rendererUrl = pathToFileURL(path.join(__dirname, "..", "src", "desktop", "renderer", "index.html")).href;

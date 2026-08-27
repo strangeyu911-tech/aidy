@@ -106,7 +106,7 @@
                   <label>供应商<select id="profile-provider" required></select></label>
                   <label>Base URL<input id="profile-base-url" type="url" maxlength="2048" placeholder="https://…"></label>
                   <label>API Key<input id="profile-api-key" type="password" autocomplete="off" maxlength="8192" placeholder="保存后不会再显示"></label>
-                  <label id="profile-service-password-row" class="hidden">OpenCode 服务密码<input id="profile-service-password" type="password" autocomplete="off" maxlength="8192" placeholder="可选的 Basic Auth 密码"></label>
+                  <label id="profile-service-password-row" class="hidden"><span id="profile-service-password-label">OpenCode 服务密码</span><input id="profile-service-password" type="password" autocomplete="off" maxlength="8192" placeholder="可选的 Basic Auth 密码"></label>
                 </div>
                 <label class="wide-field">敏感自定义 headers（每行 name: value）<textarea id="profile-sensitive-headers" rows="3" maxlength="16384" autocomplete="off" placeholder="x-custom-key: value"></textarea></label>
                 <p id="external-opencode-notice" class="notice hidden">外部 OpenCode 的 provider 凭据必须在外部实例中配置；CyberBoss 不接受 provider key，只保存服务地址和可选的服务密码。</p>

@@ -8,6 +8,8 @@ let modelProfiles = [];
 let editorProfile = null;
 let loadedModels = [];
 
+const COMPATIBILITY_RUNTIME_IDS = Object.freeze(["codex", "claudecode", "codebuddy"]);
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -253,12 +255,16 @@ function closeProfileEditor() {
 function renderProfileFields() {
   const runtimeId = $("#profile-runtime").value;
   const isOpenCode = runtimeId === "opencode";
+  const isCodeBuddy = runtimeId === "codebuddy";
+  const isCompatibilityRuntime = COMPATIBILITY_RUNTIME_IDS.includes(runtimeId);
   const external = isOpenCode && $("#profile-ownership").value === "external";
   $("#profile-ownership-row").classList.toggle("hidden", !isOpenCode);
-  $("#profile-service-password-row").classList.toggle("hidden", !external);
+  $("#profile-service-password-row").classList.toggle("hidden", !external && !isCodeBuddy);
+  $("#profile-service-password-label").textContent = isCodeBuddy ? "CodeBuddy 网关密码" : "OpenCode 服务密码";
   $("#external-opencode-notice").classList.toggle("hidden", !external);
-  $("#profile-api-key").closest("label").classList.toggle("hidden", external || ["codex", "claudecode"].includes(runtimeId));
-  $("#profile-sensitive-headers").closest("label").classList.toggle("hidden", external || ["codex", "claudecode"].includes(runtimeId));
+  $("#profile-base-url").closest("label").classList.toggle("hidden", isCodeBuddy);
+  $("#profile-api-key").closest("label").classList.toggle("hidden", external || isCompatibilityRuntime);
+  $("#profile-sensitive-headers").closest("label").classList.toggle("hidden", external || isCompatibilityRuntime);
   const provider = $("#profile-provider");
   const previous = provider.value;
   if (runtimeId === "builtin-api") {
@@ -266,7 +272,7 @@ function renderProfileFields() {
   } else if (isOpenCode) {
     const known = [...new Set([editorProfile?.providerId, ...loadedModels.map((item) => item.providerId)].filter(Boolean))];
     provider.innerHTML = `<option value="opencode">从实例目录选择</option>${known.filter((id) => id !== "opencode").map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("")}`;
-  } else if (["codex", "claudecode"].includes(runtimeId)) {
+  } else if (isCompatibilityRuntime) {
     provider.innerHTML = '<option value="compatibility">兼容运行时</option>';
   } else {
     provider.innerHTML = '<option value="">请先选择运行引擎</option>';
@@ -480,7 +486,7 @@ async function updateDiagnosticCapture(action) {
   result.classList.remove("hidden");
 }
 
-function runtimeLabel(id, fallback = "") { return ({ "builtin-api": "内置 API", opencode: "OpenCode", codex: "Codex（兼容）", claudecode: "Claude Code（兼容）" })[id] || fallback || id || "—"; }
+function runtimeLabel(id, fallback = "") { return ({ "builtin-api": "内置 API", opencode: "OpenCode", codex: "Codex（兼容）", claudecode: "Claude Code（兼容）", codebuddy: "CodeBuddy" })[id] || fallback || id || "—"; }
 function providerLabel(id) { return runtimeOptions.providers.find((item) => item.id === id)?.displayName || id || "—"; }
 function profileStatusLabel(status) { return ({ verified: "已验证", draft: "需要测试", unverified: "验证已失效" })[status] || "需要测试"; }
 function switchPhaseLabel(phase) { return ({ draining: "等待当前工作完成", aborting: "停止超时工作", stopping_old: "停止原模型", starting_new: "启动新模型", probing_new: "确认新模型状态", rolling_back: "恢复原模型" })[phase] || "切换模型"; }
