@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { createCodeBuddyRuntimeAdapter } = require("../src/adapters/runtime/codebuddy");
+const { StreamDelivery } = require("../src/core/stream-delivery");
 
 const IDENTITY = "a".repeat(64);
 
@@ -97,7 +98,6 @@ test("production adapter initializes, streams a turn, and persists the shared se
     "runtime.turn.started",
     "runtime.reply.delta",
     "runtime.reply.delta",
-    "runtime.reply.completed",
     "runtime.turn.completed",
   ]);
   assert.equal(events[2].payload.text, " world");
@@ -106,6 +106,51 @@ test("production adapter initializes, streams a turn, and persists the shared se
   assert.deepEqual(calls.slice(0, 5).map(([name]) => name), ["host.start", "connect", "initialize", "identity", "identity"]);
   await adapter.close();
   assert.deepEqual(calls.slice(-2).map(([name]) => name), ["disconnect", "host.stop"]);
+});
+
+test("one streamed CodeBuddy turn produces one aggregated WeChat delivery", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-delivery-"));
+  const sessionsFile = path.join(root, "sessions.json");
+  const { adapter, calls } = createHarness({ sessionsFile });
+  const sent = [];
+  const delivery = new StreamDelivery({
+    channelAdapter: {
+      async sendText(payload) { sent.push(payload); },
+    },
+    sessionStore: adapter.getSessionStore(),
+    runtimeId: "codebuddy",
+  });
+  const events = [];
+  adapter.onEvent((event) => {
+    events.push(event);
+    void delivery.handleRuntimeEvent(event);
+  });
+
+  const turn = await adapter.sendTurn({
+    bindingKey: "wechat:account:user",
+    workspaceRoot: "D:\\CyberBoss",
+    text: "hello",
+  });
+  delivery.bindReplyTargetForTurn({
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+    target: { userId: "user", contextToken: "context", provider: "weixin" },
+  });
+
+  await waitFor(() => sent.length > 0);
+  assert.equal(calls.filter(([name]) => name === "prompt").length, 1);
+  assert.deepEqual(events.map((event) => event.type), [
+    "runtime.turn.started",
+    "runtime.reply.delta",
+    "runtime.reply.delta",
+    "runtime.turn.completed",
+  ]);
+  assert.deepEqual(sent, [{
+    userId: "user",
+    text: "Hello world",
+    contextToken: "context",
+  }]);
+  await adapter.close();
 });
 
 test("production adapter reuses SessionStore and recreates only the affected binding after resume failure", async () => {

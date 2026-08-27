@@ -30,7 +30,12 @@ function mapCodeBuddyNotification(notification, context = {}) {
       const text = textContent(update);
       return text ? [{
         type: "runtime.reply.delta",
-        payload: { threadId, turnId, itemId: normalizeText(update.messageId), text },
+        payload: {
+          threadId,
+          turnId,
+          itemId: normalizeText(update.messageId) || "assistant-message",
+          text,
+        },
       }] : [];
     }
     case "tool_call": {

@@ -151,11 +151,11 @@ function createCodeBuddyRuntimeAdapter({
   }
 
   function forwardNotification(message, { threadId, turnId, workspaceRoot }) {
-    forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
+    return forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
   }
 
   function forwardProtocolRequest(message, { threadId, turnId, workspaceRoot }) {
-    forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
+    return forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
   }
 
   function forwardMappedEvents(message, { threadId, turnId, workspaceRoot }) {
@@ -180,15 +180,22 @@ function createCodeBuddyRuntimeAdapter({
         })).catch(() => {});
       }
     }
+    return events;
   }
 
   async function runTurn({ threadId, turnId, workspaceRoot, text, controller }) {
     try {
+      let streamedReply = false;
       const reply = await client.prompt({
         sessionId: threadId,
         text,
         signal: controller.signal,
-        onNotification: (message) => forwardNotification(message, { threadId, turnId, workspaceRoot }),
+        onNotification: (message) => {
+          const events = forwardNotification(message, { threadId, turnId, workspaceRoot });
+          if (events.some((event) => event?.type === "runtime.reply.delta")) {
+            streamedReply = true;
+          }
+        },
         onRequest: (message) => forwardProtocolRequest(message, { threadId, turnId, workspaceRoot }),
       });
       const normalizedUsage = hasUsageFields(reply.usage) ? normalizeCodeBuddyUsage(reply.usage) : {};
@@ -207,10 +214,12 @@ function createCodeBuddyRuntimeAdapter({
         });
         return;
       }
-      emit({
-        type: "runtime.reply.completed",
-        payload: runtimePayload(completionPayload),
-      });
+      if (!streamedReply) {
+        emit({
+          type: "runtime.reply.completed",
+          payload: runtimePayload(completionPayload),
+        });
+      }
       emit({
         type: "runtime.turn.completed",
         payload: runtimePayload(completionPayload),
