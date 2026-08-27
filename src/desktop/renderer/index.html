@@ -23,9 +23,9 @@
       <section id="view-control" class="view active" aria-labelledby="nav-control">
         <div id="error-card" class="error-card hidden"></div>
         <section id="first-run-setup" class="setup-panel hidden" aria-labelledby="first-run-title">
-          <span class="eyebrow">首次设置 · 需要完成 5 步</span>
+          <span class="eyebrow">首次设置 · 推荐从 WorkBuddy / CodeBuddy 开始</span>
           <h2 id="first-run-title">先连接一个你能使用的模型</h2>
-          <p>CyberBoss 没有默认引擎。请新增配置、测试连接并激活；成功前“运行”和“静默”不会开启。</p>
+          <p>选择一个你能使用的模型引擎，按页面提示完成连接测试并激活；成功前“运行”和“静默”不会开启。</p>
           <button class="primary-action" type="button" data-open-model-setup>开始设置模型</button>
         </section>
         <section class="hero-card">
@@ -84,10 +84,10 @@
         <div class="page-heading"><div><span class="eyebrow">偏好设置</span><h2>设置</h2></div></div>
         <section id="model-settings" class="panel model-settings" aria-labelledby="model-settings-title">
           <div class="panel-heading">
-            <div><span class="eyebrow">全局只激活一个</span><h3 id="model-settings-title">模型与 API</h3></div>
+            <div><span class="eyebrow">全局只激活一个</span><h3 id="model-settings-title">AI 引擎</h3></div>
             <button id="new-model-profile" class="primary-action" type="button">新增配置</button>
           </div>
-          <p class="section-help">可保存多个配置。只有通过实时连接测试的配置可以激活；CyberBoss 不会默认选择 Codex。</p>
+          <p class="section-help">可保存多个配置。推荐新用户使用 WorkBuddy / CodeBuddy；只有通过连接测试的配置可以激活。</p>
           <div id="model-profile-list" class="profile-list empty-state">正在读取模型配置…</div>
           <form id="model-profile-editor" class="profile-editor hidden">
             <input id="profile-id" type="hidden">
@@ -95,25 +95,29 @@
               <li>
                 <strong>选择运行方式</strong>
                 <div class="form-grid">
-                  <label>配置名称<input id="profile-name" maxlength="120" required placeholder="例如：工作用 OpenRouter"></label>
+                  <label>配置名称<input id="profile-name" maxlength="120" required placeholder="例如：我的 WorkBuddy"></label>
                   <label>运行引擎<select id="profile-runtime" required></select></label>
                   <label id="profile-ownership-row" class="hidden">OpenCode 方式<select id="profile-ownership"><option value="managed-local">托管本机</option><option value="external">外部服务</option></select></label>
                 </div>
               </li>
+              <li id="runtime-guide-step" class="hidden">
+                <strong id="runtime-guide-title">配置提示</strong>
+                <div id="runtime-guide-content" class="runtime-guide-content"></div>
+              </li>
               <li>
                 <strong>填写供应商与连接信息</strong>
                 <div class="form-grid">
-                  <label>供应商<select id="profile-provider" required></select></label>
-                  <label>Base URL<input id="profile-base-url" type="url" maxlength="2048" placeholder="https://…"></label>
-                  <label>API Key<input id="profile-api-key" type="password" autocomplete="off" maxlength="8192" placeholder="保存后不会再显示"></label>
+                  <label id="profile-provider-row">供应商<select id="profile-provider" required></select></label>
+                  <label id="profile-base-url-row">Base URL<input id="profile-base-url" type="url" maxlength="2048" placeholder="https://…"></label>
+                  <label id="profile-api-key-row">API Key<input id="profile-api-key" type="password" autocomplete="off" maxlength="8192" placeholder="保存后不会再显示"></label>
                   <label id="profile-service-password-row" class="hidden"><span id="profile-service-password-label">OpenCode 服务密码</span><input id="profile-service-password" type="password" autocomplete="off" maxlength="8192" placeholder="可选的 Basic Auth 密码"></label>
                 </div>
-                <label class="wide-field">敏感自定义 headers（每行 name: value）<textarea id="profile-sensitive-headers" rows="3" maxlength="16384" autocomplete="off" placeholder="x-custom-key: value"></textarea></label>
+                <label id="profile-sensitive-headers-row" class="wide-field">敏感自定义 headers（每行 name: value）<textarea id="profile-sensitive-headers" rows="3" maxlength="16384" autocomplete="off" placeholder="x-custom-key: value"></textarea></label>
                 <p id="external-opencode-notice" class="notice hidden">外部 OpenCode 的 provider 凭据必须在外部实例中配置；CyberBoss 不接受 provider key，只保存服务地址和可选的服务密码。</p>
               </li>
               <li>
                 <strong>选择模型</strong>
-                <div class="model-picker">
+                <div id="profile-model-picker" class="model-picker">
                   <input id="profile-model-search" type="search" maxlength="200" placeholder="搜索已加载的模型">
                   <button id="refresh-profile-models" type="button">刷新模型</button>
                 </div>
@@ -136,6 +140,7 @@
           </form>
         </section>
         <section class="panel settings-list">
+          <div class="setting-row"><span><strong>模型配置指引</strong><small>重新查看 WorkBuddy / CodeBuddy、API 或其他引擎的配置说明</small></span><button id="reopen-model-guide" type="button">打开指引</button></div>
           <label class="setting-row"><span><strong>随 Windows 启动</strong><small>由唯一的后台启动任务负责</small></span><input id="startup-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>随机查岗</strong><small>只显示范围，不提前透露具体时间</small></span><input id="random-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>每日报表</strong><small>默认汇总前一天</small></span><input id="report-setting" type="checkbox"></label>

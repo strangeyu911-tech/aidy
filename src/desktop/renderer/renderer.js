@@ -9,6 +9,31 @@ let editorProfile = null;
 let loadedModels = [];
 
 const COMPATIBILITY_RUNTIME_IDS = Object.freeze(["codex", "claudecode", "codebuddy"]);
+const RUNTIME_DISPLAY_ORDER = Object.freeze({ codebuddy: 0, "builtin-api": 1, codex: 2, claudecode: 3, opencode: 4 });
+const RUNTIME_SETUP_GUIDES = Object.freeze({
+  "builtin-api": {
+    title: "使用已有 API Key",
+    body: "选择供应商，填写 API Key，选择模型后测试连接。ChatGPT 订阅不等于 OpenAI API Key。",
+  },
+  opencode: {
+    title: "OpenCode（高级选项）",
+    body: "适合已经在本机或其他地址运行 OpenCode 的用户。请按 OpenCode 的方式准备服务后再填写连接信息。",
+  },
+  codex: {
+    title: "Codex（兼容）",
+    body: "适合已经有 Codex 使用经验的用户。完成本机登录后填写模型并测试连接。",
+  },
+  claudecode: {
+    title: "Claude Code（兼容）",
+    body: "适合已经有 Claude Code 使用经验的用户。完成本机登录后填写模型并测试连接。",
+  },
+  codebuddy: {
+    title: "推荐：WorkBuddy / CodeBuddy",
+    body: "这是 CyberBoss 面向新用户的推荐路径。安装并登录 WorkBuddy 后回到这里，填写它显示的模型并测试连接。CyberBoss 会自动管理本机连接所需的安全凭据。",
+    steps: ["安装 WorkBuddy（或单独安装 CodeBuddy）", "在 WorkBuddy / CodeBuddy 中登录", "回到这里填写模型并点击“保存并测试连接”", "测试通过后激活配置"],
+    notice: "CodeBuddy 登录属于当前 Windows 用户；所有 CyberBoss CodeBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\nCodeBuddy 的 HTTP API 目前为 Beta。上游升级可能暂时造成不兼容；CyberBoss 不会尝试内部接口或猜测降级。\n\nCyberBoss 只展示 CodeBuddy 返回的用量信息，不合并或推断 WorkBuddy 活动额度。",
+  },
+});
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -68,6 +93,7 @@ function bindControls() {
   $("#refresh-profile-models").addEventListener("click", refreshProfileModels);
   $("#test-model-profile").addEventListener("click", testModelProfile);
   $("#activate-model-profile").addEventListener("click", activateModelProfile);
+  $("#reopen-model-guide").addEventListener("click", openModelSettings);
   $("#enable-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("enable"));
   $("#disable-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("disable"));
   $("#delete-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("delete"));
@@ -195,7 +221,14 @@ async function loadModelSettings() {
 }
 
 function renderRuntimeOptions() {
-  $("#profile-runtime").innerHTML = `<option value="">请选择运行引擎</option>${runtimeOptions.runtimes.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(runtimeLabel(item.id, item.name))}</option>`).join("")}`;
+  const runtimes = [...(runtimeOptions.runtimes || [])].sort((left, right) => (
+    (RUNTIME_DISPLAY_ORDER[left.id] ?? 99) - (RUNTIME_DISPLAY_ORDER[right.id] ?? 99)
+  ));
+  $("#profile-runtime").innerHTML = `<option value="">请选择运行引擎</option>${runtimes.map((item) => {
+    const label = item.isRecommended ? `${item.productLabel || runtimeLabel(item.id, item.name)}（推荐）`
+      : item.id === "opencode" ? "OpenCode（实验）" : runtimeLabel(item.id, item.name);
+    return `<option value="${escapeHtml(item.id)}">${escapeHtml(label)}</option>`;
+  }).join("")}`;
   renderProfileFields();
 }
 
@@ -210,7 +243,10 @@ function renderModelProfiles() {
   list.className = "profile-list";
   list.innerHTML = modelProfiles.map((profile) => {
     const active = profile.id === activeId;
-    return `<article class="profile-card ${active ? "active" : ""}"><div><span class="profile-state">${active ? "当前使用" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(runtimeLabel(profile.runtimeId))} · ${escapeHtml(providerLabel(profile.providerId))} · ${escapeHtml(profile.modelId || "未选模型")}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button type="button" data-activate-profile="${escapeHtml(profile.id)}" ${profile.status === "verified" ? "" : "disabled"}>激活</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
+    const engineDetail = profile.runtimeId === "codebuddy"
+      ? `WorkBuddy / CodeBuddy · ${profile.modelId || "未选模型"}`
+      : `${runtimeLabel(profile.runtimeId)} · ${providerLabel(profile.providerId)} · ${profile.modelId || "未选模型"}`;
+    return `<article class="profile-card ${active ? "active" : ""}"><div><span class="profile-state">${active ? "当前使用" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(engineDetail)}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button type="button" data-activate-profile="${escapeHtml(profile.id)}" ${profile.status === "verified" ? "" : "disabled"}>激活</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
   }).join("");
   list.querySelectorAll("[data-edit-profile]").forEach((button) => button.addEventListener("click", () => openProfileEditor(button.dataset.editProfile)));
   list.querySelectorAll("[data-test-profile]").forEach((button) => button.addEventListener("click", () => testExistingProfile(button.dataset.testProfile)));
@@ -222,20 +258,23 @@ function openModelSettings() {
   $("#nav-settings").click();
   $("#model-settings").scrollIntoView({ behavior: "smooth", block: "start" });
   if (!modelProfiles.length) openProfileEditor();
+  else if ($("#model-profile-editor").classList.contains("hidden")) {
+    openProfileEditor(snapshot?.engine?.activeProfile?.id || modelProfiles[0].id);
+  }
 }
 
 function openProfileEditor(profileId = "") {
   editorProfile = modelProfiles.find((item) => item.id === profileId) || null;
   loadedModels = [];
   $("#profile-id").value = editorProfile?.id || "";
-  $("#profile-name").value = editorProfile?.name || "";
-  $("#profile-runtime").value = editorProfile?.runtimeId || "";
+  $("#profile-name").value = editorProfile?.name || "我的 WorkBuddy";
+  $("#profile-runtime").value = editorProfile?.runtimeId || "codebuddy";
   $("#profile-ownership").value = editorProfile?.ownershipMode || "managed-local";
   renderProfileFields();
   $("#profile-provider").value = editorProfile?.providerId || "";
   renderProfileFields();
   $("#profile-base-url").value = editorProfile?.baseUrl || "";
-  $("#profile-model-id").value = editorProfile?.modelId || "";
+  $("#profile-model-id").value = editorProfile?.modelId || "auto";
   $("#profile-api-key").value = "";
   $("#profile-service-password").value = "";
   $("#profile-sensitive-headers").value = "";
@@ -259,12 +298,14 @@ function renderProfileFields() {
   const isCompatibilityRuntime = COMPATIBILITY_RUNTIME_IDS.includes(runtimeId);
   const external = isOpenCode && $("#profile-ownership").value === "external";
   $("#profile-ownership-row").classList.toggle("hidden", !isOpenCode);
-  $("#profile-service-password-row").classList.toggle("hidden", !external && !isCodeBuddy);
+  $("#profile-service-password-row").classList.toggle("hidden", !external);
   $("#profile-service-password-label").textContent = isCodeBuddy ? "CodeBuddy 网关密码" : "OpenCode 服务密码";
   $("#external-opencode-notice").classList.toggle("hidden", !external);
-  $("#profile-base-url").closest("label").classList.toggle("hidden", isCodeBuddy);
-  $("#profile-api-key").closest("label").classList.toggle("hidden", external || isCompatibilityRuntime);
-  $("#profile-sensitive-headers").closest("label").classList.toggle("hidden", external || isCompatibilityRuntime);
+  $("#profile-base-url-row").classList.toggle("hidden", isCodeBuddy);
+  $("#profile-api-key-row").classList.toggle("hidden", external || isCompatibilityRuntime);
+  $("#profile-sensitive-headers-row").classList.toggle("hidden", external || isCompatibilityRuntime);
+  $("#profile-provider-row").classList.toggle("hidden", isCodeBuddy);
+  $("#profile-model-picker").classList.toggle("hidden", isCodeBuddy);
   const provider = $("#profile-provider");
   const previous = provider.value;
   if (runtimeId === "builtin-api") {
@@ -279,7 +320,19 @@ function renderProfileFields() {
   }
   if ([...provider.options].some((option) => option.value === previous)) provider.value = previous;
   const strict = isOpenCode || provider.value === "openrouter";
-  $("#profile-model-help").textContent = strict ? "此运行方式必须从最新实时目录选择模型，不能使用手动 ID。" : "可从目录选择；目录不可用时也可以手动填写模型 ID。";
+  $("#profile-model-help").textContent = isCodeBuddy
+    ? "WorkBuddy / CodeBuddy 目前不提供稳定的模型目录。请照抄 CodeBuddy 中显示的模型 ID；例如 auto（以你当前版本显示的名称为准），测试连接会确认它是否可用。"
+    : strict ? "此运行方式必须从最新实时目录选择模型，不能使用手动 ID。" : "可从目录选择；目录不可用时也可以手动填写模型 ID。";
+  renderRuntimeGuide(runtimeId);
+}
+
+function renderRuntimeGuide(runtimeId) {
+  const guide = RUNTIME_SETUP_GUIDES[runtimeId];
+  const step = $("#runtime-guide-step");
+  if (!guide) { step.classList.add("hidden"); return; }
+  step.classList.remove("hidden");
+  $("#runtime-guide-title").textContent = guide.title;
+  $("#runtime-guide-content").innerHTML = `<p>${escapeHtml(guide.body)}</p>${guide.steps ? `<ol>${guide.steps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>` : ""}${guide.notice ? `<p class="notice">${escapeHtml(guide.notice)}</p>` : ""}`;
 }
 
 function applyProviderDefaults() {
@@ -341,7 +394,7 @@ function selectOpenCodeProviderForModel() {
 async function testModelProfile() {
   const button = $("#test-model-profile");
   button.disabled = true;
-  setProfileResult("正在检查凭据、模型、流式回复、工具和取消能力…", false);
+  setProfileResult($("#profile-runtime").value === "codebuddy" ? "正在验证 WorkBuddy / CodeBuddy 登录、模型和连接…" : "正在检查凭据、模型、流式回复、工具和取消能力…", false);
   try {
     const saved = await persistEditor({ includeSecrets: true });
     const result = await api.testProfile(saved.id);
@@ -471,7 +524,9 @@ function renderEngine(engine, runtime) {
     const remaining = Math.max(0, Math.ceil((Date.parse(runtime.switchTransaction.deadlineAt) - Date.now()) / 1000));
     $("#engine-detail").textContent = `正在${switchPhaseLabel(runtime.switchTransaction.phase)} · 最多等待 ${remaining} 秒`;
   } else {
-    $("#engine-detail").textContent = active ? `${providerLabel(active.providerId)} · ${active.modelId}` : "请先新增、验证并激活";
+    $("#engine-detail").textContent = active
+      ? (active.runtimeId === "codebuddy" ? `WorkBuddy / CodeBuddy · ${active.modelId}` : `${providerLabel(active.providerId)} · ${active.modelId}`)
+      : "请先新增、验证并激活";
   }
 }
 

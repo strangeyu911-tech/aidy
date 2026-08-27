@@ -91,6 +91,10 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .setup-steps > li::before { content: counter(setup); position: absolute; left: 2px; top: 17px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--green-soft); color: var(--green); font-weight: 800; }
 .setup-steps > li > strong { display: block; margin-bottom: 12px; }
 .setup-steps > li > p { margin: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.runtime-guide-content { border-radius: 13px; background: #f0f7f4; padding: 13px 15px; color: var(--ink); font-size: 13px; line-height: 1.6; }
+.runtime-guide-content p { margin: 0; }
+.runtime-guide-content ol { margin: 10px 0 0 20px; padding: 0; }
+.runtime-guide-content .notice { margin-top: 11px; white-space: pre-line; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .form-grid label, .wide-field { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .form-grid input, .form-grid select, .wide-field input, .wide-field textarea, .model-picker input, .diagnostic-capture select { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--ink); background: #fff; }

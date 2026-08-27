@@ -39,6 +39,30 @@ test("runtime options have no default and include the complete approved provider
   assert.equal(options.runtimes.some((item) => item.isDefault), false);
 });
 
+test("CodeBuddy is recommended and receives an automatically managed local credential", async () => {
+  const harness = createHarness();
+  const saved = await harness.service.saveProfile({
+    name: "我的 WorkBuddy", runtimeId: "codebuddy", providerId: "compatibility", modelId: "auto",
+  });
+
+  assert.equal(harness.calls.vaultWrites.length, 1);
+  assert.equal(harness.calls.vaultWrites[0].profileId, saved.id);
+  assert.equal(Object.keys(harness.calls.vaultWrites[0].secrets).length, 1);
+  assert.equal(typeof harness.calls.vaultWrites[0].secrets.servicePassword, "string");
+  assert.equal(harness.calls.vaultWrites[0].secrets.servicePassword.length >= 32, true);
+  assert.equal(saved.hasServicePassword, true);
+  assert.equal(JSON.stringify(saved).includes(harness.calls.vaultWrites[0].secrets.servicePassword), false);
+
+  const options = await harness.service.listRuntimeOptions();
+  const codebuddy = options.runtimes.find((item) => item.id === "codebuddy");
+  assert.equal(codebuddy.isRecommended, true);
+  assert.equal(codebuddy.productLabel, "WorkBuddy / CodeBuddy");
+  assert.match(codebuddy.setupHint, /安装并登录 WorkBuddy/);
+
+  await harness.service.saveProfile({ id: saved.id, name: "改名", runtimeId: "codebuddy", providerId: "compatibility", modelId: "auto" });
+  assert.equal(harness.calls.vaultWrites.length, 1);
+});
+
 test("service-generated profile and vault files exist and reopen through fresh stores", async (t) => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-model-service-"));
   t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));

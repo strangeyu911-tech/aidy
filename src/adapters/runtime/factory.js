@@ -4,6 +4,7 @@ const { createApiRuntimeAdapter } = require("./api");
 const { createOpenCodeRuntimeAdapter } = require("./opencode");
 const { createCodexRuntimeAdapter } = require("./codex");
 const { createClaudeCodeRuntimeAdapter } = require("./claudecode");
+const { createCodeBuddyRuntimeAdapter } = require("./codebuddy");
 const { getRuntimeDefinition } = require("../../core/runtime-registry");
 
 const DEFAULT_ADAPTER_FACTORIES = Object.freeze({
@@ -11,6 +12,7 @@ const DEFAULT_ADAPTER_FACTORIES = Object.freeze({
   opencode: (options) => createOpenCodeRuntimeAdapter(options),
   codex: (options) => createCodexRuntimeAdapter(options.config),
   claudecode: (options) => createClaudeCodeRuntimeAdapter(options.config),
+  codebuddy: (options) => createCodeBuddyRuntimeAdapter(options),
 });
 
 function createRuntimeAdapter(options = {}) {
@@ -89,6 +91,7 @@ function withProfile(config, profile) {
     codexModel: profile.modelId,
     codexModelProvider: provider,
     claudeModel: profile.modelId,
+    codebuddyModel: profile.modelId,
   };
 }
 

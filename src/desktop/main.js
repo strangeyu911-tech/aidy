@@ -11,6 +11,7 @@ const { ComponentLogger, queryLogs } = require("../core/component-logger");
 const { readConfig } = require("../core/config");
 const { DesktopStateStore, DESIRED_STATES } = require("../core/desktop-state-store");
 const { ProviderProfileStore } = require("../core/provider-profile-store");
+const { computeVerificationFingerprint } = require("../core/provider-profile-store");
 const { SupervisionPlanStore } = require("../core/supervision-plan-store");
 const { createTimelineIntegration } = require("../integrations/timeline");
 const { ZhijiantimeClient, ZhijiantimeSyncService } = require("../integrations/zhijiantime");
@@ -18,6 +19,7 @@ const { BackupService } = require("../services/backup-service");
 const { createOpenCodeRuntimeAdapter } = require("../adapters/runtime/opencode");
 const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
 const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
+const { verifyCodeBuddyEchoTool } = require("../adapters/runtime/codebuddy");
 const { ProviderCatalog } = require("../services/provider-catalog");
 const { ProviderVerifier } = require("../services/provider-verifier");
 const { CredentialVault } = require("../security/credential-vault");
@@ -80,7 +82,7 @@ const modelSettingsService = new ModelSettingsService({
   verifier: providerVerifier,
   supervisor,
   diagnosticCapture,
-  runtimeVerifier: (profileId) => runtimeProfileVerifier.verify(profileId),
+  runtimeVerifier: (profileId) => verifyRuntimeProfile(profileId),
 });
 const dispatcher = new SupervisionDispatcher({ config, desktopStateStore: stateStore, planStore, logger });
 const reportLogger = new ComponentLogger({ logDir, component: "reports" });
@@ -375,6 +377,56 @@ async function listOpenCodeCatalog(profile, secrets, options = {}) {
     return await adapter.listCatalog({ reason: options.reason || "display" });
   } finally {
     await adapter.close();
+  }
+}
+
+async function verifyRuntimeProfile(profileId) {
+  const profile = profileStore.get(profileId);
+  if (profile?.runtimeId !== "codebuddy") return runtimeProfileVerifier.verify(profileId);
+  const secretGeneration = credentialVault.getGeneration(profileId);
+  const secrets = await credentialVault.read(profileId) || {};
+  const startingFingerprint = computeVerificationFingerprint({ ...profile, secretGeneration });
+  const verificationRoot = fs.mkdtempSync(path.join(stateDir, "codebuddy-verification-"));
+  try {
+    const result = await verifyCodeBuddyEchoTool({
+      config: {
+        stateDir,
+        workspaceRoot: verificationRoot,
+        verificationServerPath: path.join(__dirname, "runtime-verification-mcp-server.js"),
+      },
+      profile: { ...profile, secretGeneration },
+      secrets,
+    });
+    if (!result?.ok) return result;
+    if (credentialVault.getGeneration(profileId) !== secretGeneration) {
+      return { ok: false, error: { code: "CREDENTIAL_CHANGED", message: "Credentials changed during verification." } };
+    }
+    const current = profileStore.get(profileId);
+    if (!current || computeVerificationFingerprint({ ...current, secretGeneration }) !== startingFingerprint) {
+      return { ok: false, error: { code: "PROFILE_CHANGED", message: "Profile changed during verification." } };
+    }
+    const capabilities = {
+      authentication: true,
+      modelAccess: true,
+      streaming: true,
+      tools: result.toolVerified === true,
+      toolContinuation: result.toolVerified === true,
+      cancellation: false,
+      imageInput: false,
+      accountIdentityFingerprint: result.identityFingerprint,
+    };
+    const verifiedAt = new Date().toISOString();
+    profileStore.markVerified(profileId, {
+      fingerprint: startingFingerprint,
+      secretGeneration,
+      capabilities,
+      verifiedAt,
+    });
+    return { ok: true, capabilities, verifiedAt };
+  } catch (error) {
+    return { ok: false, error: { code: error.code || "MODEL_SERVICE_UNAVAILABLE", message: error.message || "CodeBuddy verification failed." } };
+  } finally {
+    try { fs.rmSync(verificationRoot, { recursive: true, force: true }); } catch {}
   }
 }
 
