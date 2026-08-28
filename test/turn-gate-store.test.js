@@ -221,6 +221,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
   const queuedBindings = [];
   const order = [];
   const appLike = {
+    activeTurnRecords: new Map(),
     channelAdapter: {
       async sendTyping() {
         order.push("typing");
@@ -236,6 +237,9 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
       releaseScope() {},
     },
     runtimeAdapter: {
+      describe() {
+        return { id: "codex" };
+      },
       async sendTextTurn() {
         return { threadId: "thread-1", turnId: "turn-1" };
       },
@@ -246,6 +250,12 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
           },
         };
       },
+    },
+    threadStateStore: {
+      getThreadState() {
+        return null;
+      },
+      recordUsage() {},
     },
     async buildRuntimeTurn({ prepared }) {
       return {
@@ -293,6 +303,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
 test("completed turns flush queued inbound work before system messages", async () => {
   const calls = [];
   const appLike = {
+    activeTurnRecords: new Map(),
     streamDelivery: {
       async handleRuntimeEvent() {},
     },
@@ -346,6 +357,7 @@ test("completed turns flush queued inbound work before system messages", async (
 test("completed turns keep the boundary closed until queued inbound work has been flushed", async () => {
   const calls = [];
   const appLike = {
+    activeTurnRecords: new Map(),
     streamDelivery: {
       async handleRuntimeEvent() {},
     },
@@ -399,6 +411,7 @@ test("completed turns keep the boundary closed until queued inbound work has bee
 test("completed turns flush queued inbound work before system messages", async () => {
   const calls = [];
   const appLike = {
+    activeTurnRecords: new Map(),
     streamDelivery: {
       async handleRuntimeEvent() {},
     },
@@ -449,6 +462,7 @@ test("completed turns flush queued inbound work before system messages", async (
 test("failed turns still send error back when thread binding lookup is missing", async () => {
   const sent = [];
   const appLike = {
+    activeTurnRecords: new Map(),
     streamDelivery: {
       resolveReplyTargetForRun() {
         return {

@@ -150,8 +150,14 @@ test("Windows DPAPI adapter passes secret material only through stdin", async ()
   assert.equal(stdinSeen, secret);
 });
 
+const realDpapiSkipReason = process.platform !== "win32"
+  ? "requires a Windows user profile with DPAPI"
+  : process.env.CYBERBOSS_TEST_REAL_DPAPI !== "1"
+    ? "opt-in integration test; set CYBERBOSS_TEST_REAL_DPAPI=1"
+    : false;
+
 test("real Windows DPAPI vault can be generated and reopened by the same user", {
-  skip: process.platform !== "win32" || process.env.CYBERBOSS_TEST_REAL_DPAPI !== "1",
+  skip: realDpapiSkipReason,
 }, async () => {
   const stateDir = makeStateDir();
   const secret = "synthetic-real-dpapi-key";

@@ -245,7 +245,8 @@ test("claudecode adapter remembers model observed in stream messages", async () 
   const adapter = createClaudeCodeRuntimeAdapter({
     stateDir,
     sessionsFile: path.join(tempDir, "sessions.json"),
-    claudeCommand: commandFile,
+    claudeCommand: process.env.ComSpec || "cmd.exe",
+    claudeExtraArgs: ["/d", "/c", process.execPath, commandFile],
     claudeDisableVerbose: true,
   });
 
@@ -291,7 +292,7 @@ test("claudecode assistant events map usage into context snapshots", () => {
 });
 
 test("claudecode adapter dispatches turns only after a real session id is available", async () => {
-  const tempDir = fs.mkdtempSync(path.join("/tmp", "cb-claude-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-claude-"));
   const workspaceRoot = path.join(tempDir, "workspace");
   const stateDir = path.join(tempDir, "state");
   fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -313,10 +314,10 @@ test("claudecode adapter dispatches turns only after a real session id is availa
   const adapter = createClaudeCodeRuntimeAdapter({
     stateDir,
     sessionsFile: path.join(tempDir, "sessions.json"),
-    claudeCommand: commandFile,
+    claudeCommand: process.env.ComSpec || "cmd.exe",
     claudePermissionMode: "default",
     claudeDisableVerbose: true,
-    claudeExtraArgs: [],
+    claudeExtraArgs: ["/d", "/c", process.execPath, commandFile],
   });
 
   try {
@@ -419,7 +420,7 @@ test("claudecode runtime params are isolated from codex model selections", () =>
 });
 
 test("claudecode adapter does not pass a codex-selected model to Claude Code", async () => {
-  const tempDir = fs.mkdtempSync(path.join("/tmp", "cb-claude-model-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-claude-model-"));
   const workspaceRoot = path.join(tempDir, "workspace");
   const stateDir = path.join(tempDir, "state");
   fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -447,10 +448,10 @@ test("claudecode adapter does not pass a codex-selected model to Claude Code", a
   const adapter = createClaudeCodeRuntimeAdapter({
     stateDir,
     sessionsFile,
-    claudeCommand: commandFile,
+    claudeCommand: process.env.ComSpec || "cmd.exe",
     claudePermissionMode: "default",
     claudeDisableVerbose: true,
-    claudeExtraArgs: [],
+    claudeExtraArgs: ["/d", "/c", process.execPath, commandFile],
   });
 
   try {
@@ -801,6 +802,7 @@ test("handleStopCommand allows stopping while waiting for approval", async () =>
 test("handleRuntimeEvent reports compact completion back to WeChat", async () => {
   const sent = [];
   const appLike = {
+    activeTurnRecords: new Map(),
     pendingOperationByRunKey: new Map([
       ["thread-1:turn-1", {
         kind: "compact",
