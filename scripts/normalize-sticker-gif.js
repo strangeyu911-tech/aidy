@@ -5,6 +5,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const SIPS_PATH = "/usr/bin/sips";
+const POWERSHELL_PATH = "powershell.exe";
 const DEFAULT_SIZE = 240;
 
 function main() {
@@ -29,14 +30,18 @@ function main() {
     return;
   }
 
+  const normalizedSize = Number.isInteger(size) && size > 0 ? size : DEFAULT_SIZE;
+  if (process.platform === "win32") {
+    normalizeWithWindowsPowerShell(resolvedInputPath, resolvedOutputPath, normalizedSize);
+    return;
+  }
   if (process.platform !== "darwin") {
-    throw new Error("Sticker GIF normalization for non-GIF inputs currently requires macOS `sips`.");
+    throw new Error("Sticker GIF normalization for non-GIF inputs requires a supported image converter.");
   }
   if (!fs.existsSync(SIPS_PATH)) {
     throw new Error(`Required tool missing: ${SIPS_PATH}`);
   }
 
-  const normalizedSize = Number.isInteger(size) && size > 0 ? size : DEFAULT_SIZE;
   const result = spawnSync(SIPS_PATH, [
     "-s", "format", "gif",
     "-z", String(normalizedSize), String(normalizedSize),
@@ -53,6 +58,52 @@ function main() {
   }
   if (!fs.existsSync(resolvedOutputPath)) {
     throw new Error(`GIF normalization produced no output: ${resolvedOutputPath}`);
+  }
+}
+
+function normalizeWithWindowsPowerShell(inputPath, outputPath, size) {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "Add-Type -AssemblyName System.Drawing",
+    "$source=$null",
+    "$bitmap=$null",
+    "$graphics=$null",
+    "try {",
+    "$source=[Drawing.Image]::FromFile($env:CYBERBOSS_STICKER_INPUT)",
+    "$bitmap=New-Object Drawing.Bitmap([int]$env:CYBERBOSS_STICKER_SIZE,[int]$env:CYBERBOSS_STICKER_SIZE)",
+    "$graphics=[Drawing.Graphics]::FromImage($bitmap)",
+    "$graphics.Clear([Drawing.Color]::Transparent)",
+    "$graphics.DrawImage($source,0,0,[int]$env:CYBERBOSS_STICKER_SIZE,[int]$env:CYBERBOSS_STICKER_SIZE)",
+    "$bitmap.Save($env:CYBERBOSS_STICKER_OUTPUT,[Drawing.Imaging.ImageFormat]::Gif)",
+    "} finally {",
+    "if ($graphics) {$graphics.Dispose()}",
+    "if ($bitmap) {$bitmap.Dispose()}",
+    "if ($source) {$source.Dispose()}",
+    "}",
+  ].join(";");
+  const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
+  const result = spawnSync(POWERSHELL_PATH, [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", encodedCommand,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CYBERBOSS_STICKER_INPUT: inputPath,
+      CYBERBOSS_STICKER_OUTPUT: outputPath,
+      CYBERBOSS_STICKER_SIZE: String(size),
+    },
+  });
+  if (result.status !== 0) {
+    const stderr = String(result.stderr || "").trim();
+    const stdout = String(result.stdout || "").trim();
+    throw new Error(`PowerShell GIF normalization failed: ${stderr || stdout || `exit ${result.status}`}`);
+  }
+  if (!fs.existsSync(outputPath)) {
+    throw new Error(`GIF normalization produced no output: ${outputPath}`);
   }
 }
 
