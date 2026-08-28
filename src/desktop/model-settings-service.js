@@ -60,7 +60,7 @@ const ERROR_GUIDANCE = Object.freeze({
   CODEBUDDY_LOGIN_REQUIRED: guidance("login", "还没有检测到可用的 WorkBuddy / CodeBuddy 登录。", "先在 WorkBuddy 或 CodeBuddy 中登录，然后回到这里再次测试。"),
   CODEBUDDY_AUTH_FAILED: guidance("connection", "无法建立本机模型连接。", "重新测试；CyberBoss 会自动管理本机连接所需的安全凭据。"),
   CODEBUDDY_API_INCOMPATIBLE: guidance("compatibility", "当前 CodeBuddy 版本暂时不兼容。", "升级或更换兼容版本后，再次测试连接。"),
-  CODEBUDDY_MODEL_UNAVAILABLE: guidance("model", "CodeBuddy 当前无法使用这个模型。", "填写 CodeBuddy 中实际显示的模型 ID，再次测试。"),
+  CODEBUDDY_MODEL_UNAVAILABLE: guidance("model", "CodeBuddy 当前无法使用这个模型。", "刷新模型目录并选择当前可用的模型；显示名称不一定是模型 ID。"),
   CODEBUDDY_SESSION_FAILED: guidance("connection", "CodeBuddy 无法创建模型会话。", "确认 WorkBuddy / CodeBuddy 已登录且网络正常，然后再次测试。"),
   CODEBUDDY_TURN_FAILED: guidance("connection", "CodeBuddy 没有完成连接测试。", "确认模型可用后再次测试；如果仍失败，请升级 WorkBuddy / CodeBuddy。"),
   CREDENTIAL_ENCRYPT_FAILED: guidance("vault", "无法安全保存凭据。", "使用当前 Windows 用户重新登录后再试。"),
@@ -399,7 +399,8 @@ function sanitizeCatalog(value) {
   return {
     models: Array.isArray(value?.models) ? value.models.slice(0, 10_000).map((model) => ({
       id: normalizeLimitedText(model?.id, MAX_MODEL_ID_LENGTH, "MODEL_ID_TOO_LONG"),
-      name: normalizeLimitedText(model?.name, 512, "MODEL_NAME_TOO_LONG"),
+      name: normalizeLimitedText(model?.name || model?.label, 512, "MODEL_NAME_TOO_LONG"),
+      label: normalizeLimitedText(model?.label || model?.name || model?.id, 512, "MODEL_NAME_TOO_LONG"),
       providerId: normalizeLimitedText(model?.providerId, 120, "PROVIDER_ID_TOO_LONG"),
       inputModalities: Array.isArray(model?.inputModalities) ? model.inputModalities.map((item) => normalizeText(item)).filter(Boolean).slice(0, 8) : [],
       contextWindow: Number.isSafeInteger(model?.contextWindow) ? model.contextWindow : null,

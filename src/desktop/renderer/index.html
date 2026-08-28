@@ -135,8 +135,10 @@
                   <input id="profile-model-search" type="search" maxlength="200" placeholder="搜索已加载的模型">
                   <button id="refresh-profile-models" type="button">刷新模型</button>
                 </div>
-                <label class="wide-field">模型 ID<input id="profile-model-id" list="profile-model-options" maxlength="512" required placeholder="可从目录选择，或手动输入"></label>
+                <label id="profile-model-id-row" class="wide-field">模型 ID<input id="profile-model-id" list="profile-model-options" maxlength="512" placeholder="可从目录选择，或手动输入"></label>
                 <datalist id="profile-model-options"></datalist>
+                <label id="profile-codebuddy-model-row" class="wide-field hidden">模型<select id="profile-codebuddy-model-select"></select></label>
+                <details id="profile-codebuddy-custom-model" class="advanced-model-setting hidden"><summary>高级：自定义模型 ID</summary><label class="wide-field">自定义模型 ID<input id="profile-codebuddy-custom-model-id" maxlength="512" placeholder="仅在目录没有返回时使用"></label><small>显示名称和模型 ID 可能不同；这里填写发送给 CodeBuddy 的真实 ID。</small></details>
                 <small id="profile-model-help">除 OpenRouter 和 OpenCode 外，也可以手动填写模型 ID。</small>
               </li>
               <li>
@@ -209,6 +211,7 @@
   </div>
   <div id="toast" class="toast hidden"><span id="toast-text"></span><button id="toast-undo" type="button">撤销</button></div>
   <script src="./profile-editor-state.js"></script>
+  <script src="./model-settings-model-picker.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

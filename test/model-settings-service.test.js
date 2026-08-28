@@ -174,6 +174,35 @@ test("OpenRouter and OpenCode require a live dynamic model while other providers
   assert.equal(harness.state.activeProfileId, "p1");
 });
 
+test("refreshModels returns a sanitized dynamic catalog with display label and real id", async () => {
+  const harness = createHarness();
+  harness.state.profiles.push(profile({ runtimeId: "codebuddy", providerId: "compatibility", modelId: "auto", status: "draft" }));
+  harness.catalogResult = {
+    models: [{ id: "hy4", name: "Hy4 preview" }],
+    source: "codebuddy-acp-session-new",
+    stale: false,
+  };
+
+  const result = await harness.service.refreshModels("p1");
+
+  assert.deepEqual(result.models, [{
+    id: "hy4", name: "Hy4 preview", label: "Hy4 preview", providerId: "", inputModalities: [], contextWindow: null,
+  }]);
+  assert.equal(result.source, "codebuddy-acp-session-new");
+  assert.equal(harness.state.activeProfileId, "");
+});
+
+test("failed model refresh does not mutate the existing active profile", async () => {
+  const harness = createHarness();
+  harness.state.profiles.push(profile({ runtimeId: "codebuddy", providerId: "compatibility", modelId: "auto", status: "verified" }));
+  harness.state.activeProfileId = "p1";
+  harness.service.catalog.list = async () => { throw Object.assign(new Error("WorkBuddy is unavailable"), { code: "CODEBUDDY_CONNECTION_LOST" }); };
+
+  await assert.rejects(harness.service.refreshModels("p1"), hasCode("CODEBUDDY_CONNECTION_LOST"));
+  assert.equal(harness.state.activeProfileId, "p1");
+  assert.equal(harness.state.profiles[0].modelId, "auto");
+});
+
 test("connection tests return stable error categories and repair suggestions", async () => {
   const harness = createHarness();
   harness.state.profiles.push(profile());

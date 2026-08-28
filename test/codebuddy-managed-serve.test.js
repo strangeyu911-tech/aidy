@@ -131,6 +131,32 @@ test("managed serve maps startup timeout and cleans the plaintext overlay", asyn
   assert.deepEqual(fs.readdirSync(path.join(stateDir, "codebuddy", "runtime-overlays")), []);
 });
 
+test("managed serve passes the selected model id to CodeBuddy", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-model-"));
+  const spawns = [];
+  const child = new FakeChild();
+  const host = new CodeBuddyProcessHost({
+    stateDir,
+    reservePort: async () => 44126,
+    protectDirectory: async () => {},
+    spawnImpl(command, args) {
+      spawns.push({ command, args });
+      return child;
+    },
+    healthProbe: async () => ({ ok: true, status: "ok" }),
+  });
+
+  await host.start({
+    distribution: distribution(),
+    workspaceRoot: stateDir,
+    servicePassword: "temporary-secret",
+    model: "hy4-real-id",
+  });
+
+  assert.deepEqual(spawns[0].args.slice(-2), ["--model", "hy4-real-id"]);
+  await host.stop();
+});
+
 test("health compatibility probe accepts documented envelope and rejects malformed health", async () => {
   const calls = [];
   const client = new CodeBuddyClient({

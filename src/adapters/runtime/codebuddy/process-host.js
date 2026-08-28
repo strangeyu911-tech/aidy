@@ -35,7 +35,7 @@ class CodeBuddyProcessHost {
     this.closing = false;
   }
 
-  async start({ distribution, workspaceRoot, servicePassword, mcpServers = {}, allowedTools = [] } = {}) {
+  async start({ distribution, workspaceRoot, servicePassword, model = "", mcpServers = {}, allowedTools = [] } = {}) {
     if (this.child) throw hostError("CODEBUDDY_START_TIMEOUT", "Managed CodeBuddy is already running.");
     const selected = requireDistribution(distribution);
     const password = requireText(servicePassword, "CODEBUDDY_AUTH_FAILED", "CodeBuddy service password is required.");
@@ -56,6 +56,7 @@ class CodeBuddyProcessHost {
         "--serve", "--host", "127.0.0.1", "--port", String(port),
         "--settings", overlayPath,
         "--strict-mcp-config", "--mcp-config", mcpConfigPath,
+        ...(normalizeText(model) ? ["--model", normalizeText(model)] : []),
         ...buildToolRestrictionArgs(allowedTools),
       ];
       const child = this.spawnImpl(selected.command, args, {
@@ -229,6 +230,7 @@ function redactDiagnostic(value, forbiddenValues) {
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function positiveInteger(value, fallback) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback; }
 function requireText(value, code, message) { const text = typeof value === "string" ? value.trim() : ""; if (!text) throw hostError(code, message); return text; }
+function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
 function hostError(code, message, diagnostic = "") {
   const error = Object.assign(new Error(message), { code });
   if (diagnostic) Object.defineProperty(error, "diagnostic", { value: diagnostic, enumerable: false });

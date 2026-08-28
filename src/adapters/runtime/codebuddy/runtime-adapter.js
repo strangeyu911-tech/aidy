@@ -28,7 +28,8 @@ function createCodeBuddyRuntimeAdapter({
   const defaultWorkspaceRoot = path.resolve(normalizeText(config.workspaceRoot) || process.cwd());
   const servicePassword = requireText(secrets.servicePassword, "CODEBUDDY_AUTH_FAILED", "CodeBuddy gateway password is unavailable.");
   const expectedIdentity = normalizeIdentity(normalizedProfile.capabilities.accountIdentityFingerprint);
-  if (!expectedIdentity) throw runtimeError("CODEBUDDY_LOGIN_REQUIRED", "CodeBuddy profile identity has not been verified.");
+  const discoveryOnly = config.discoveryOnly === true;
+  if (!expectedIdentity && !discoveryOnly) throw runtimeError("CODEBUDDY_LOGIN_REQUIRED", "CodeBuddy profile identity has not been verified.");
   const sessionStore = new SessionStore({
     filePath: normalizeText(config.sessionsFile) || path.join(stateDir, "sessions.json"),
     runtimeId: "codebuddy",
@@ -64,7 +65,7 @@ function createCodeBuddyRuntimeAdapter({
 
   async function verifyLiveIdentity(signal) {
     const fingerprint = normalizeIdentity(await client.getIdentityFingerprint({ signal }));
-    if (!fingerprint || fingerprint !== expectedIdentity) {
+    if (!fingerprint || (expectedIdentity && fingerprint !== expectedIdentity)) {
       try { await Promise.resolve(profileStore?.markRuntimeProfilesUnverified?.("codebuddy", "account_identity_changed")); } catch {}
       throw runtimeError("CODEBUDDY_LOGIN_REQUIRED", "The active CodeBuddy login no longer matches this profile.");
     }
@@ -85,6 +86,7 @@ function createCodeBuddyRuntimeAdapter({
         distribution,
         workspaceRoot: defaultWorkspaceRoot,
         servicePassword,
+        ...(discoveryOnly ? {} : { model: normalizedProfile.modelId }),
         mcpServers: isRecord(config.codebuddyMcpServers) ? config.codebuddyMcpServers : {},
         allowedTools: Array.isArray(config.codebuddyAllowedTools) ? config.codebuddyAllowedTools : [],
       });
@@ -266,6 +268,22 @@ function createCodeBuddyRuntimeAdapter({
       return { nativeImageInput: false, toolImageRead: false };
     },
     initialize,
+    async listModels({ signal } = {}) {
+      await initialize({ signal });
+      await verifyLiveIdentity(signal);
+      if (typeof client?.listModels !== "function") {
+        throw runtimeError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy model discovery is unavailable.");
+      }
+      const result = await client.listModels({ workingDirectory: defaultWorkspaceRoot, signal });
+      return {
+        models: Array.isArray(result?.models) ? result.models.map((model) => ({
+          id: normalizeText(model?.id),
+          name: normalizeText(model?.name) || normalizeText(model?.id),
+        })).filter((model) => model.id) : [],
+        source: "codebuddy-acp-session-new",
+        currentModelId: normalizeText(result?.currentModelId),
+      };
+    },
     async sendTextTurn(args) {
       return this.sendTurn(args);
     },

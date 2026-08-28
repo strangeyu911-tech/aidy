@@ -37,6 +37,7 @@ function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY
     async initialize() { calls.push(["initialize"]); return { protocolVersion: 1, serverInfo: { version: "2.115.0" } }; },
     async getIdentityFingerprint() { calls.push(["identity"]); return identity; },
     async newSession(input) { calls.push(["session.new", input]); return { sessionId: "session-1", modelId: "auto" }; },
+    async listModels(input) { calls.push(["models.list", input]); return { currentModelId: "hy4", models: [{ id: "hy4", name: "Hy4 preview" }] }; },
     async resumeSession(input) { calls.push(["session.resume", input]); return { sessionId: input.sessionId }; },
     async prompt(input) {
       calls.push(["prompt", { sessionId: input.sessionId, text: input.text }]);
@@ -103,9 +104,41 @@ test("production adapter initializes, streams a turn, and persists the shared se
   assert.equal(events[2].payload.text, " world");
   assert.equal(events[3].payload.text, "Hello world");
   assert.equal(adapter.getSessionStore().getThreadIdForWorkspace("wechat:account:user", "D:\\CyberBoss"), "session-1");
+  assert.equal(calls[0][1].model, "auto");
   assert.deepEqual(calls.slice(0, 5).map(([name]) => name), ["host.start", "connect", "initialize", "identity", "identity"]);
   await adapter.close();
   assert.deepEqual(calls.slice(-2).map(([name]) => name), ["disconnect", "host.stop"]);
+});
+
+test("production adapter exposes discovery as a separate capability without requiring a verified profile", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-discovery-"));
+  const { adapter, calls } = createHarness({
+    sessionsFile: path.join(root, "sessions.json"),
+  });
+  const discovery = createCodeBuddyRuntimeAdapter({
+    config: { stateDir: root, workspaceRoot: "D:\\CyberBoss", discoveryOnly: true },
+    profile: profile({ capabilities: {} }),
+    secrets: { servicePassword: "gateway-secret" },
+    locateDistribution: async () => ({ source: "path", version: "2.115.0", command: "codebuddy.exe", argsPrefix: [] }),
+    processHostFactory: () => ({
+      async start(input) { calls.push(["discovery.start", input]); return { endpoint: "http://127.0.0.1:45000", health: { ok: true, status: "ok" } }; },
+      async stop() { calls.push(["discovery.stop"]); },
+    }),
+    clientFactory: () => ({
+      async connect() { calls.push(["discovery.connect"]); },
+      async initialize() { calls.push(["discovery.initialize"]); return { protocolVersion: 1 }; },
+      async getIdentityFingerprint() { calls.push(["discovery.identity"]); return IDENTITY; },
+      async listModels(input) { calls.push(["discovery.models", input]); return { models: [{ id: "hy4", name: "Hy4 preview" }] }; },
+      async disconnect() { calls.push(["discovery.disconnect"]); },
+    }),
+  });
+
+  const result = await discovery.listModels();
+
+  assert.deepEqual(result.models, [{ id: "hy4", name: "Hy4 preview" }]);
+  assert.equal(result.source, "codebuddy-acp-session-new");
+  assert.equal(calls.some(([name]) => name === "discovery.models"), true);
+  await discovery.close();
 });
 
 test("one streamed CodeBuddy turn produces one aggregated WeChat delivery", async () => {

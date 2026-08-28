@@ -8,6 +8,7 @@ let modelProfiles = [];
 let editorProfile = null;
 let loadedModels = [];
 const profileEditorState = window.cyberbossProfileEditorState;
+const modelSettingsModelPicker = window.cyberbossModelSettingsModelPicker;
 const profileTestResults = new Map();
 
 const COMPATIBILITY_RUNTIME_IDS = Object.freeze(["codex", "claudecode", "codebuddy"]);
@@ -100,6 +101,8 @@ function bindControls() {
     renderProfileEditorStatus();
   });
   $("#profile-model-id").addEventListener("change", selectOpenCodeProviderForModel);
+  $("#profile-codebuddy-model-select").addEventListener("change", selectCodeBuddyModel);
+  $("#profile-codebuddy-custom-model-id").addEventListener("input", selectCodeBuddyCustomModel);
   $("#refresh-profile-models").addEventListener("click", refreshProfileModels);
   $("#test-model-profile").addEventListener("click", testModelProfile);
   $("#activate-model-profile").addEventListener("click", activateModelProfile);
@@ -360,6 +363,8 @@ function openProfileEditor(profileId = "") {
   renderProfileFields();
   $("#profile-base-url").value = editorProfile?.baseUrl || "";
   $("#profile-model-id").value = editorProfile?.modelId || "auto";
+  $("#profile-codebuddy-custom-model-id").value = "";
+  renderCodeBuddyModelSelect();
   $("#profile-api-key").value = "";
   $("#profile-service-password").value = "";
   $("#profile-sensitive-headers").value = "";
@@ -394,7 +399,10 @@ function renderProfileFields() {
   $("#profile-api-key-row").classList.toggle("hidden", external || isCompatibilityRuntime);
   $("#profile-sensitive-headers-row").classList.toggle("hidden", external || isCompatibilityRuntime);
   $("#profile-provider-row").classList.toggle("hidden", isCodeBuddy);
-  $("#profile-model-picker").classList.toggle("hidden", isCodeBuddy);
+  $("#profile-model-picker").classList.toggle("hidden", false);
+  $("#profile-model-id-row").classList.toggle("hidden", isCodeBuddy);
+  $("#profile-codebuddy-model-row").classList.toggle("hidden", !isCodeBuddy);
+  $("#profile-codebuddy-custom-model").classList.toggle("hidden", !isCodeBuddy);
   const provider = $("#profile-provider");
   const previous = provider.value;
   if (runtimeId === "builtin-api") {
@@ -410,9 +418,10 @@ function renderProfileFields() {
   if ([...provider.options].some((option) => option.value === previous)) provider.value = previous;
   const strict = isOpenCode || provider.value === "openrouter";
   $("#profile-model-help").textContent = isCodeBuddy
-    ? "WorkBuddy / CodeBuddy 目前不提供稳定的模型目录。请照抄 CodeBuddy 中显示的模型 ID；例如 auto（以你当前版本显示的名称为准），测试连接会确认它是否可用。"
+    ? "模型下拉显示 WorkBuddy / CodeBuddy 的名称，保存和测试使用对应的真实模型 ID。点击“刷新模型”获取当前账号可用模型。"
     : strict ? "此运行方式必须从最新实时目录选择模型，不能使用手动 ID。" : "可从目录选择；目录不可用时也可以手动填写模型 ID。";
   renderRuntimeGuide(runtimeId);
+  if (isCodeBuddy) renderCodeBuddyModelSelect();
   $("#codebuddy-environment").classList.toggle("hidden", !isCodeBuddy);
   renderCodeBuddyEnvironment();
   renderProfileEditorStatus();
@@ -471,6 +480,19 @@ function missingRequiredApiKey() {
 
 function friendlyUiError(error) {
   const raw = String(error?.message || "");
+  const code = String(error?.code || "").toUpperCase();
+  if (["CODEBUDDY_BINARY_NOT_FOUND", "CODEBUDDY_CONNECTION_LOST", "CODEBUDDY_START_TIMEOUT"].includes(code)) {
+    return "无法读取 WorkBuddy / CodeBuddy 模型目录。请先启动并登录 WorkBuddy / CodeBuddy，然后重试。";
+  }
+  if (code === "CODEBUDDY_LOGIN_REQUIRED") {
+    return "还没有检测到 WorkBuddy / CodeBuddy 登录。请先登录后再刷新模型。";
+  }
+  if (code === "CODEBUDDY_API_INCOMPATIBLE") {
+    return "当前 WorkBuddy / CodeBuddy 版本不支持模型发现。请更新后重试，或在高级设置中填写真实模型 ID。";
+  }
+  if (code === "CODEBUDDY_MODEL_UNAVAILABLE") {
+    return "所选模型当前不可用。请刷新模型目录并重新选择。";
+  }
   if (/Credential encryption failed|CREDENTIAL_ENCRYPT_FAILED|DPAPI/i.test(raw)) {
     return "无法安全保存凭据。请使用当前 Windows 用户重新登录后再试。";
   }
@@ -516,7 +538,7 @@ async function refreshProfileModels() {
     loadedModels = result.models || [];
     renderProfileFields();
     renderModelOptions();
-    setProfileResult(result.stale ? "只取得旧目录，不能用于激活。请检查连接后重试。" : `已加载 ${loadedModels.length} 个实时模型。`, result.stale);
+    setProfileResult(result.stale ? "只取得旧目录，不能用于激活。请检查连接后重试。" : `已从 WorkBuddy 获取 ${loadedModels.length} 个可用模型。`, result.stale);
   } catch (error) {
     setProfileResult(friendlyUiError(error), true);
   } finally {
@@ -529,6 +551,32 @@ function renderModelOptions() {
   const query = $("#profile-model-search").value.trim().toLowerCase();
   const filtered = loadedModels.filter((model) => !query || `${model.id} ${model.name} ${model.providerId}`.toLowerCase().includes(query)).slice(0, 1000);
   $("#profile-model-options").innerHTML = filtered.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(`${model.providerId ? `${model.providerId} · ` : ""}${model.name || model.id}`)}</option>`).join("");
+  renderCodeBuddyModelSelect();
+}
+
+function renderCodeBuddyModelSelect() {
+  const select = $("#profile-codebuddy-model-select");
+  if (!select || $("#profile-runtime").value !== "codebuddy") return;
+  const current = $("#profile-model-id").value.trim();
+  const query = $("#profile-model-search").value.trim().toLocaleLowerCase();
+  const options = modelSettingsModelPicker.buildCodeBuddyModelOptions(loadedModels, current)
+    .filter((model) => !query || `${model.id} ${model.label}`.toLocaleLowerCase().includes(query));
+  select.innerHTML = options.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}</option>`).join("");
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function selectCodeBuddyModel() {
+  $("#profile-model-id").value = $("#profile-codebuddy-model-select").value;
+  $("#profile-codebuddy-custom-model-id").value = "";
+  $("#profile-test-result").classList.add("hidden");
+  renderProfileEditorStatus();
+}
+
+function selectCodeBuddyCustomModel() {
+  if ($("#profile-runtime").value !== "codebuddy") return;
+  $("#profile-model-id").value = $("#profile-codebuddy-custom-model-id").value.trim();
+  $("#profile-test-result").classList.add("hidden");
+  renderProfileEditorStatus();
 }
 
 function selectOpenCodeProviderForModel() {

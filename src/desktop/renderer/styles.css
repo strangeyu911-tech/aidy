@@ -119,12 +119,15 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .runtime-guide-content .notice { margin-top: 11px; white-space: pre-line; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .form-grid label, .wide-field { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-.form-grid input, .form-grid select, .wide-field input, .wide-field textarea, .model-picker input, .diagnostic-capture select { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--ink); background: #fff; }
+.form-grid input, .form-grid select, .wide-field input, .wide-field select, .wide-field textarea, .model-picker input, .diagnostic-capture select { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--ink); background: #fff; }
 .wide-field { margin-top: 12px; }
 .wide-field textarea { resize: vertical; }
 .notice { border-radius: 11px; background: #fff3d7; color: #675631 !important; padding: 11px 13px; }
 .model-picker { display: flex; gap: 9px; }
 .model-picker input { flex: 1; }
+.advanced-model-setting { margin-top: 10px; color: var(--muted); font-size: 12px; }
+.advanced-model-setting summary { cursor: pointer; color: var(--green); font-weight: 700; }
+.advanced-model-setting small { display: block; margin-top: 7px; line-height: 1.5; }
 .model-picker button, .setup-steps button, .profile-card button { border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 9px 12px; }
 .profile-card .profile-activate-button:disabled,
 .profile-card .profile-activate-button:disabled:hover,

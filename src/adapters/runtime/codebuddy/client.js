@@ -88,6 +88,14 @@ class CodeBuddyClient {
     };
   }
 
+  async listModels({ workingDirectory, signal } = {}) {
+    const session = await this.newSession({ workingDirectory, signal });
+    return {
+      models: session.models,
+      currentModelId: session.modelId,
+    };
+  }
+
   async resumeSession({ sessionId, workingDirectory, signal } = {}) {
     await this.rpc("session/resume", encodeResumeSessionParams({
       sessionId,

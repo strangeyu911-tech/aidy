@@ -75,6 +75,7 @@ async function verifyCodeBuddyCompatibility({
       distribution,
       workspaceRoot,
       servicePassword,
+      model: normalizedProfile.modelId,
       ...(verification.mcpServers ? { mcpServers: verification.mcpServers } : {}),
       ...(verification.allowedTools ? { allowedTools: verification.allowedTools } : {}),
     });

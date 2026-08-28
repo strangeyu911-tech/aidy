@@ -20,7 +20,7 @@ const { BackupService } = require("../services/backup-service");
 const { createOpenCodeRuntimeAdapter } = require("../adapters/runtime/opencode");
 const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
 const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
-const { verifyCodeBuddyEchoTool } = require("../adapters/runtime/codebuddy");
+const { createCodeBuddyRuntimeAdapter, verifyCodeBuddyEchoTool } = require("../adapters/runtime/codebuddy");
 const { locateCodeBuddyDistribution } = require("../adapters/runtime/codebuddy/distribution-locator");
 const { listWeixinAccounts, loadWeixinAccount } = require("../adapters/channel/weixin/account-store");
 const { ProviderCatalog } = require("../services/provider-catalog");
@@ -65,7 +65,9 @@ const providerCatalog = new ProviderCatalog();
 const modelCatalog = {
   list: (profile, secrets, options) => profile.runtimeId === "opencode"
     ? listOpenCodeCatalog(profile, secrets, options)
-    : providerCatalog.list(profile, secrets, options),
+    : profile.runtimeId === "codebuddy"
+      ? listCodeBuddyCatalog(profile, secrets, options)
+      : providerCatalog.list(profile, secrets, options),
   invalidate: (profileId) => providerCatalog.invalidate(profileId),
 };
 const providerVerifier = new ProviderVerifier({
@@ -437,6 +439,19 @@ async function listOpenCodeCatalog(profile, secrets, options = {}) {
   });
   try {
     return await adapter.listCatalog({ reason: options.reason || "display" });
+  } finally {
+    await adapter.close();
+  }
+}
+
+async function listCodeBuddyCatalog(profile, secrets) {
+  const adapter = createCodeBuddyRuntimeAdapter({
+    config: { stateDir, workspaceRoot: rootDir, discoveryOnly: true },
+    profile: { ...profile, modelId: profile.modelId || "auto", capabilities: {} },
+    secrets,
+  });
+  try {
+    return await adapter.listModels();
   } finally {
     await adapter.close();
   }

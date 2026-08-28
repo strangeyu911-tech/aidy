@@ -121,6 +121,30 @@ test("CodeBuddy 2.115 session creation stays isolated behind its versioned publi
   assert.deepEqual(JSON.parse(calls[3].options.body).params, { sessionId: "s", cwd: "D:\\CyberBoss", mcpServers: [] });
 });
 
+test("ACP model discovery returns the real model id separately from its display name", async () => {
+  const responses = [
+    jsonResponse({ connectionId: "c", sessionToken: "t" }),
+    sseResponse([{ jsonrpc: "2.0", id: "id", result: { sessionId: "s", models: {
+      currentModelId: "hy4",
+      availableModels: [{ modelId: "hy4", name: "Hy4 preview" }],
+    } } }]),
+  ];
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44131",
+    servicePassword: "gateway-secret",
+    randomUUID: () => "id",
+    fetchImpl: async () => responses.shift(),
+  });
+
+  await client.connect();
+  const result = await client.listModels({ workingDirectory: "D:\\CyberBoss" });
+
+  assert.deepEqual(result, {
+    currentModelId: "hy4",
+    models: [{ id: "hy4", name: "Hy4 preview" }],
+  });
+});
+
 test("ACP echo verification requires a completed named tool call containing the echo result", async () => {
   const token = "verification_token_123";
   const responses = [
