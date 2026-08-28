@@ -101,6 +101,7 @@
           <form id="model-profile-editor" class="profile-editor hidden">
             <input id="profile-id" type="hidden">
             <div id="profile-editor-status" class="profile-editor-status" role="status" aria-live="polite"><strong id="profile-editor-title">正在编辑：—</strong><span id="profile-editor-state"></span></div>
+            <div class="model-editor-path" aria-label="配置流程"><span>选择运行方式</span><b>→</b><span>填写模型</span><b>→</b><span>测试</span><b>→</b><span>激活</span></div>
             <ol class="setup-steps">
               <li>
                 <strong>选择运行方式</strong>
@@ -110,7 +111,7 @@
                   <label id="profile-ownership-row" class="hidden">OpenCode 方式<select id="profile-ownership"><option value="managed-local">托管本机</option><option value="external">外部服务</option></select></label>
                 </div>
               </li>
-              <li id="runtime-guide-step" class="hidden">
+              <li id="runtime-guide-step" class="setup-help-step hidden">
                 <strong id="runtime-guide-title">配置提示</strong>
                 <div id="runtime-guide-content" class="runtime-guide-content"></div>
                 <div id="codebuddy-environment" class="environment-status hidden" role="status" aria-live="polite">
@@ -142,14 +143,14 @@
                 <small id="profile-model-help">除 OpenRouter 和 OpenCode 外，也可以手动填写模型 ID。</small>
               </li>
               <li>
-                <strong>测试完整连接能力</strong>
-                <p>会检查 AI 能否完整回复、执行必要操作，并在操作后继续完成任务；图片能力为可选项。</p>
+                <strong>测试连接</strong>
+                <p>确认当前模型和本机连接确实可用。</p>
                 <button id="test-model-profile" type="button">保存并测试连接</button>
                 <p id="profile-test-result" class="operation-result hidden" role="status"></p>
               </li>
               <li>
                 <strong>激活配置</strong>
-                <p>测试通过后激活，才会解锁“运行”和“静默”。切换失败时会继续使用原配置。</p>
+                <p>测试通过后激活，才会成为 CyberBoss 当前使用的 AI 配置。</p>
                 <div class="editor-actions"><button id="cancel-model-profile" type="button">取消</button><button id="save-model-profile" type="submit">保存草稿</button><button id="activate-model-profile" class="primary-action" type="button" disabled>激活</button></div>
               </li>
             </ol>
@@ -158,7 +159,22 @@
         <details id="advanced-settings" class="advanced-settings">
           <summary>高级设置（以后再调整）</summary>
           <section class="panel settings-list">
-          <div class="setting-row"><span><strong>模型配置指引</strong><small>重新查看 WorkBuddy / CodeBuddy、API 或其他引擎的配置说明</small></span><button id="reopen-model-guide" type="button">打开指引</button></div>
+          <div class="setting-row"><span><strong>模型配置指南</strong><small>查看 WorkBuddy / CodeBuddy、API 或其他引擎的完整配置步骤</small></span><button id="reopen-model-guide" type="button" aria-expanded="false" aria-controls="model-config-guide">查看配置指南</button></div>
+          <section id="model-config-guide" class="model-config-guide hidden" aria-labelledby="model-config-guide-title">
+            <div class="model-guide-heading"><div><span class="eyebrow">完整配置指南</span><h3 id="model-config-guide-title">使用 WorkBuddy / CodeBuddy 连接 AI 模型</h3><p>普通用户优先走这条推荐路径。</p></div><button id="close-model-guide" type="button">关闭指南</button></div>
+            <div class="model-guide-route" aria-label="推荐配置路径"><span>选择运行方式</span><b>→</b><span>填写模型</span><b>→</b><span>测试</span><b>→</b><span>激活</span></div>
+            <ol class="model-guide-steps">
+              <li><span class="guide-step-index">1</span><div><strong>安装并登录 WorkBuddy / CodeBuddy</strong><p>推荐普通用户优先使用 WorkBuddy。安装后，在 WorkBuddy 或 CodeBuddy 中完成登录。</p><details><summary>账号与兼容性说明</summary><p>CyberBoss 使用当前 Windows 用户下的 CodeBuddy 登录状态。外部登录、退出、切换账号或升级版本后，可能需要重新测试配置。</p></details></div></li>
+              <li><span class="guide-step-index">2</span><div><strong>点击“新增配置”</strong><p>回到上方 AI 引擎区域，点击右上角“新增配置”。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="new-profile"><figcaption>截图 A：新增配置入口</figcaption></figure></div></li>
+              <li><span class="guide-step-index">3</span><div><strong>选择运行方式</strong><p>运行引擎选择“WorkBuddy / CodeBuddy（推荐）”。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="runtime"><figcaption>截图 B：运行引擎选择</figcaption></figure></div></li>
+              <li><span class="guide-step-index">4</span><div><strong>选择模型</strong><p>点击“刷新模型”获取当前账号可用模型。下拉菜单显示模型名称，但保存和测试使用对应的真实模型 ID；<code>Auto</code> 会映射为 <code>auto</code>。只有在目录没有返回时，才在高级设置中自定义模型 ID。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="model-id"><figcaption>截图 C：模型下拉选择</figcaption></figure></div></li>
+              <li><span class="guide-step-index">5</span><div><strong>保存并测试连接</strong><p>点击“保存并测试连接”，确认当前模型和本机连接确实可用。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="test"><figcaption>截图 D：保存并测试连接</figcaption></figure></div></li>
+              <li><span class="guide-step-index">6</span><div><strong>测试通过后激活</strong><p>只有通过测试的配置才能激活。激活后，它才会成为 CyberBoss 当前使用的 AI 配置。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="activate"><figcaption>截图 E：激活配置</figcaption></figure></div></li>
+            </ol>
+            <details class="model-guide-alternatives"><summary>我使用 API Key 或其他兼容引擎</summary><p>已有 API Key 时可选择“内置 API”；Codex、Claude Code 与 OpenCode 面向已经熟悉这些工具的用户，其中 OpenCode 仍属于高级实验选项。ChatGPT 等产品订阅不等于 API Key。</p></details>
+            <p class="model-guide-note">查看或关闭本指南不会创建、修改、测试或激活任何配置。</p>
+            <div class="model-guide-actions"><button id="start-model-profile-from-guide" class="primary-action" type="button">新增配置 / 开始配置</button></div>
+          </section>
           <label class="setting-row"><span><strong>随 Windows 启动</strong><small>由唯一的后台启动任务负责</small></span><input id="startup-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>随机查岗</strong><small>只显示范围，不提前透露具体时间</small></span><input id="random-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>每日报表</strong><small>默认汇总前一天</small></span><input id="report-setting" type="checkbox"></label>
@@ -206,12 +222,21 @@
     </nav>
   </div>
 
+  <aside id="model-settings-coach" class="model-settings-coach hidden" aria-label="模型配置新手提示" aria-live="polite">
+    <span id="model-coach-progress" class="eyebrow">新手提示 · 1 / 2</span>
+    <h3 id="model-coach-title">从这里开始</h3>
+    <p id="model-coach-description"></p>
+    <div class="model-coach-actions"><button id="skip-model-coach" type="button">跳过</button><button id="next-model-coach" class="primary-action" type="button">下一步</button></div>
+  </aside>
+
   <div id="modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal"><h3 id="modal-title">确认停止？</h3><p id="modal-description">停止后，微信回复、查岗、同步、日记和报表都会暂停。桌面控制中心会继续留在托盘中。</p><div class="modal-actions"><button id="modal-cancel" type="button">取消</button><button id="modal-stop-now" class="hidden" type="button">立即停止当前工作</button><button id="modal-confirm" class="danger" type="button">停止 CyberBoss</button></div></div>
   </div>
   <div id="toast" class="toast hidden"><span id="toast-text"></span><button id="toast-undo" type="button">撤销</button></div>
   <script src="./profile-editor-state.js"></script>
   <script src="./model-settings-model-picker.js"></script>
+  <script src="./model-settings-view-state.js"></script>
+  <script src="./model-settings-coach-state.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

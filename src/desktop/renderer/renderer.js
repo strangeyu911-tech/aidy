@@ -7,8 +7,15 @@ let runtimeOptions = { runtimes: [], providers: [] };
 let modelProfiles = [];
 let editorProfile = null;
 let loadedModels = [];
+let modelSettingsLoaded = false;
 const profileEditorState = window.cyberbossProfileEditorState;
 const modelSettingsModelPicker = window.cyberbossModelSettingsModelPicker;
+const modelSettingsView = window.cyberbossModelSettingsViewState;
+let modelSettingsViewState = modelSettingsView.createModelSettingsViewState();
+const modelSettingsCoach = window.cyberbossModelSettingsCoachState;
+const MODEL_SETTINGS_COACH_STORAGE_KEY = "cyberboss:model-settings-coach:v1";
+let modelSettingsCoachState = modelSettingsCoach.createModelSettingsCoachState({ completed: readModelCoachCompleted() });
+let modelCoachTarget = null;
 const profileTestResults = new Map();
 
 const COMPATIBILITY_RUNTIME_IDS = Object.freeze(["codex", "claudecode", "codebuddy"]);
@@ -32,8 +39,7 @@ const RUNTIME_SETUP_GUIDES = Object.freeze({
   },
   codebuddy: {
     title: "推荐：WorkBuddy / CodeBuddy",
-    body: "这是 CyberBoss 面向新用户的推荐路径。安装并登录 WorkBuddy 后回到这里，填写它显示的模型并测试连接。CyberBoss 会自动管理本机连接所需的安全凭据。",
-    steps: ["安装 WorkBuddy（或单独安装 CodeBuddy）", "在 WorkBuddy / CodeBuddy 中登录", "回到这里填写模型并点击“保存并测试连接”", "测试通过后激活配置"],
+    body: "已安装并登录 WorkBuddy / CodeBuddy 后，点击“刷新模型”并从下拉菜单选择当前可用模型，再保存并测试连接。",
     notice: "CodeBuddy 登录属于当前 Windows 用户；所有 CyberBoss CodeBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\n连接能力可能随 WorkBuddy / CodeBuddy 版本变化；如果遇到连接问题，请先更新 WorkBuddy / CodeBuddy 后再次测试。",
   },
 });
@@ -55,6 +61,14 @@ function bindNavigation() {
   $$("[data-view]").forEach((button) => button.addEventListener("click", () => {
     $$("[data-view]").forEach((item) => item.classList.toggle("active", item === button));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === `view-${button.dataset.view}`));
+    if (button.dataset.view === "settings") {
+      requestAnimationFrame(() => {
+        if (modelSettingsCoachState.status === "active") renderModelCoachMarks();
+        else maybeStartModelCoachMarks();
+      });
+    } else {
+      hideModelCoachVisual();
+    }
   }));
   $$("[data-record-tab]").forEach((button) => button.addEventListener("click", () => {
     $$("[data-record-tab]").forEach((item) => item.classList.toggle("active", item === button));
@@ -106,7 +120,13 @@ function bindControls() {
   $("#refresh-profile-models").addEventListener("click", refreshProfileModels);
   $("#test-model-profile").addEventListener("click", testModelProfile);
   $("#activate-model-profile").addEventListener("click", activateModelProfile);
-  $("#reopen-model-guide").addEventListener("click", openModelSettings);
+  $("#reopen-model-guide").addEventListener("click", toggleModelGuide);
+  $("#close-model-guide").addEventListener("click", closeModelGuide);
+  $("#start-model-profile-from-guide").addEventListener("click", startModelProfileFromGuide);
+  $("#skip-model-coach").addEventListener("click", skipModelCoachMarks);
+  $("#next-model-coach").addEventListener("click", advanceModelCoachMarks);
+  window.addEventListener("resize", positionModelCoachMark);
+  window.addEventListener("scroll", positionModelCoachMark, true);
   $("#enable-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("enable"));
   $("#disable-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("disable"));
   $("#delete-diagnostic-capture").addEventListener("click", () => updateDiagnosticCapture("delete"));
@@ -300,6 +320,7 @@ function renderSettings() {
 
 async function loadModelSettings() {
   [runtimeOptions, modelProfiles] = await Promise.all([api.listRuntimeOptions(), api.listProfiles()]);
+  modelSettingsLoaded = true;
   renderRuntimeOptions();
   renderModelProfiles();
 }
@@ -344,6 +365,7 @@ function renderModelProfiles() {
 function openModelSettings() {
   $("#nav-settings").click();
   $("#model-settings").scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!modelProfiles.length && modelSettingsCoachState.status === "idle") return;
   if (!modelProfiles.length) openProfileEditor();
   else if ($("#model-profile-editor").classList.contains("hidden")) {
     openProfileEditor(snapshot?.engine?.activeProfile?.id || modelProfiles[0].id);
@@ -351,8 +373,138 @@ function openModelSettings() {
   if ($("#profile-runtime").value === "codebuddy") void checkCodeBuddyEnvironment();
 }
 
+function toggleModelGuide() {
+  if (modelSettingsViewState.guideOpen) closeModelGuide();
+  else openModelGuide();
+}
+
+function readModelCoachCompleted() {
+  try {
+    return Boolean(window.localStorage.getItem(MODEL_SETTINGS_COACH_STORAGE_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function persistModelCoachCompletion(value) {
+  try {
+    window.localStorage.setItem(MODEL_SETTINGS_COACH_STORAGE_KEY, value);
+  } catch {
+    // The coach remains dismissible for this session when renderer storage is unavailable.
+  }
+}
+
+function maybeStartModelCoachMarks() {
+  if (!modelSettingsLoaded || modelProfiles.length || modelSettingsCoachState.status !== "idle") return;
+  if (modelSettingsViewState.guideOpen || modelSettingsViewState.editorMode !== "closed") return;
+  modelSettingsCoachState = modelSettingsCoach.transitionModelSettingsCoach(modelSettingsCoachState, { type: "start" });
+  renderModelCoachMarks();
+}
+
+function hideModelCoachVisual() {
+  modelCoachTarget?.classList.remove("model-coach-target");
+  modelCoachTarget = null;
+  $("#model-settings-coach").classList.add("hidden");
+}
+
+function advanceModelCoachMarks() {
+  modelSettingsCoachState = modelSettingsCoach.transitionModelSettingsCoach(modelSettingsCoachState, { type: "next" });
+  if (modelSettingsCoachState.status === "completed") persistModelCoachCompletion("completed");
+  renderModelCoachMarks();
+}
+
+function skipModelCoachMarks() {
+  modelSettingsCoachState = modelSettingsCoach.transitionModelSettingsCoach(modelSettingsCoachState, { type: "skip" });
+  persistModelCoachCompletion("skipped");
+  renderModelCoachMarks();
+}
+
+function renderModelCoachMarks() {
+  hideModelCoachVisual();
+  const coach = $("#model-settings-coach");
+  if (modelSettingsCoachState.status !== "active") {
+    coach.classList.add("hidden");
+    return;
+  }
+
+  const steps = {
+    1: {
+      target: "#new-model-profile",
+      title: "先添加一个 AI 配置",
+      description: "推荐使用 WorkBuddy / CodeBuddy。已经安装并登录的话，点击“新增配置”开始。",
+    },
+    2: {
+      target: "#reopen-model-guide",
+      title: "需要帮助时看这里",
+      description: "还没安装 WorkBuddy，或者不知道模型 ID 填什么？可以随时查看完整配置指南。",
+    },
+  };
+  const step = steps[modelSettingsCoachState.step];
+  if (!step) return;
+  if (modelSettingsCoachState.step === 2) $("#advanced-settings").open = true;
+  modelCoachTarget = $(step.target);
+  modelCoachTarget.classList.add("model-coach-target");
+  $("#model-coach-progress").textContent = `新手提示 · ${modelSettingsCoachState.step} / ${modelSettingsCoach.STEP_COUNT}`;
+  $("#model-coach-title").textContent = step.title;
+  $("#model-coach-description").textContent = step.description;
+  $("#next-model-coach").textContent = modelSettingsCoachState.step === modelSettingsCoach.STEP_COUNT ? "完成" : "下一步";
+  coach.classList.remove("hidden");
+  modelCoachTarget.scrollIntoView({ behavior: "smooth", block: "center" });
+  requestAnimationFrame(positionModelCoachMark);
+}
+
+function positionModelCoachMark() {
+  if (modelSettingsCoachState.status !== "active" || !modelCoachTarget) return;
+  const coach = $("#model-settings-coach");
+  const targetRect = modelCoachTarget.getBoundingClientRect();
+  const width = Math.min(340, window.innerWidth - 32);
+  coach.style.width = `${width}px`;
+  const height = coach.offsetHeight;
+  const placement = modelSettingsCoach.resolveModelCoachPosition({
+    targetRect,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    coachWidth: width,
+    coachHeight: height,
+  });
+  coach.style.left = `${placement.left}px`;
+  coach.style.top = `${placement.top}px`;
+  coach.style.setProperty("--coach-arrow-left", `${placement.arrowLeft}px`);
+  coach.classList.toggle("coach-above", placement.above);
+}
+
+function openModelGuide() {
+  hideModelCoachVisual();
+  modelSettingsViewState = modelSettingsView.transitionModelSettingsView(modelSettingsViewState, { type: "open-guide" });
+  renderModelSettingsView();
+  $("#model-config-guide").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function closeModelGuide() {
+  modelSettingsViewState = modelSettingsView.transitionModelSettingsView(modelSettingsViewState, { type: "close-guide" });
+  renderModelSettingsView();
+}
+
+function startModelProfileFromGuide() {
+  closeModelGuide();
+  openProfileEditor();
+}
+
+function renderModelSettingsView() {
+  const guideOpen = modelSettingsViewState.guideOpen;
+  $("#model-config-guide").classList.toggle("hidden", !guideOpen);
+  $("#reopen-model-guide").textContent = guideOpen ? "收起配置指南" : "查看配置指南";
+  $("#reopen-model-guide").setAttribute("aria-expanded", String(guideOpen));
+  $("#model-profile-editor").classList.toggle("hidden", modelSettingsViewState.editorMode === "closed");
+}
+
 function openProfileEditor(profileId = "") {
+  hideModelCoachVisual();
   editorProfile = modelProfiles.find((item) => item.id === profileId) || null;
+  modelSettingsViewState = modelSettingsView.transitionModelSettingsView(modelSettingsViewState, {
+    type: editorProfile ? "edit-config" : "create-config",
+    profileId: editorProfile?.id || "",
+  });
   loadedModels = [];
   $("#profile-id").value = editorProfile?.id || "";
   $("#profile-name").value = editorProfile?.name || "我的 WorkBuddy";
@@ -372,7 +524,7 @@ function openProfileEditor(profileId = "") {
   if (previousTest?.modelId === $("#profile-model-id").value) setProfileResult(previousTest.text, previousTest.isError);
   else $("#profile-test-result").classList.add("hidden");
   $("#activate-model-profile").disabled = editorProfile?.status !== "verified";
-  $("#model-profile-editor").classList.remove("hidden");
+  renderModelSettingsView();
   renderProfileEditorStatus();
   $("#model-profile-editor").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -380,7 +532,8 @@ function openProfileEditor(profileId = "") {
 function closeProfileEditor() {
   editorProfile = null;
   loadedModels = [];
-  $("#model-profile-editor").classList.add("hidden");
+  modelSettingsViewState = modelSettingsView.transitionModelSettingsView(modelSettingsViewState, { type: "close-editor" });
+  renderModelSettingsView();
   clearSecretInputs();
 }
 
@@ -433,7 +586,7 @@ function renderRuntimeGuide(runtimeId) {
   if (!guide) { step.classList.add("hidden"); return; }
   step.classList.remove("hidden");
   $("#runtime-guide-title").textContent = guide.title;
-  $("#runtime-guide-content").innerHTML = `<p>${escapeHtml(guide.body)}</p>${guide.steps ? `<ol>${guide.steps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>` : ""}${guide.notice ? `<p class="notice">${escapeHtml(guide.notice)}</p>` : ""}`;
+  $("#runtime-guide-content").innerHTML = `<p>${escapeHtml(guide.body)}</p>${guide.steps ? `<ol>${guide.steps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>` : ""}${guide.notice ? `<details><summary>账号与兼容性说明</summary><p>${escapeHtml(guide.notice)}</p></details>` : ""}`;
 }
 
 function renderCodeBuddyEnvironment() {
