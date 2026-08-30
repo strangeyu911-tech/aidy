@@ -35,7 +35,7 @@ class CodeBuddyProcessHost {
     this.closing = false;
   }
 
-  async start({ distribution, workspaceRoot, servicePassword, model = "", mcpServers = {}, allowedTools = [] } = {}) {
+  async start({ distribution, workspaceRoot, servicePassword, model = "", mcpServers = {}, allowedTools = null } = {}) {
     if (this.child) throw hostError("CODEBUDDY_START_TIMEOUT", "Managed CodeBuddy is already running.");
     const selected = requireDistribution(distribution);
     const password = requireText(servicePassword, "CODEBUDDY_AUTH_FAILED", "CodeBuddy service password is required.");
@@ -211,7 +211,10 @@ function normalizeMcpServers(value) {
 }
 
 function buildToolRestrictionArgs(value) {
-  if (!Array.isArray(value) || value.length === 0) return [];
+  if (value === null) return [];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw hostError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy tool restriction requires a non-empty allowlist.");
+  }
   const tools = value.map((item) => String(item).trim());
   if (tools.some((item) => !/^[a-zA-Z0-9_.:-]{1,160}$/.test(item))) {
     throw hostError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy tool allowlist is invalid.");

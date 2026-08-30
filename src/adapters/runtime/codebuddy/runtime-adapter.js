@@ -39,6 +39,10 @@ function createCodeBuddyRuntimeAdapter({
   const activeTurns = new Map();
   const attachedSessions = new Set();
   const pendingApprovals = new Map();
+  const capabilityMode = normalizeCapabilityMode(config.codebuddyCapabilityMode);
+  const supervisorAllowedTools = capabilityMode === "supervisor"
+    ? normalizeSupervisorAllowedTools(config.codebuddyAllowedTools)
+    : null;
 
   let distribution = null;
   let host = null;
@@ -88,7 +92,9 @@ function createCodeBuddyRuntimeAdapter({
         servicePassword,
         ...(discoveryOnly ? {} : { model: normalizedProfile.modelId }),
         mcpServers: isRecord(config.codebuddyMcpServers) ? config.codebuddyMcpServers : {},
-        allowedTools: Array.isArray(config.codebuddyAllowedTools) ? config.codebuddyAllowedTools : [],
+        allowedTools: capabilityMode === "developer"
+          ? (Array.isArray(config.codebuddyAllowedTools) ? config.codebuddyAllowedTools : null)
+          : supervisorAllowedTools,
       });
       client = clientFactory({
         endpoint: started.endpoint,
@@ -163,6 +169,27 @@ function createCodeBuddyRuntimeAdapter({
   function forwardMappedEvents(message, { threadId, turnId, workspaceRoot }) {
     const events = mapCodeBuddyNotification(message, { threadId, turnId, workspaceRoot });
     for (const event of events) {
+      if (event?.type === "runtime.approval.requested" && capabilityMode !== "developer") {
+        const outcome = normalizeText(event.payload?.responseTemplate?.optionByCommand?.no);
+        emit({
+          type: "runtime.approval.denied",
+          payload: runtimePayload({
+            threadId,
+            turnId,
+            workspaceRoot,
+            requestId: event.payload.requestId,
+            code: "CODEBUDDY_CAPABILITY_DENIED",
+          }),
+        }, message);
+        if (outcome) {
+          Promise.resolve(client?.respondPermission?.({
+            requestId: message?.id ?? event.payload.requestId,
+            outcome,
+            sessionId: threadId,
+          })).catch(() => {});
+        }
+        continue;
+      }
       if (event?.type === "runtime.approval.requested") {
         pendingApprovals.set(normalizeRpcId(event.payload.requestId), {
           threadId,
@@ -451,6 +478,16 @@ function normalizeRpcId(value) {
 }
 
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
+function normalizeCapabilityMode(value) {
+  return normalizeText(value).toLowerCase() === "developer" ? "developer" : "supervisor";
+}
+function normalizeSupervisorAllowedTools(value) {
+  const tools = Array.isArray(value) ? value.map(normalizeText).filter(Boolean) : [];
+  if (tools.some((tool) => !/^mcp__[a-zA-Z0-9_-]+__[a-zA-Z0-9_.:-]+$/.test(tool))) {
+    throw runtimeError("CODEBUDDY_CAPABILITY_POLICY_INVALID", "Supervisor CodeBuddy tools must be explicit MCP tool names.");
+  }
+  return tools.length ? tools : ["mcp__cyberboss_supervisor__disabled"];
+}
 function requireText(value, code, message) { const text = normalizeText(value); if (!text) throw runtimeError(code, message); return text; }
 function nonNegativeInteger(value) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0; }
 function positiveInteger(value, fallback) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback; }

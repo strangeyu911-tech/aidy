@@ -520,8 +520,9 @@ test("claudecode process client rejects a different session id before the next t
   assert.equal(client.resumeSessionId, "55555555-5555-4555-8555-555555555555");
 });
 
-test("handleRuntimeEvent prompts for project shell commands instead of auto-approving them", async () => {
+test("handleRuntimeEvent denies project shell commands in supervisor sessions", async () => {
   const prompts = [];
+  const responses = [];
   const appLike = {
     streamDelivery: {
       async handleRuntimeEvent() {},
@@ -543,7 +544,7 @@ test("handleRuntimeEvent prompts for project shell commands instead of auto-appr
         };
       },
       async respondApproval(payload) {
-        throw new Error(`should not auto-approve ${JSON.stringify(payload)}`);
+        responses.push(payload);
       },
     },
     threadStateStore: {
@@ -563,7 +564,8 @@ test("handleRuntimeEvent prompts for project shell commands instead of auto-appr
     },
   });
 
-  assert.equal(prompts.length, 1);
+  assert.deepEqual(responses, [{ requestId: "req-3", decision: "decline" }]);
+  assert.equal(prompts.length, 0);
 });
 
 test("handleNewCommand asks runtime to start a fresh draft before clearing the saved thread", async () => {
@@ -1031,7 +1033,7 @@ test("handleRuntimeEvent auto-approves any state-dir file operation without prom
   assert.deepEqual(responses, [{ requestId: "req-write-2", decision: "accept" }]);
 });
 
-test("handleRuntimeEvent still prompts for non-inbox image reads", async () => {
+test("handleRuntimeEvent denies non-inbox image reads in supervisor sessions", async () => {
   const responses = [];
   const prompts = [];
   const stateDir = path.join(os.tmpdir(), "cyberboss-approval-test");
@@ -1080,8 +1082,8 @@ test("handleRuntimeEvent still prompts for non-inbox image reads", async () => {
     },
   });
 
-  assert.deepEqual(responses, []);
-  assert.equal(prompts.length, 1);
+  assert.deepEqual(responses, [{ requestId: "req-read-img-3", decision: "decline" }]);
+  assert.equal(prompts.length, 0);
 });
 
 test("handleRuntimeEvent auto-approves allowlisted prefixes for claudecode approvals", async () => {

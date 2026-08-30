@@ -1767,6 +1767,18 @@ class CyberbossApp {
     if (event.type !== "runtime.approval.requested") {
       return;
     }
+    if (normalizeText(this.runtimeAdapter?.describe?.().id).toLowerCase() === "codebuddy"
+      && !isDeveloperCapabilitySession(this)) {
+      await this.runtimeAdapter.respondApproval({
+        requestId: event.payload.requestId,
+        decision: "decline",
+        result: { action: "cancel", remember: false },
+      }).catch(() => {});
+      this.runtimeAdapter.getSessionStore().clearApprovalPrompt(event.payload.threadId);
+      this.threadStateStore.resolveApproval(event.payload.threadId, "running");
+      console.warn(`[cyberboss] denied CodeBuddy capability request thread=${event.payload.threadId}`);
+      return;
+    }
     const sessionStore = this.runtimeAdapter.getSessionStore();
     const linked = sessionStore.findBindingForThreadId(event.payload.threadId);
     if (!linked?.workspaceRoot) {
@@ -1777,6 +1789,17 @@ class CyberbossApp {
       || matchesBuiltInCommandPrefix(event.payload.commandTokens)
       || matchesCommandPrefix(event.payload.commandTokens, allowlist);
     if (!shouldAutoApprove) {
+      if (!isDeveloperCapabilitySession(this)) {
+        const denial = buildApprovalResponsePayload(event.payload, "no") || {
+          requestId: event.payload.requestId,
+          decision: "decline",
+        };
+        await this.runtimeAdapter.respondApproval(denial).catch(() => {});
+        sessionStore.clearApprovalPrompt(event.payload.threadId);
+        this.threadStateStore.resolveApproval(event.payload.threadId, "running");
+        console.warn(`[cyberboss] denied supervisor capability request thread=${event.payload.threadId}`);
+        return;
+      }
       const promptState = sessionStore.getApprovalPromptState(event.payload.threadId);
       const promptSignature = buildApprovalPromptSignature(event.payload);
       if (promptState?.signature && promptState.signature === promptSignature) {

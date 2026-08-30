@@ -23,7 +23,7 @@ function profile(overrides = {}) {
   };
 }
 
-function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY } = {}) {
+function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY, configOverrides = {}, profileOverrides = {} } = {}) {
   const calls = [];
   const host = {
     async start(input) {
@@ -62,8 +62,9 @@ function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY
       workspaceRoot: "D:\\CyberBoss",
       sessionsFile,
       randomUUID: () => "turn-1",
+      ...configOverrides,
     },
-    profile: profile(),
+    profile: profile(profileOverrides),
     secrets: { servicePassword: "gateway-secret" },
     locateDistribution: async () => ({
       source: "workbuddy-bundled",
@@ -108,6 +109,20 @@ test("production adapter initializes, streams a turn, and persists the shared se
   assert.deepEqual(calls.slice(0, 5).map(([name]) => name), ["host.start", "connect", "initialize", "identity", "identity"]);
   await adapter.close();
   assert.deepEqual(calls.slice(-2).map(([name]) => name), ["disconnect", "host.stop"]);
+});
+
+test("managed CodeBuddy ignores stale profile endpoints and reports the discovered host endpoint", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-endpoint-"));
+  const { adapter } = createHarness({
+    sessionsFile: path.join(root, "sessions.json"),
+    profileOverrides: {
+      baseUrl: "http://127.0.0.1:44126",
+      options: { endpoint: "http://127.0.0.1:44126" },
+    },
+  });
+  const ready = await adapter.initialize();
+  assert.equal(ready.endpoint, "http://127.0.0.1:45000");
+  await adapter.close();
 });
 
 test("production adapter exposes discovery as a separate capability without requiring a verified profile", async () => {
@@ -248,7 +263,7 @@ test("production adapter blocks a changed OS-user CodeBuddy identity and invalid
   assert.equal(calls.some(([name]) => name === "guard.stop"), true);
 });
 
-test("production adapter routes CodeBuddy permissions and terminal usage through the shared runtime events", async () => {
+test("supervisor CodeBuddy denies permission requests without emitting an approvable event", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-approval-"));
   const sessionsFile = path.join(root, "sessions.json");
   const { adapter, calls } = createHarness({
@@ -288,15 +303,57 @@ test("production adapter routes CodeBuddy permissions and terminal usage through
   await adapter.sendTurn({ bindingKey: "binding", workspaceRoot: "D:\\CyberBoss", text: "run" });
   await waitFor(() => events.some((event) => event.type === "runtime.turn.completed"));
   const approval = events.find((event) => event.type === "runtime.approval.requested");
+  const denied = events.find((event) => event.type === "runtime.approval.denied");
   const context = events.find((event) => event.type === "runtime.context.updated");
   const completed = events.find((event) => event.type === "runtime.turn.completed");
-  assert.equal(approval.payload.requestId, "permission-1");
+  assert.equal(approval, undefined);
+  assert.equal(denied.payload.requestId, "permission-1");
+  assert.equal(denied.payload.code, "CODEBUDDY_CAPABILITY_DENIED");
   assert.equal(context.payload.currentTokens, 32);
   assert.deepEqual(completed.payload.usage, { inputTokens: 12, outputTokens: 5 });
   assert.equal(completed.payload.vendorUsage.workbuddyPromotion, "not interpreted");
 
-  await adapter.respondApproval({ requestId: "permission-1", decision: "accept", result: { remember: true } });
+  await waitFor(() => calls.some(([name]) => name === "permission.response"));
+  assert.equal(calls.find(([name]) => name === "permission.response")[1].outcome, "reject");
+  const start = calls.find(([name]) => name === "host.start")[1];
+  assert.deepEqual(start.allowedTools, ["mcp__cyberboss_supervisor__disabled"]);
+  await adapter.close();
+});
+
+test("developer CodeBuddy keeps explicit approval handling available", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-developer-"));
+  const { adapter, calls } = createHarness({
+    sessionsFile: path.join(root, "sessions.json"),
+    configOverrides: { codebuddyCapabilityMode: "developer" },
+    clientOverrides: {
+      async prompt(input) {
+        input.onRequest({
+          id: "permission-dev",
+          method: "session/request_permission",
+          params: {
+            sessionId: input.sessionId,
+            toolCall: { title: "Run command", rawInput: { command: ["node", "build.js"] } },
+            options: [
+              { optionId: "allow-once", kind: "allow_once" },
+              { optionId: "allow-always", kind: "allow_always" },
+              { optionId: "reject", kind: "reject_once" },
+            ],
+          },
+        });
+        return { text: "done", stopReason: "end_turn" };
+      },
+      async respondPermission(input) { calls.push(["permission.response", input]); },
+    },
+  });
+  const events = [];
+  adapter.onEvent((event) => events.push(event));
+  await adapter.sendTurn({ bindingKey: "developer", workspaceRoot: "D:\\CyberBoss", text: "run" });
+  await waitFor(() => events.some((event) => event.type === "runtime.turn.completed"));
+  const approval = events.find((event) => event.type === "runtime.approval.requested");
+  assert.equal(approval.payload.requestId, "permission-dev");
+  await adapter.respondApproval({ requestId: "permission-dev", decision: "accept", result: { remember: true } });
   assert.equal(calls.find(([name]) => name === "permission.response")[1].outcome, "allow-always");
+  assert.equal(calls.find(([name]) => name === "host.start")[1].allowedTools, null);
   await adapter.close();
 });
 
