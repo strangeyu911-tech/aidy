@@ -1,10 +1,10 @@
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
-
-const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
+const { OutboundMessageBoundary } = require("./outbound-message-boundary");
 
 class StreamDelivery {
   constructor({ channelAdapter, sessionStore, runtimeId = "", onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
     this.channelAdapter = channelAdapter;
+    this.outboundBoundary = new OutboundMessageBoundary({ channelAdapter });
     this.sessionStore = sessionStore;
     this.runtimeId = normalizeRuntimeId(runtimeId);
     this.systemReplyPolicy = createSystemReplyPolicy(this.runtimeId);
@@ -394,7 +394,7 @@ class StreamDelivery {
   async sendTextWithRetry(state, payload, { kind }) {
     const initialTarget = state.replyTarget;
     try {
-      await this.channelAdapter.sendText(payload);
+      await this.outboundBoundary.send(toFinalAssistantEnvelope(payload, kind));
       return;
     } catch (error) {
       const retryTarget = this.resolveRetriableReplyTarget(initialTarget, error);
@@ -417,7 +417,7 @@ class StreamDelivery {
         if (payload.preserveBlock) {
           retryPayload.preserveBlock = true;
         }
-        await this.channelAdapter.sendText(retryPayload);
+        await this.outboundBoundary.send(toFinalAssistantEnvelope(retryPayload, kind));
         state.replyTarget = retryTarget;
         if (state.bindingKey) {
           this.replyTargetByBindingKey.set(state.bindingKey, {
@@ -621,9 +621,21 @@ function buildEffectiveReplyText(deferredPrefix, replyText) {
   const prefix = trimOuterBlankLines(normalizeLineEndings(deferredPrefix));
   const body = trimOuterBlankLines(normalizeLineEndings(replyText));
   if (prefix && body) {
-    return `${prefix}\n\n${CURRENT_REPLY_HEADER}\n${body}`;
+    return `${prefix}\n\n${body}`;
   }
   return prefix || body;
+}
+
+function toFinalAssistantEnvelope(payload, kind) {
+  return {
+    audience: "user",
+    kind: "assistant.final",
+    source: kind === "system_reply" ? "system.action" : "runtime.reply",
+    userId: payload.userId,
+    text: payload.text,
+    contextToken: payload.contextToken,
+    preserveBlock: payload.preserveBlock === true,
+  };
 }
 
 function markdownToPlainText(text) {

@@ -459,7 +459,7 @@ test("completed turns flush queued inbound work before system messages", async (
   assert.deepEqual(calls, ["releaseThread", "flushInbound", "flushSystem", "stopTyping"]);
 });
 
-test("failed turns still send error back when thread binding lookup is missing", async () => {
+test("failed turns stay internal when thread binding lookup is missing", async () => {
   const sent = [];
   const appLike = {
     activeTurnRecords: new Map(),
@@ -501,9 +501,6 @@ test("failed turns still send error back when thread binding lookup is missing",
         sent.push(payload);
       },
     },
-    async sendFailureToThread(threadId, text, fallbackTarget) {
-      return CyberbossApp.prototype.sendFailureToThread.call(this, threadId, text, fallbackTarget);
-    },
     async stopTypingForThread() {},
     async flushPendingInboundMessages() {},
     async flushPendingSystemMessages() {},
@@ -521,11 +518,7 @@ test("failed turns still send error back when thread binding lookup is missing",
     },
   });
 
-  assert.deepEqual(sent, [{
-    userId: "user-1",
-    text: "❌ Execution failed\ncontext window exceeded",
-    contextToken: "ctx-1",
-  }]);
+  assert.deepEqual(sent, []);
 });
 
 test("flushPendingInboundMessages batches queued messages from the same scope into one turn", async () => {

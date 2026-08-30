@@ -15,11 +15,11 @@ function extractExplicitCheckpoint(text, { now = new Date() } = {}) {
   }
 
   if (!dueAt) {
-    const absolute = normalized.match(/(?:(今天|今晚|明天|明早|明晚|上午|下午|中午|晚上|凌晨)\s*)?(\d{1,2})(?:[:：点时](\d{1,2})?|点(半))/);
+    const absolute = normalized.match(/(?:(今天|今晚|明天|明早|明晚|上午|下午|中午|晚上|凌晨)\s*)?(\d{1,2})(?:点(半)|[:：点时](\d{1,2})?)/);
     if (absolute) {
       const qualifier = absolute[1] || "";
       let hour = Number(absolute[2]);
-      const minute = absolute[4] === "半" ? 30 : Number(absolute[3] || 0);
+      const minute = absolute[3] === "半" ? 30 : Number(absolute[4] || 0);
       if (/下午|晚上|今晚|明晚/.test(qualifier) && hour < 12) hour += 12;
       if (/凌晨/.test(qualifier) && hour === 12) hour = 0;
       if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {

@@ -66,6 +66,8 @@ class SystemMessageService {
       workspaceRoot: resolvedWorkspaceRoot,
       text: normalizedText,
       createdAt: new Date().toISOString(),
+      taskType: "system",
+      sendTrigger: "system_service",
     });
   }
 }

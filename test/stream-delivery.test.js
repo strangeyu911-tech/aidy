@@ -510,7 +510,7 @@ test("plain reply prepends deferred prefix to the next reply", async () => {
   });
   streamDelivery.setDeferredReplyPrefix(
     "binding-7",
-    `${DEFERRED_REPLY_NOTICE}\n\n${DEFERRED_PLAIN_REPLY_HEADER}\n旧尾段\n\n${DEFERRED_SYSTEM_REPLY_HEADER}\n中间主动联系`
+    "旧尾段\n\n中间主动联系"
   );
 
   await runCompletedTurn(streamDelivery, {
@@ -523,7 +523,7 @@ test("plain reply prepends deferred prefix to the next reply", async () => {
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0], {
     userId: "user-7",
-    text: `${DEFERRED_REPLY_NOTICE}\n\n${DEFERRED_PLAIN_REPLY_HEADER}\n旧尾段\n\n${DEFERRED_SYSTEM_REPLY_HEADER}\n中间主动联系\n\n${CURRENT_REPLY_HEADER}\n这是新一轮自动回复`,
+    text: "旧尾段\n\n中间主动联系\n\n这是新一轮自动回复",
     contextToken: "ctx-7",
     preserveBlock: true,
   });
@@ -539,7 +539,7 @@ test("plain reply with deferred prefix is sent as soon as the first item is fina
   });
   streamDelivery.setDeferredReplyPrefix(
     "binding-8",
-    `${DEFERRED_REPLY_NOTICE}\n\n${DEFERRED_PLAIN_REPLY_HEADER}\n旧尾段\n\n${DEFERRED_SYSTEM_REPLY_HEADER}\n中间主动联系`
+    "旧尾段\n\n中间主动联系"
   );
 
   await streamDelivery.handleRuntimeEvent({
@@ -559,7 +559,7 @@ test("plain reply with deferred prefix is sent as soon as the first item is fina
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0], {
     userId: "user-8",
-    text: `${DEFERRED_REPLY_NOTICE}\n\n${DEFERRED_PLAIN_REPLY_HEADER}\n旧尾段\n\n${DEFERRED_SYSTEM_REPLY_HEADER}\n中间主动联系\n\n${CURRENT_REPLY_HEADER}\n第一段`,
+    text: "旧尾段\n\n中间主动联系\n\n第一段",
     contextToken: "ctx-8",
     preserveBlock: true,
   });

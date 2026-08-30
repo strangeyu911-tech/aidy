@@ -5,6 +5,7 @@ const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
+const { buildDailySupervisionKey } = require("../core/supervision-policy");
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATE = "%USER% comes to mind again.";
 
@@ -39,6 +40,12 @@ async function runSystemCheckinPoller(config) {
       workspaceRoot: target.workspaceRoot,
       text: buildCheckinTrigger(config),
       createdAt: new Date().toISOString(),
+      dueAt: new Date().toISOString(),
+      taskType: "supervision",
+      source: "random",
+      supervisionKey: buildDailySupervisionKey(new Date().toISOString()),
+      priority: 0,
+      sendTrigger: "checkin_poller",
     });
     console.log(`[cyberboss] checkin queued id=${queued.id}`);
   }

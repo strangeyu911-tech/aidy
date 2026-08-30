@@ -29,6 +29,7 @@ const { DesktopStateStore } = require("./desktop-state-store");
 const { extractExplicitCheckpoint } = require("./explicit-checkpoint");
 const { inferContextualCheckpoint } = require("./contextual-checkpoint");
 const { SupervisionPlanStore } = require("./supervision-plan-store");
+const { resolveSupervisionKey, sourcePriority } = require("./supervision-policy");
 const { ProviderProfileStore } = require("./provider-profile-store");
 const { BridgeControlServer } = require("./bridge-control-server");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
@@ -59,6 +60,12 @@ const BACKOFF_DELAY_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
+const PROACTIVE_RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000];
+const PROACTIVE_CIRCUIT_FAILURE_THRESHOLD = 3;
+const PROACTIVE_CIRCUIT_COOLDOWN_MS = 120_000;
+const PROACTIVE_BURST_WINDOW_MS = 60_000;
+const PROACTIVE_MAX_MESSAGES_WITHOUT_USER_TURN = 3;
+const PROACTIVE_MAX_MESSAGES_AFTER_USER_TURN = 1;
 
 class CyberbossApp {
   constructor(config, dependencies = {}) {
@@ -80,11 +87,14 @@ class CyberbossApp {
     this.activeProfile = null;
     this.visionFallback = null;
     this.threadStateStore = new ThreadStateStore();
-    this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
+    this.supervisionPlanStore = new SupervisionPlanStore({ stateDir: config.stateDir });
+    this.systemMessageQueue = new SystemMessageQueueStore({
+      filePath: config.systemMessageQueueFile,
+      resolveSupervisionKey: (message) => this.resolveLegacySupervisionKey(message),
+    });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.desktopStateStore = new DesktopStateStore({ stateDir: config.stateDir });
-    this.supervisionPlanStore = new SupervisionPlanStore({ stateDir: config.stateDir });
     this.zhijiantimeDailySupervisor = new ZhijiantimeDailySupervisor({
       stateDir: config.stateDir,
       client: new ZhijiantimeClient({
@@ -102,6 +112,10 @@ class CyberbossApp {
     this.systemMessageDispatcher = null;
     this.streamDelivery = null;
     this.pendingOperationByRunKey = new Map();
+    this.systemMessageByRunKey = new Map();
+    this.proactiveProviderFailures = 0;
+    this.proactiveProviderCooldownUntil = 0;
+    this.proactiveBurstByScope = new Map();
     this.runtimeEventChain = Promise.resolve();
     this.activeTurnRecords = new Map();
     this.drainingForSwitch = false;
@@ -337,6 +351,8 @@ class CyberbossApp {
         workspaceRoot,
         text: triggerText,
         createdAt: normalizeIsoTime(point?.receivedAt) || normalizeIsoTime(point?.timestamp) || new Date().toISOString(),
+        taskType: "location",
+        sendTrigger: "location_trigger",
       });
     }
 
@@ -348,6 +364,8 @@ class CyberbossApp {
         workspaceRoot,
         text: buildLocationMovementSystemText(movementEvent),
         createdAt: normalizeIsoTime(movementEvent?.movedAt) || new Date().toISOString(),
+        taskType: "location",
+        sendTrigger: "location_movement",
       });
     }
   }
@@ -554,6 +572,9 @@ class CyberbossApp {
       turnId: "",
       controller,
       startedAt: new Date().toISOString(),
+      systemMessage: prepared.provider === "system" && prepared.systemMessage?.id
+        ? { ...prepared.systemMessage }
+        : null,
     });
     await this.channelAdapter.sendTyping({
       userId: prepared.senderId,
@@ -634,16 +655,21 @@ class CyberbossApp {
       } else {
         this.streamDelivery.queueReplyTargetForThread(turn.threadId, replyTarget);
       }
+      if (prepared.provider === "system" && prepared.systemMessage?.id) {
+        this.systemMessageByRunKey.set(buildRunKey(turn.threadId, turn.turnId), { ...prepared.systemMessage });
+      } else {
+        this.beginProactiveBurst?.(bindingKey, workspaceRoot);
+      }
       return true;
     } catch (error) {
       this.activeTurnRecords.delete(activeRecordId);
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
-      const messageText = error instanceof Error ? error.message : String(error || "unknown error");
-      await this.channelAdapter.sendText({
-        userId: prepared.senderId,
-        text: `❌ Request failed\n${messageText}`,
-        contextToken: prepared.contextToken,
-      }).catch(() => {});
+      const errorCode = normalizeText(error?.code) || "RUNTIME_TURN_START_FAILED";
+      console.error(`[cyberboss] runtime turn start failed provider=${prepared.provider || "user"} code=${errorCode}`);
+      if (prepared.provider === "system" && prepared.systemMessage?.id) {
+        this.scheduleSystemMessageRetry(prepared.systemMessage, error);
+        return true;
+      }
       return false;
     }
   }
@@ -1077,16 +1103,28 @@ class CyberbossApp {
   }
 
   async flushPendingSystemMessages({ skipCheckin = false } = {}) {
-    const pendingMessages = this.systemMessageDispatcher?.drainPending() || [];
+    if (this.proactiveProviderCooldownUntil > Date.now()) {
+      return;
+    }
+    const pendingMessages = (this.systemMessageDispatcher?.drainPending() || [])
+      .slice()
+      .sort(compareProactiveMessages);
     for (const message of pendingMessages) {
       if (skipCheckin && isCheckinSystemMessage(message)) {
         this.systemMessageDispatcher.requeue(message);
+        continue;
+      }
+      if (typeof this.canDispatchProactiveMessage === "function"
+        && !this.canDispatchProactiveMessage(message)) {
+        this.deferProactiveForBurst?.(message);
         continue;
       }
       try {
         const dispatched = await this.dispatchSystemMessage(message);
         if (!dispatched) {
           this.systemMessageDispatcher.requeue(message);
+        } else {
+          this.recordProactiveDispatch?.(message);
         }
       } catch {
         this.systemMessageDispatcher?.requeue(message);
@@ -1166,6 +1204,9 @@ class CyberbossApp {
           workspaceRoot: this.resolveReminderWorkspaceRoot(reminder),
           text: buildReminderSystemTrigger(reminder, this.config),
           createdAt: new Date().toISOString(),
+          dueAt: new Date(reminder.dueAtMs).toISOString(),
+          taskType: "reminder",
+          sendTrigger: "reminder_poller",
         });
       } catch {
         this.reminderQueue.enqueue({
@@ -1190,6 +1231,7 @@ class CyberbossApp {
       ? await this.zhijiantimeDailySupervisor.enrichSystemMessage(message)
       : { message, skip: false };
     if (enriched.skip) {
+      this.logSystemMessageEvent?.("skipped", enriched.message || message);
       return true;
     }
     message = enriched.message;
@@ -1203,6 +1245,7 @@ class CyberbossApp {
       senderId: prepared.senderId,
     });
     const workspaceRoot = prepared.workspaceRoot || this.resolveWorkspaceRoot(bindingKey);
+    this.logSystemMessageEvent?.("dispatching", message);
     if (this.isTurnDispatchBlocked(bindingKey, workspaceRoot)) {
       return false;
     }
@@ -1690,12 +1733,21 @@ class CyberbossApp {
   }
 
   async handleRuntimeEvent(event) {
-    const failureReplyTarget = event?.type === "runtime.turn.failed"
-      ? this.streamDelivery.resolveReplyTargetForRun({
-          threadId: event?.payload?.threadId,
-          turnId: event?.payload?.turnId,
-        })
-      : null;
+    if (event?.type === "runtime.turn.started" && event.payload?.threadId) {
+      const earlySystemRecord = [...this.activeTurnRecords.values()].find((record) => (
+        record.systemMessage?.id
+        && !record.threadId
+        && normalizeWorkspaceRoot(record.workspaceRoot) === normalizeWorkspaceRoot(event.payload.workspaceRoot)
+      ));
+      if (earlySystemRecord) {
+        earlySystemRecord.threadId = normalizeText(event.payload.threadId);
+        earlySystemRecord.turnId = normalizeText(event.payload.turnId);
+        this.systemMessageByRunKey.set(
+          buildRunKey(event.payload.threadId, event.payload.turnId),
+          { ...earlySystemRecord.systemMessage },
+        );
+      }
+    }
     await this.streamDelivery.handleRuntimeEvent(event);
     if (!event) {
       return;
@@ -1708,6 +1760,8 @@ class CyberbossApp {
         }
       }
       const completedRunKey = buildRunKey(event.payload.threadId, event.payload.turnId);
+      const systemMessage = this.systemMessageByRunKey?.get?.(completedRunKey) || null;
+      this.systemMessageByRunKey?.delete?.(completedRunKey);
       const pendingOperations = this.pendingOperationByRunKey;
       const pendingOperation = pendingOperations?.get?.(completedRunKey) || null;
       if (pendingOperation && pendingOperations?.delete) {
@@ -1724,12 +1778,11 @@ class CyberbossApp {
       }
       try {
         this.turnGateStore.releaseThread(event.payload.threadId);
-        if (event.type === "runtime.turn.failed") {
-          await this.sendFailureToThread(
-            event.payload.threadId,
-            event.payload.text || "❌ Execution failed",
-            failureReplyTarget,
-          );
+        if (systemMessage && event.type === "runtime.turn.failed") {
+          this.scheduleSystemMessageRetry(systemMessage, event.payload);
+        } else if (systemMessage && event.type === "runtime.turn.completed") {
+          this.recordProactiveProviderSuccess();
+          this.logSystemMessageEvent?.("delivered", systemMessage);
         }
         if (linked?.bindingKey && linked?.workspaceRoot) {
           await this.flushPendingInboundMessages({
@@ -1845,19 +1898,116 @@ class CyberbossApp {
     }).catch(() => {});
   }
 
-  async sendFailureToThread(threadId, text, fallbackTarget = null) {
-    const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(threadId);
-    const target = normalizeReplyTarget(
-      linked?.bindingKey ? this.resolveReplyTargetForBinding(linked.bindingKey) : null
-    ) || normalizeReplyTarget(fallbackTarget);
-    if (!target) {
-      return;
+  scheduleSystemMessageRetry(message, error = null) {
+    if (!message?.id || !this.systemMessageQueue) return null;
+    const attempt = Math.max(0, Number(message.attempt) || 0) + 1;
+    this.proactiveProviderFailures += 1;
+    const baseDelay = PROACTIVE_RETRY_DELAYS_MS[Math.min(attempt - 1, PROACTIVE_RETRY_DELAYS_MS.length - 1)];
+    const nowMs = Date.now();
+    if (this.proactiveProviderFailures >= PROACTIVE_CIRCUIT_FAILURE_THRESHOLD) {
+      this.proactiveProviderCooldownUntil = Math.max(
+        this.proactiveProviderCooldownUntil,
+        nowMs + PROACTIVE_CIRCUIT_COOLDOWN_MS,
+      );
     }
-    await this.channelAdapter.sendText({
-      userId: target.userId,
-      text: normalizeText(text) || "❌ Execution failed",
-      contextToken: target.contextToken,
-    }).catch(() => {});
+    const nextAttemptMs = Math.max(nowMs + baseDelay, this.proactiveProviderCooldownUntil);
+    const queued = this.systemMessageQueue.enqueue({
+      ...message,
+      attempt,
+      nextAttemptAt: new Date(nextAttemptMs).toISOString(),
+      lastErrorCode: normalizeText(error?.code) || "PROVIDER_UNAVAILABLE",
+    });
+    console.warn(`[cyberboss] proactive task deferred id=${queued.id} attempt=${attempt} code=${queued.lastErrorCode}`);
+    return queued;
+  }
+
+  recordProactiveProviderSuccess() {
+    this.proactiveProviderFailures = 0;
+    this.proactiveProviderCooldownUntil = 0;
+  }
+
+  beginProactiveBurst(bindingKey, workspaceRoot) {
+    const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
+    if (!scopeKey) return;
+    this.proactiveBurstByScope.set(scopeKey, {
+      startedAt: Date.now(),
+      sentCount: 0,
+      maxMessages: PROACTIVE_MAX_MESSAGES_AFTER_USER_TURN,
+      causedByUserTurn: true,
+    });
+  }
+
+  resolveSystemMessageScopeKey(message) {
+    const accountId = normalizeText(message?.accountId);
+    const senderId = normalizeText(message?.senderId);
+    const workspaceRoot = normalizeText(message?.workspaceRoot);
+    const sessionStore = this.runtimeAdapter?.getSessionStore?.();
+    const bindingKey = sessionStore?.buildBindingKey?.({
+      workspaceId: this.config?.workspaceId,
+      accountId,
+      senderId,
+    }) || `${accountId}:${senderId}`;
+    return buildScopeKey(bindingKey, workspaceRoot) || `${accountId}:${senderId}:${workspaceRoot}`;
+  }
+
+  getProactiveBurst(message) {
+    if (!(this.proactiveBurstByScope instanceof Map)) return null;
+    const scopeKey = this.resolveSystemMessageScopeKey(message);
+    if (!scopeKey) return null;
+    const current = this.proactiveBurstByScope.get(scopeKey);
+    if (current && Date.now() - current.startedAt < PROACTIVE_BURST_WINDOW_MS) {
+      return current;
+    }
+    const next = {
+      startedAt: Date.now(),
+      sentCount: 0,
+      maxMessages: PROACTIVE_MAX_MESSAGES_WITHOUT_USER_TURN,
+      causedByUserTurn: false,
+    };
+    this.proactiveBurstByScope.set(scopeKey, next);
+    return next;
+  }
+
+  canDispatchProactiveMessage(message) {
+    const burst = this.getProactiveBurst(message);
+    return !burst || burst.sentCount < burst.maxMessages;
+  }
+
+  recordProactiveDispatch(message) {
+    const burst = this.getProactiveBurst(message);
+    if (burst) burst.sentCount += 1;
+  }
+
+  deferProactiveForBurst(message) {
+    const nextAttemptAt = new Date(Date.now() + PROACTIVE_BURST_WINDOW_MS).toISOString();
+    this.systemMessageDispatcher?.requeue?.({
+      ...message,
+      nextAttemptAt,
+      lastErrorCode: "BURST_PROTECTION",
+    });
+  }
+
+  resolveLegacySupervisionKey(message) {
+    const id = normalizeText(message?.id);
+    if (!id.startsWith("supervision:")) return "";
+    const checkpointId = id.slice("supervision:".length);
+    const checkpoint = this.supervisionPlanStore.list().find((item) => item.id === checkpointId);
+    return checkpoint ? resolveSupervisionKey(checkpoint) : "";
+  }
+
+  logSystemMessageEvent(eventName, message) {
+    const data = [
+      `event=${eventName}`,
+      `id=${normalizeText(message?.id)}`,
+      `taskType=${normalizeText(message?.taskType) || "system"}`,
+      `source=${normalizeText(message?.source) || "unknown"}`,
+      `supervisionKey=${normalizeText(message?.supervisionKey) || ""}`,
+      `createdAt=${normalizeText(message?.createdAt)}`,
+      `dueAt=${normalizeText(message?.dueAt)}`,
+      `nextAttemptAt=${normalizeText(message?.nextAttemptAt)}`,
+      `sendTrigger=${normalizeText(message?.sendTrigger) || "unknown"}`,
+    ];
+    console.log(`[cyberboss] system message ${data.join(" ")}`);
   }
 
   async sendApprovalPrompt({ bindingKey, approval }) {
@@ -2235,6 +2385,13 @@ function normalizeIsoTime(value) {
   return new Date(parsed).toISOString();
 }
 
+function isDeveloperCapabilitySession(app) {
+  const runtimeId = normalizeText(app?.runtimeAdapter?.describe?.().id).toLowerCase();
+  if (normalizeText(app?.config?.weixinCapabilityMode).toLowerCase() === "developer") return true;
+  return runtimeId === "codebuddy"
+    && normalizeText(app?.config?.codebuddyCapabilityMode).toLowerCase() === "developer";
+}
+
 function isCheckinSystemMessage(message) {
   return typeof message?.id === "string"
     && (message.id.startsWith("checkin:") || message.id.startsWith("supervision:random:"));
@@ -2436,6 +2593,21 @@ function buildScopeKey(bindingKey, workspaceRoot) {
   return `${normalizedBindingKey}::${normalizedWorkspaceRoot}`;
 }
 
+function compareProactiveMessages(left, right) {
+  const leftPriority = Number.isSafeInteger(Number(left?.priority))
+    ? Number(left.priority)
+    : sourcePriority(normalizeText(left?.source));
+  const rightPriority = Number.isSafeInteger(Number(right?.priority))
+    ? Number(right.priority)
+    : sourcePriority(normalizeText(right?.source));
+  if (leftPriority !== rightPriority) {
+    return rightPriority - leftPriority;
+  }
+  const leftTime = Date.parse(left?.dueAt || left?.createdAt || "") || 0;
+  const rightTime = Date.parse(right?.dueAt || right?.createdAt || "") || 0;
+  return leftTime - rightTime || String(left?.id || "").localeCompare(String(right?.id || ""));
+}
+
 function isAutoApprovedStateDirOperation(approval, config = {}) {
   const stateDir = normalizeText(config?.stateDir);
   if (!stateDir) {
@@ -2513,52 +2685,28 @@ function parseNumericOrderValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-const DEFERRED_REPLY_NOTICE = "由于微信 context_token 的限制，上轮对话里有一部分内容当时没能送达；这次用户再次发来消息、context_token 刷新后，先把遗留内容补上。如果这种情况反复出现，可发送 /chunk <数字>（例如 /chunk 50）调大最小合并字符数，减少消息分片。";
-const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
-const DEFERRED_SYSTEM_REPLY_HEADER = "===== 期间模型主动联系 =====";
-
 function formatDeferredSystemReplyText(text) {
-  const normalized = String(text || "").trim();
-  if (!normalized) {
-    return DEFERRED_REPLY_NOTICE;
-  }
-  if (normalized.startsWith(DEFERRED_REPLY_NOTICE)) {
-    return normalized;
-  }
-  return `${DEFERRED_REPLY_NOTICE}\n\n${normalized}`;
+  return unwrapLegacyDeferredText(text);
 }
 
 function formatDeferredSystemReplyBatch(replies) {
-  const grouped = groupDeferredReplies(replies);
-  if (!grouped.plain.length && !grouped.system.length) {
-    return DEFERRED_REPLY_NOTICE;
-  }
-  const parts = [
-    DEFERRED_REPLY_NOTICE,
-  ];
-  if (grouped.plain.length) {
-    parts.push("", DEFERRED_PLAIN_REPLY_HEADER, grouped.plain.join("\n\n"));
-  }
-  if (grouped.system.length) {
-    parts.push("", DEFERRED_SYSTEM_REPLY_HEADER, grouped.system.join("\n\n"));
-  }
-  return parts.join("\n");
+  return (Array.isArray(replies) ? replies : [])
+    .map((reply) => unwrapLegacyDeferredText(reply?.text))
+    .filter(Boolean)
+    .join("\n\n");
 }
 
-function groupDeferredReplies(replies) {
-  const grouped = { plain: [], system: [] };
-  for (const reply of Array.isArray(replies) ? replies : []) {
-    const normalizedText = String(reply?.text || "").trim();
-    if (!normalizedText) {
-      continue;
-    }
-    if (reply?.kind === "system_reply") {
-      grouped.system.push(normalizedText);
-      continue;
-    }
-    grouped.plain.push(normalizedText);
-  }
-  return grouped;
+function unwrapLegacyDeferredText(value) {
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const headers = new Set([
+    "===== 上轮对话遗留内容 =====",
+    "===== 期间模型主动联系 =====",
+    "===== 本轮模型回复 =====",
+  ]);
+  return lines
+    .filter((line) => !line.startsWith("由于微信 context_token 的限制") && !headers.has(line.trim()))
+    .join("\n")
+    .trim();
 }
 
 function formatWechatLocalTime(receivedAt) {
@@ -2596,6 +2744,7 @@ function withUsageProfile(event, profileId) {
   if (event?.type !== "runtime.turn.completed" || !event.payload?.usage || !normalizeText(profileId)) {
     return event;
   }
+
   return {
     ...event,
     payload: {

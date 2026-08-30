@@ -36,6 +36,7 @@ class SystemMessageDispatcher {
       contextToken,
       receivedAt: normalizeIsoTime(message?.createdAt) || new Date().toISOString(),
       workspaceRoot: this.resolveWorkspaceRoot(message),
+      systemMessage: { ...message },
     };
   }
 }

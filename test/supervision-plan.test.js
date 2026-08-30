@@ -57,6 +57,20 @@ test("absolute conversation times roll forward when already past", () => {
   assert.equal(new Date(checkpoint.dueAt).getDate(), 24);
 });
 
+test("Chinese half-hour input persists and becomes due at 08:30 Asia/Shanghai", () => {
+  const now = new Date(2026, 7, 29, 0, 10, 0);
+  const checkpoint = extractExplicitCheckpoint("[敲打]上午8点半做计划，待会马上睡觉了", { now });
+  const saved = makeStore().add(checkpoint);
+  const dueAt = new Date(saved.dueAt);
+  assert.equal(dueAt.getHours(), 8);
+  assert.equal(dueAt.getMinutes(), 30);
+  const store = makeStore();
+  const persisted = store.add(checkpoint);
+  assert.equal(store.due(new Date(2026, 7, 29, 8, 29, 59)).length, 0);
+  assert.deepEqual(store.due(new Date(2026, 7, 29, 8, 30, 0)).map((item) => item.id), [persisted.id]);
+  assert.match(checkpoint.announcement, /08:30/);
+});
+
 test("latest explicit and external arrangements supersede inferred context", () => {
   const existing = {
     state: "pending",

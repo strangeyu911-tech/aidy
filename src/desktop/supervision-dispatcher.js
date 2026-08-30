@@ -4,7 +4,7 @@ const { resolveSelectedAccount } = require("../adapters/channel/weixin/account-s
 const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
-const { resolveDueCheckpointAction } = require("../core/supervision-policy");
+const { resolveDueCheckpointAction, resolveSupervisionKey, sourcePriority } = require("../core/supervision-policy");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
 
 class SupervisionDispatcher {
@@ -16,7 +16,10 @@ class SupervisionDispatcher {
     this.intervalMs = intervalMs;
     this.timer = null;
     this.dispatching = false;
-    this.queue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
+    this.queue = new SystemMessageQueueStore({
+      filePath: config.systemMessageQueueFile,
+      resolveSupervisionKey: (message) => this.resolveLegacySupervisionKey(message),
+    });
     this.checkinConfig = new CheckinConfigStore({ filePath: config.checkinConfigFile });
   }
 
@@ -71,6 +74,12 @@ class SupervisionDispatcher {
       workspaceRoot: target.workspaceRoot,
       text: checkpoint.prompt || "The user comes to mind again. Decide whether a useful, non-repetitive check-in is appropriate.",
       createdAt: new Date().toISOString(),
+      dueAt: checkpoint.dueAt,
+      taskType: "supervision",
+      source: checkpoint.source,
+      supervisionKey: resolveSupervisionKey(checkpoint),
+      priority: sourcePriority(checkpoint.source),
+      sendTrigger: "scheduler",
     });
     this.planStore.update(checkpoint.id, { state: "completed", outcome: "queued" });
     this.logger?.info("supervision.dispatched", { source: checkpoint.source, checkpointId: checkpoint.id });
@@ -86,6 +95,8 @@ class SupervisionDispatcher {
       workspaceRoot: target.workspaceRoot,
       text: `Send the user this concise schedule correction naturally, without adding new claims: ${String(text).trim()}`,
       createdAt: new Date().toISOString(),
+      taskType: "integration_notice",
+      sendTrigger: "integration_notice",
     });
     return true;
   }
@@ -117,11 +128,23 @@ class SupervisionDispatcher {
       return null;
     }
   }
+
+  resolveLegacySupervisionKey(message) {
+    const id = normalizeText(message?.id);
+    if (!id.startsWith("supervision:")) return "";
+    const checkpointId = id.slice("supervision:".length);
+    const checkpoint = this.planStore.list().find((item) => item.id === checkpointId);
+    return checkpoint ? resolveSupervisionKey(checkpoint) : "";
+  }
 }
 
 function pickRandomDelay(min, max) {
   if (max <= min) return min;
   return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 module.exports = { SupervisionDispatcher, pickRandomDelay };

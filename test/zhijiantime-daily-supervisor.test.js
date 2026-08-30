@@ -103,6 +103,22 @@ test("empty day requires an exact commitment and creates one planning checkpoint
   assert.equal(beforeDue.skip, true);
 });
 
+test("planning commitment saves 上午8点半 as 08:30 and triggers at that instant", async () => {
+  const { service, planStore, state } = createFixture([]);
+  state.now = new Date(2026, 7, 29, 0, 10, 0);
+  await service.enrichSystemMessage({ id: "checkin:half-hour", text: "random" });
+  const captured = service.capturePlanningCommitment("[敲打]上午8点半做计划，待会马上睡觉了", {
+    sourceRef: "message-half-hour",
+  });
+  const persisted = planStore.list({ state: "pending", includeRandom: false })[0];
+  assert.equal(new Date(captured.checkpoint.dueAt).getHours(), 8);
+  assert.equal(new Date(captured.checkpoint.dueAt).getMinutes(), 30);
+  assert.equal(persisted.dueAt, captured.checkpoint.dueAt);
+  assert.equal(planStore.due(new Date(2026, 7, 29, 8, 29, 59)).length, 0);
+  assert.equal(planStore.due(new Date(2026, 7, 29, 8, 30, 0)).length, 1);
+  assert.match(captured.announcement, /08:30/);
+});
+
 test("planning follow-up rechecks data and loops until a plan exists", async () => {
   const { service, state } = createFixture([]);
   await service.enrichSystemMessage({ id: "checkin:one", text: "random" });
