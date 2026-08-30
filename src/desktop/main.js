@@ -415,9 +415,16 @@ function startWeixinLogin() {
     return { started: false, message: "请在 CyberBoss 项目目录运行 npm run login。" };
   }
   const command = process.env.ComSpec || "cmd.exe";
-  const child = spawn(command, ["/d", "/k", "npm.cmd", "run", "login"], {
-    cwd: rootDir,
-    env: process.env,
+  const packaged = app.isPackaged || /(?:^|[\\/])app\.asar(?:[\\/]|$)/i.test(rootDir);
+  const loginScript = path.join(rootDir, "bin", "cyberboss.js");
+  const loginArgs = packaged
+    ? ["/d", "/k", `${quoteWindowsCommandArg(process.execPath)} ${quoteWindowsCommandArg(loginScript)} login`]
+    : ["/d", "/k", "npm.cmd", "run", "login"];
+  const loginEnv = { ...process.env };
+  if (packaged) loginEnv.ELECTRON_RUN_AS_NODE = "1";
+  const child = spawn(command, loginArgs, {
+    cwd: packaged && process.resourcesPath && !/app\.asar/i.test(process.resourcesPath) ? process.resourcesPath : rootDir,
+    env: loginEnv,
     detached: true,
     windowsHide: false,
     stdio: "ignore",
@@ -429,6 +436,10 @@ function startWeixinLogin() {
   });
   child.unref();
   return { started: true, message: "微信登录窗口已打开。完成扫码后关闭窗口，再回到这里检查。" };
+}
+
+function quoteWindowsCommandArg(value) {
+  return `"${String(value || "").replace(/"/g, '""')}"`;
 }
 
 async function listOpenCodeCatalog(profile, secrets, options = {}) {

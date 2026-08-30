@@ -13,6 +13,7 @@ const { CredentialVault } = require("../src/security/credential-vault");
 const { DiagnosticCapture } = require("../src/security/diagnostic-capture");
 
 const rootDir = path.resolve(__dirname, "..");
+const artifactDistDir = path.resolve(process.env.CYBERBOSS_ARTIFACT_DIST_DIR || path.join(rootDir, "dist"));
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-artifact-"));
 const stateDir = path.join(temporaryRoot, "state");
 const launchStateDir = path.join(temporaryRoot, "packaged-state");
@@ -74,9 +75,9 @@ async function main() {
   assert.equal(archiveText.includes(vaultText.match(/"ciphertext"\s*:\s*"([^"]+)"/)?.[1] || secret), false);
   assert.equal(archiveText.includes("artifact-private-response"), false);
 
-  const packagedExe = path.join(rootDir, "dist", "win-unpacked", "CyberBoss.exe");
+  const packagedExe = path.join(artifactDistDir, "win-unpacked", "CyberBoss.exe");
   assertExistingNonEmpty(packagedExe);
-  const resourcesDir = path.join(rootDir, "dist", "win-unpacked", "resources");
+  const resourcesDir = path.join(artifactDistDir, "win-unpacked", "resources");
   const resourceEntries = inspectPackagedResources(resourcesDir);
   assert.equal(resourceEntries.some((entry) => /src\/desktop\/main\.js$/i.test(entry)), true);
   assert.equal(resourceEntries.some((entry) => /(?:credential-vault|diagnostic-capture)\.json$/i.test(entry)), false);
@@ -89,7 +90,7 @@ async function main() {
   assert.equal(desktopState.desiredState, "stopped");
   assert.equal(new ProviderProfileStore({ stateDir: launchStateDir }).getActive(), null);
 
-  const portableArtifact = findPortableArtifact(path.join(rootDir, "dist"));
+  const portableArtifact = findPortableArtifact(artifactDistDir);
   assertExistingNonEmpty(portableArtifact);
   process.stdout.write([
     `profilePath=${profilePath}`,
@@ -121,7 +122,7 @@ function inspectPackagedResources(resourcesDir) {
 
 function findPortableArtifact(distDir) {
   const candidates = fs.readdirSync(distDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /^CyberBoss.*\.exe$/i.test(entry.name))
+    .filter((entry) => entry.isFile() && /^CyberBoss-(?!Setup-).*\.exe$/i.test(entry.name))
     .map((entry) => path.join(distDir, entry.name))
     .filter((filePath) => fs.statSync(filePath).size > 0)
     .sort();
