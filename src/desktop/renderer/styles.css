@@ -189,7 +189,9 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .operation-result { color: var(--green) !important; margin-top: 12px !important; }
 .action-panel p { max-width: 680px; word-break: break-all; }
 .log-list { margin-top: 12px; border-radius: 14px; background: #26322f; color: #e6eee9; padding: 14px; max-height: 260px; overflow: auto; font: 12px/1.55 Consolas, monospace; }
-.danger-link { margin: 25px 0 0; border: 0; background: none; color: var(--danger); padding: 8px 0; }
+.danger-link { display: block; margin: 18px 22px 22px; border: 1px solid var(--danger); border-radius: 10px; background: transparent; color: var(--danger); padding: 9px 14px; font-size: 14px; font-weight: 700; }
+.danger-link:hover { background: #fff3f1; }
+.danger-link:focus-visible { outline: 3px solid rgba(166,79,70,.24); outline-offset: 2px; }
 .error-card { border: 1px solid #dfafa8; background: #fff3f1; color: #743c36; border-radius: 16px; padding: 16px 18px; margin-bottom: 16px; }
 .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; height: 70px; border-top: 1px solid var(--line); background: rgba(255,253,248,.96); display: flex; justify-content: center; gap: 28px; z-index: 10; }
 .bottom-nav button { width: 120px; border: 0; background: none; color: var(--muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 12px; }

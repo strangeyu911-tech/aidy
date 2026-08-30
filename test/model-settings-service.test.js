@@ -56,7 +56,7 @@ test("CodeBuddy is recommended and receives an automatically managed local crede
   const options = await harness.service.listRuntimeOptions();
   const codebuddy = options.runtimes.find((item) => item.id === "codebuddy");
   assert.equal(codebuddy.isRecommended, true);
-  assert.equal(codebuddy.productLabel, "WorkBuddy / CodeBuddy");
+  assert.equal(codebuddy.productLabel, "WorkBuddy");
   assert.match(codebuddy.setupHint, /安装并登录 WorkBuddy/);
 
   await harness.service.saveProfile({ id: saved.id, name: "改名", runtimeId: "codebuddy", providerId: "compatibility", modelId: "auto" });

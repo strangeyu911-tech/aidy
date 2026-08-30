@@ -38,9 +38,9 @@ const RUNTIME_SETUP_GUIDES = Object.freeze({
     body: "适合已经有 Claude Code 使用经验的用户。完成本机登录后填写模型并测试连接。",
   },
   codebuddy: {
-    title: "推荐：WorkBuddy / CodeBuddy",
-    body: "已安装并登录 WorkBuddy / CodeBuddy 后，点击“刷新模型”并从下拉菜单选择当前可用模型，再保存并测试连接。",
-    notice: "CodeBuddy 登录属于当前 Windows 用户；所有 CyberBoss CodeBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\n连接能力可能随 WorkBuddy / CodeBuddy 版本变化；如果遇到连接问题，请先更新 WorkBuddy / CodeBuddy 后再次测试。",
+    title: "推荐：WorkBuddy",
+    body: "已安装并登录 WorkBuddy 后，点击“刷新模型”并从下拉菜单选择当前可用模型，再保存并测试连接。",
+    notice: "WorkBuddy 登录属于当前 Windows 用户；所有 CyberBoss WorkBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\n连接能力可能随 WorkBuddy 版本变化；如果遇到连接问题，请先更新 WorkBuddy 后再次测试。",
   },
 });
 
@@ -352,7 +352,7 @@ function renderModelProfiles() {
       activeProfileId: activeId,
     });
     const engineDetail = profile.runtimeId === "codebuddy"
-      ? `WorkBuddy / CodeBuddy · ${profile.modelId || "未选模型"}`
+      ? `WorkBuddy · ${profile.modelId || "未选模型"}`
       : `${runtimeLabel(profile.runtimeId)} · ${providerLabel(profile.providerId)} · ${profile.modelId || "未选模型"}`;
     return `<article class="profile-card ${cardState.active ? "active" : ""}"><div><span class="profile-state">${cardState.active ? "当前使用 · 已验证" : profileStatusLabel(profile.status)}</span><h4>${escapeHtml(profile.name || "未命名配置")}</h4><p>${escapeHtml(engineDetail)}</p><small>${profile.verifiedAt ? `上次测试 ${formatDateTime(profile.verifiedAt)}` : "尚未通过连接测试"}</small></div><div class="record-actions"><button type="button" data-edit-profile="${escapeHtml(profile.id)}">编辑</button><button type="button" data-test-profile="${escapeHtml(profile.id)}">测试</button><button class="profile-activate-button" type="button" data-activate-profile="${escapeHtml(profile.id)}" ${cardState.disabled ? "disabled" : ""}>${cardState.label}</button><button type="button" data-delete-profile="${escapeHtml(profile.id)}">删除</button></div></article>`;
   }).join("");
@@ -431,7 +431,7 @@ function renderModelCoachMarks() {
     1: {
       target: "#new-model-profile",
       title: "先添加一个 AI 配置",
-      description: "推荐使用 WorkBuddy / CodeBuddy。已经安装并登录的话，点击“新增配置”开始。",
+      description: "推荐使用 WorkBuddy。已经安装并登录的话，点击“新增配置”开始。",
     },
     2: {
       target: "#reopen-model-guide",
@@ -545,7 +545,7 @@ function renderProfileFields() {
   const external = isOpenCode && $("#profile-ownership").value === "external";
   $("#profile-ownership-row").classList.toggle("hidden", !isOpenCode);
   $("#profile-service-password-row").classList.toggle("hidden", !external);
-  $("#profile-service-password-label").textContent = isCodeBuddy ? "CodeBuddy 网关密码" : "OpenCode 服务密码";
+  $("#profile-service-password-label").textContent = isCodeBuddy ? "WorkBuddy 服务密码" : "OpenCode 服务密码";
   $("#external-opencode-notice").classList.toggle("hidden", !external);
   $("#profile-connection-step").classList.toggle("hidden", isCodeBuddy);
   $("#profile-base-url-row").classList.toggle("hidden", isCodeBuddy);
@@ -571,7 +571,7 @@ function renderProfileFields() {
   if ([...provider.options].some((option) => option.value === previous)) provider.value = previous;
   const strict = isOpenCode || provider.value === "openrouter";
   $("#profile-model-help").textContent = isCodeBuddy
-    ? "模型下拉显示 WorkBuddy / CodeBuddy 的名称，保存和测试使用对应的真实模型 ID。点击“刷新模型”获取当前账号可用模型。"
+    ? "模型下拉显示 WorkBuddy 的名称，保存和测试使用对应的真实模型 ID。点击“刷新模型”获取当前账号可用模型。"
     : strict ? "此运行方式必须从最新实时目录选择模型，不能使用手动 ID。" : "可从目录选择；目录不可用时也可以手动填写模型 ID。";
   renderRuntimeGuide(runtimeId);
   if (isCodeBuddy) renderCodeBuddyModelSelect();
@@ -592,18 +592,18 @@ function renderRuntimeGuide(runtimeId) {
 function renderCodeBuddyEnvironment() {
   const container = $("#codebuddy-environment");
   if (!container) return;
-  const status = snapshot?.codeBuddy || { state: "not_checked", label: "尚未检查 WorkBuddy / CodeBuddy", detail: "检查安装后，再通过连接测试确认登录和模型可用性。" };
+  const status = snapshot?.codeBuddy || { state: "not_checked", label: "尚未检查 WorkBuddy", detail: "检查安装后，再通过连接测试确认登录和模型可用性。" };
   const profile = modelProfiles.find((item) => item.id === $("#profile-id")?.value) || editorProfile;
   const test = profileTestResults.get(profile?.id || "");
   const verified = profile?.status === "verified" || test?.code === "";
   const loginRequired = test?.code === "CODEBUDDY_LOGIN_REQUIRED";
   const title = verified
     ? "已登录且可用"
-    : loginRequired ? "需要登录 WorkBuddy / CodeBuddy" : status.label || "WorkBuddy / CodeBuddy 环境";
+    : loginRequired ? "需要登录 WorkBuddy" : status.label || "WorkBuddy 环境";
   const detail = verified
     ? "连接测试已通过，当前模型可以使用。"
     : loginRequired
-      ? "未检测到 WorkBuddy / CodeBuddy 登录，请先登录后再次测试。"
+      ? "未检测到 WorkBuddy 登录，请先登录后再次测试。"
       : status.detail || "登录状态和模型可用性会在连接测试中确认。";
   $("#codebuddy-environment-title").textContent = title;
   $("#codebuddy-environment-detail").textContent = detail;
@@ -635,13 +635,13 @@ function friendlyUiError(error) {
   const raw = String(error?.message || "");
   const code = String(error?.code || "").toUpperCase();
   if (["CODEBUDDY_BINARY_NOT_FOUND", "CODEBUDDY_CONNECTION_LOST", "CODEBUDDY_START_TIMEOUT"].includes(code)) {
-    return "无法读取 WorkBuddy / CodeBuddy 模型目录。请先启动并登录 WorkBuddy / CodeBuddy，然后重试。";
+    return "无法读取 WorkBuddy 模型目录。请先启动并登录 WorkBuddy，然后重试。";
   }
   if (code === "CODEBUDDY_LOGIN_REQUIRED") {
-    return "还没有检测到 WorkBuddy / CodeBuddy 登录。请先登录后再刷新模型。";
+    return "还没有检测到 WorkBuddy 登录。请先登录后再刷新模型。";
   }
   if (code === "CODEBUDDY_API_INCOMPATIBLE") {
-    return "当前 WorkBuddy / CodeBuddy 版本不支持模型发现。请更新后重试，或在高级设置中填写真实模型 ID。";
+    return "当前 WorkBuddy 版本不支持模型发现。请更新后重试，或在高级设置中填写真实模型 ID。";
   }
   if (code === "CODEBUDDY_MODEL_UNAVAILABLE") {
     return "所选模型当前不可用。请刷新模型目录并重新选择。";
@@ -751,7 +751,7 @@ async function testModelProfile() {
     button.disabled = false;
     return;
   }
-  setProfileResult($("#profile-runtime").value === "codebuddy" ? "正在验证 WorkBuddy / CodeBuddy 登录、模型和连接…" : "正在检查模型能否完整回复、执行必要操作并继续任务…", false);
+  setProfileResult($("#profile-runtime").value === "codebuddy" ? "正在验证 WorkBuddy 登录、模型和连接…" : "正在检查模型能否完整回复、执行必要操作并继续任务…", false);
   try {
     const saved = await persistEditor({ includeSecrets: true });
     const result = await api.testProfile(saved.id);
@@ -918,7 +918,7 @@ function renderEngine(engine, runtime) {
     $("#engine-detail").textContent = `正在${switchPhaseLabel(runtime.switchTransaction.phase)} · 最多等待 ${remaining} 秒`;
   } else {
     $("#engine-detail").textContent = active
-      ? (active.runtimeId === "codebuddy" ? `WorkBuddy / CodeBuddy · ${active.modelId}` : `${providerLabel(active.providerId)} · ${active.modelId}`)
+      ? (active.runtimeId === "codebuddy" ? `WorkBuddy · ${active.modelId}` : `${providerLabel(active.providerId)} · ${active.modelId}`)
       : "请先连接 AI 模型";
   }
 }
@@ -934,7 +934,7 @@ async function updateDiagnosticCapture(action) {
   result.classList.remove("hidden");
 }
 
-function runtimeLabel(id, fallback = "") { return ({ "builtin-api": "内置 API", opencode: "OpenCode", codex: "Codex（兼容）", claudecode: "Claude Code（兼容）", codebuddy: "CodeBuddy" })[id] || fallback || id || "—"; }
+function runtimeLabel(id, fallback = "") { return ({ "builtin-api": "内置 API", opencode: "OpenCode", codex: "Codex（兼容）", claudecode: "Claude Code（兼容）", codebuddy: "WorkBuddy" })[id] || fallback || id || "—"; }
 function providerLabel(id) { return runtimeOptions.providers.find((item) => item.id === id)?.displayName || id || "—"; }
 function profileStatusLabel(status) { return profileEditorState.profileStatusLabel(status); }
 function switchPhaseLabel(phase) { return ({ draining: "等待当前工作完成", aborting: "停止超时工作", stopping_old: "停止原模型", starting_new: "启动新模型", probing_new: "确认新模型状态", rolling_back: "恢复原模型" })[phase] || "切换模型"; }

@@ -56,13 +56,13 @@ const ERROR_GUIDANCE = Object.freeze({
   OPENCODE_INCOMPATIBLE: guidance("opencode", "OpenCode 版本或响应不兼容。", "升级 OpenCode，或检查外部服务地址。"),
   OPENCODE_SPAWN_FAILED: guidance("opencode", "无法启动托管 OpenCode。", "确认已安装兼容的 OpenCode，并检查可执行文件设置。"),
   RUNTIME_VERIFIER_UNAVAILABLE: guidance("runtime", "当前兼容运行时还不能完成安全验证。", "检查本机运行时安装；也可以先选择内置 API 或 OpenCode。"),
-  CODEBUDDY_BINARY_NOT_FOUND: guidance("setup", "没有找到 WorkBuddy / CodeBuddy。", "安装并登录 WorkBuddy，或单独安装 CodeBuddy 后重新打开 CyberBoss。"),
-  CODEBUDDY_LOGIN_REQUIRED: guidance("login", "还没有检测到可用的 WorkBuddy / CodeBuddy 登录。", "先在 WorkBuddy 或 CodeBuddy 中登录，然后回到这里再次测试。"),
+  CODEBUDDY_BINARY_NOT_FOUND: guidance("setup", "没有找到 WorkBuddy。", "安装并登录 WorkBuddy 后重新打开 CyberBoss。"),
+  CODEBUDDY_LOGIN_REQUIRED: guidance("login", "还没有检测到可用的 WorkBuddy 登录。", "先在 WorkBuddy 中登录，然后回到这里再次测试。"),
   CODEBUDDY_AUTH_FAILED: guidance("connection", "无法建立本机模型连接。", "重新测试；CyberBoss 会自动管理本机连接所需的安全凭据。"),
-  CODEBUDDY_API_INCOMPATIBLE: guidance("compatibility", "当前 CodeBuddy 版本暂时不兼容。", "升级或更换兼容版本后，再次测试连接。"),
-  CODEBUDDY_MODEL_UNAVAILABLE: guidance("model", "CodeBuddy 当前无法使用这个模型。", "刷新模型目录并选择当前可用的模型；显示名称不一定是模型 ID。"),
-  CODEBUDDY_SESSION_FAILED: guidance("connection", "CodeBuddy 无法创建模型会话。", "确认 WorkBuddy / CodeBuddy 已登录且网络正常，然后再次测试。"),
-  CODEBUDDY_TURN_FAILED: guidance("connection", "CodeBuddy 没有完成连接测试。", "确认模型可用后再次测试；如果仍失败，请升级 WorkBuddy / CodeBuddy。"),
+  CODEBUDDY_API_INCOMPATIBLE: guidance("compatibility", "当前 WorkBuddy 版本暂时不兼容。", "升级或更换兼容版本后，再次测试连接。"),
+  CODEBUDDY_MODEL_UNAVAILABLE: guidance("model", "WorkBuddy 当前无法使用这个模型。", "刷新模型目录并选择当前可用的模型；显示名称不一定是模型 ID。"),
+  CODEBUDDY_SESSION_FAILED: guidance("connection", "WorkBuddy 无法创建模型会话。", "确认 WorkBuddy 已登录且网络正常，然后再次测试。"),
+  CODEBUDDY_TURN_FAILED: guidance("connection", "WorkBuddy 没有完成连接测试。", "确认模型可用后再次测试；如果仍失败，请升级 WorkBuddy。"),
   CREDENTIAL_ENCRYPT_FAILED: guidance("vault", "无法安全保存凭据。", "使用当前 Windows 用户重新登录后再试。"),
   CREDENTIAL_DECRYPT_FAILED: guidance("vault", "无法读取已保存的凭据。", "重新输入凭据并再次验证。"),
 });
@@ -92,7 +92,7 @@ class ModelSettingsService {
         isDefault: false,
         ...(definition.id === "codebuddy" ? {
           isRecommended: true,
-          productLabel: "WorkBuddy / CodeBuddy",
+          productLabel: "WorkBuddy",
           setupHint: "适合刚开始使用 CyberBoss 的用户：安装并登录 WorkBuddy 后返回这里即可。",
         } : { isRecommended: false }),
         ...(definition.id === "opencode" ? {

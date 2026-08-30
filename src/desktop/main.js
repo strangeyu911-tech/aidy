@@ -129,7 +129,7 @@ let tray = null;
 let quitting = false;
 let shutdownStarted = false;
 let wechatLoginProcess = null;
-let codeBuddyStatus = { state: "not_checked", label: "尚未检查 WorkBuddy / CodeBuddy" };
+let codeBuddyStatus = { state: "not_checked", label: "尚未检查 WorkBuddy" };
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -386,21 +386,21 @@ function buildSnapshot() {
 }
 
 async function checkCodeBuddyEnvironment() {
-  codeBuddyStatus = { state: "checking", label: "正在检查 WorkBuddy / CodeBuddy…" };
+  codeBuddyStatus = { state: "checking", label: "正在检查 WorkBuddy…" };
   publishSnapshot();
   try {
     const distribution = await locateCodeBuddyDistribution();
     codeBuddyStatus = {
       state: "installed",
-      label: `已检测到 ${distribution.sourceLabel || "WorkBuddy / CodeBuddy"}`,
+      label: "已检测到 WorkBuddy",
       detail: distribution.version ? `版本 ${distribution.version}。登录状态和模型可用性会在连接测试中确认。` : "已检测到可用安装。登录状态和模型可用性会在连接测试中确认。",
     };
   } catch (error) {
     codeBuddyStatus = {
       state: "missing",
       code: error.code || "CODEBUDDY_BINARY_NOT_FOUND",
-      label: "未检测到 WorkBuddy / CodeBuddy",
-      detail: "请先安装并登录 WorkBuddy / CodeBuddy，然后重新检查。",
+      label: "未检测到 WorkBuddy",
+      detail: "请先安装并登录 WorkBuddy，然后重新检查。",
     };
   }
   publishSnapshot();
@@ -512,7 +512,7 @@ async function verifyRuntimeProfile(profileId) {
     });
     return { ok: true, capabilities, verifiedAt };
   } catch (error) {
-    return { ok: false, error: { code: error.code || "MODEL_SERVICE_UNAVAILABLE", message: error.message || "CodeBuddy verification failed." } };
+    return { ok: false, error: { code: error.code || "MODEL_SERVICE_UNAVAILABLE", message: error.message || "WorkBuddy verification failed." } };
   } finally {
     try { fs.rmSync(verificationRoot, { recursive: true, force: true }); } catch {}
   }

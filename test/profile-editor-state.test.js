@@ -50,8 +50,8 @@ test("editing a failed draft binds the failure to draft B and leaves active A he
     activeProfile,
     error: {
       code: "CODEBUDDY_MODEL_UNAVAILABLE",
-      summary: "CodeBuddy 当前无法使用这个模型。",
-      repairAction: "填写 CodeBuddy 中实际显示的模型 ID，再次测试。",
+      summary: "WorkBuddy 当前无法使用这个模型。",
+      repairAction: "填写 WorkBuddy 中实际显示的模型 ID，再次测试。",
     },
   });
   assert.match(text, /未命名配置/);

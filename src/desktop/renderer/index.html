@@ -96,7 +96,7 @@
             <div><span class="eyebrow">全局只激活一个</span><h3 id="model-settings-title">AI 引擎</h3></div>
             <button id="new-model-profile" class="primary-action" type="button">新增配置</button>
           </div>
-          <p class="section-help">可保存多个配置。推荐新用户使用 WorkBuddy / CodeBuddy；只有通过连接测试的配置可以激活。</p>
+          <p class="section-help">可保存多个配置。推荐新用户使用 WorkBuddy；只有通过连接测试的配置可以激活。</p>
           <div id="model-profile-list" class="profile-list empty-state">正在读取模型配置…</div>
           <form id="model-profile-editor" class="profile-editor hidden">
             <input id="profile-id" type="hidden">
@@ -115,7 +115,7 @@
                 <strong id="runtime-guide-title">配置提示</strong>
                 <div id="runtime-guide-content" class="runtime-guide-content"></div>
                 <div id="codebuddy-environment" class="environment-status hidden" role="status" aria-live="polite">
-                  <div><strong id="codebuddy-environment-title">WorkBuddy / CodeBuddy 环境</strong><p id="codebuddy-environment-detail">尚未检查。</p></div>
+                  <div><strong id="codebuddy-environment-title">WorkBuddy 环境</strong><p id="codebuddy-environment-detail">尚未检查。</p></div>
                   <button id="check-codebuddy-environment" type="button">检查环境</button>
                 </div>
               </li>
@@ -139,7 +139,7 @@
                 <label id="profile-model-id-row" class="wide-field">模型 ID<input id="profile-model-id" list="profile-model-options" maxlength="512" placeholder="可从目录选择，或手动输入"></label>
                 <datalist id="profile-model-options"></datalist>
                 <label id="profile-codebuddy-model-row" class="wide-field hidden">模型<select id="profile-codebuddy-model-select"></select></label>
-                <details id="profile-codebuddy-custom-model" class="advanced-model-setting hidden"><summary>高级：自定义模型 ID</summary><label class="wide-field">自定义模型 ID<input id="profile-codebuddy-custom-model-id" maxlength="512" placeholder="仅在目录没有返回时使用"></label><small>显示名称和模型 ID 可能不同；这里填写发送给 CodeBuddy 的真实 ID。</small></details>
+                <details id="profile-codebuddy-custom-model" class="advanced-model-setting hidden"><summary>高级：自定义模型 ID</summary><label class="wide-field">自定义模型 ID<input id="profile-codebuddy-custom-model-id" maxlength="512" placeholder="仅在目录没有返回时使用"></label><small>显示名称和模型 ID 可能不同；这里填写发送给 WorkBuddy 服务的真实 ID。</small></details>
                 <small id="profile-model-help">除 OpenRouter 和 OpenCode 外，也可以手动填写模型 ID。</small>
               </li>
               <li>
@@ -159,14 +159,14 @@
         <details id="advanced-settings" class="advanced-settings">
           <summary>高级设置（以后再调整）</summary>
           <section class="panel settings-list">
-          <div class="setting-row"><span><strong>模型配置指南</strong><small>查看 WorkBuddy / CodeBuddy、API 或其他引擎的完整配置步骤</small></span><button id="reopen-model-guide" type="button" aria-expanded="false" aria-controls="model-config-guide">查看配置指南</button></div>
+          <div class="setting-row"><span><strong>模型配置指南</strong><small>查看 WorkBuddy、API 或其他引擎的完整配置步骤</small></span><button id="reopen-model-guide" type="button" aria-expanded="false" aria-controls="model-config-guide">查看配置指南</button></div>
           <section id="model-config-guide" class="model-config-guide hidden" aria-labelledby="model-config-guide-title">
-            <div class="model-guide-heading"><div><span class="eyebrow">完整配置指南</span><h3 id="model-config-guide-title">使用 WorkBuddy / CodeBuddy 连接 AI 模型</h3><p>普通用户优先走这条推荐路径。</p></div><button id="close-model-guide" type="button">关闭指南</button></div>
+            <div class="model-guide-heading"><div><span class="eyebrow">完整配置指南</span><h3 id="model-config-guide-title">使用 WorkBuddy 连接 AI 模型</h3><p>普通用户优先走这条推荐路径。</p></div><button id="close-model-guide" type="button">关闭指南</button></div>
             <div class="model-guide-route" aria-label="推荐配置路径"><span>选择运行方式</span><b>→</b><span>填写模型</span><b>→</b><span>测试</span><b>→</b><span>激活</span></div>
             <ol class="model-guide-steps">
-              <li><span class="guide-step-index">1</span><div><strong>安装并登录 WorkBuddy / CodeBuddy</strong><p>推荐普通用户优先使用 WorkBuddy。安装后，在 WorkBuddy 或 CodeBuddy 中完成登录。</p><details><summary>账号与兼容性说明</summary><p>CyberBoss 使用当前 Windows 用户下的 CodeBuddy 登录状态。外部登录、退出、切换账号或升级版本后，可能需要重新测试配置。</p></details></div></li>
+              <li><span class="guide-step-index">1</span><div><strong>安装并登录 WorkBuddy</strong><p>推荐普通用户优先使用 WorkBuddy。安装后，在 WorkBuddy 中完成登录。</p><details><summary>账号与兼容性说明</summary><p>登录属于当前 Windows 用户；外部登录、退出、切换账号或升级版本后，可能需要重新测试配置。</p></details></div></li>
               <li><span class="guide-step-index">2</span><div><strong>点击“新增配置”</strong><p>回到上方 AI 引擎区域，点击右上角“新增配置”。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="new-profile"><figcaption>截图 A：新增配置入口</figcaption></figure></div></li>
-              <li><span class="guide-step-index">3</span><div><strong>选择运行方式</strong><p>运行引擎选择“WorkBuddy / CodeBuddy（推荐）”。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="runtime"><figcaption>截图 B：运行引擎选择</figcaption></figure></div></li>
+              <li><span class="guide-step-index">3</span><div><strong>选择运行方式</strong><p>运行引擎选择“WorkBuddy（推荐）”。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="runtime"><figcaption>截图 B：运行引擎选择</figcaption></figure></div></li>
               <li><span class="guide-step-index">4</span><div><strong>选择模型</strong><p>点击“刷新模型”获取当前账号可用模型。下拉菜单显示模型名称，但保存和测试使用对应的真实模型 ID；<code>Auto</code> 会映射为 <code>auto</code>。只有在目录没有返回时，才在高级设置中自定义模型 ID。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="model-id"><figcaption>截图 C：模型下拉选择</figcaption></figure></div></li>
               <li><span class="guide-step-index">5</span><div><strong>保存并测试连接</strong><p>点击“保存并测试连接”，确认当前模型和本机连接确实可用。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="test"><figcaption>截图 D：保存并测试连接</figcaption></figure></div></li>
               <li><span class="guide-step-index">6</span><div><strong>测试通过后激活</strong><p>只有通过测试的配置才能激活。激活后，它才会成为 CyberBoss 当前使用的 AI 配置。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="activate"><figcaption>截图 E：激活配置</figcaption></figure></div></li>

@@ -88,11 +88,21 @@ test("preload exposes the model whitelist and UI contains first-run gates", () =
 });
 
 test("renderer maps CodeBuddy to the existing compatibility profile form", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "src", "desktop", "renderer", "index.html"), "utf8");
+  const styles = fs.readFileSync(path.join(__dirname, "..", "src", "desktop", "renderer", "styles.css"), "utf8");
   const renderer = fs.readFileSync(path.join(__dirname, "..", "src", "desktop", "renderer", "renderer.js"), "utf8");
   assert.match(renderer, /\["codex", "claudecode", "codebuddy"\]/);
   assert.match(renderer, /runtimeId === "codebuddy"/);
   assert.match(renderer, /profile-service-password-label/);
-  assert.match(renderer, /codebuddy: "CodeBuddy"/);
+  assert.match(renderer, /codebuddy: "WorkBuddy"/);
+  assert.doesNotMatch(html, /WorkBuddy\s*\/\s*CodeBuddy/);
+  assert.equal([...html.matchAll(/CodeBuddy/g)].length, 0);
+  assert.doesNotMatch(renderer, /WorkBuddy\s*\/\s*CodeBuddy/);
+  assert.match(html, /id="exit-app" class="danger-link"[^>]*>彻底退出 CyberBoss/);
+  assert.match(styles, /\.danger-link\s*\{[^}]*border:\s*1px solid var\(--danger\)[^}]*border-radius:\s*10px[^}]*padding:\s*9px 14px/s);
+  assert.match(styles, /\.danger-link:hover\s*\{/);
+  assert.match(styles, /\.danger-link:focus-visible\s*\{/);
+  assert.doesNotMatch(styles.match(/\.danger-link\s*\{[^}]*\}/)?.[0] || "", /position\s*:\s*absolute|\btop\s*:|\bleft\s*:/);
   assert.doesNotMatch(renderer, /\["codex", "claudecode"\]\.includes\(runtimeId\)/);
 });
 
