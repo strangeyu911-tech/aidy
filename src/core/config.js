@@ -4,7 +4,7 @@ const path = require("path");
 function readConfig() {
   const argv = process.argv.slice(2);
   const mode = argv[0] || "";
-  const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss");
+  const stateDir = path.resolve(process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss"));
 
   return {
     mode,

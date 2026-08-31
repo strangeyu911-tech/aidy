@@ -39,6 +39,7 @@ const { RuntimeProfileVerifier } = require("./runtime-profile-verifier");
 const { SupervisionDispatcher } = require("./supervision-dispatcher");
 const { WindowsTaskService } = require("./windows-task-service");
 const { resolveOnboardingStatus, resolveWeixinAccountStatus } = require("./onboarding-state");
+const { prepareElectronWorkingDirectory } = require("./electron-working-directory");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 loadEnvironment(rootDir);
@@ -48,6 +49,7 @@ const config = readConfig();
 app.setName("CyberBoss");
 app.setAppUserModelId("CyberBoss.Desktop");
 const stateDir = config.stateDir || path.join(os.homedir(), ".cyberboss");
+prepareElectronWorkingDirectory(stateDir);
 const logDir = path.join(stateDir, "logs");
 const logger = new ComponentLogger({ logDir, component: "desktop" });
 const stateStore = new DesktopStateStore({
