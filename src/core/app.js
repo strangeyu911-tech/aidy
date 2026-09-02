@@ -3,6 +3,12 @@ const path = require("path");
 const crypto = require("crypto");
 const fs = require("fs");
 const { createWeixinChannelAdapter } = require("../adapters/channel/weixin");
+const {
+  buildPollError,
+  buildPollResult,
+  fingerprint,
+  monotonicNowMs,
+} = require("../adapters/channel/weixin/poll-observability");
 const { DEFAULT_MIN_WEIXIN_CHUNK, MAX_MIN_WEIXIN_CHUNK } = require("../adapters/channel/weixin/config-store");
 const { persistIncomingWeixinAttachments } = require("../adapters/channel/weixin/media-receive");
 const { createRuntimeAdapter } = require("../adapters/runtime/factory");
@@ -251,25 +257,70 @@ class CyberbossApp {
 
     try {
       let consecutiveFailures = 0;
+      let pollSequence = 0;
       while (!shutdown.stopped) {
+        const pollSequenceId = `poll-${++pollSequence}`;
+        let pollCursorBefore = "";
+        let pollStartedAt = "";
+        let pollStartedMonotonicMs = 0;
+        let pollMeta = {};
         try {
           await Promise.all([
             this.flushDueReminders(account),
             this.flushPendingInboundMessages(),
             this.flushPendingTimelineScreenshots(account),
           ]);
+          pollCursorBefore = this.channelAdapter.loadSyncBuffer();
+          pollStartedAt = new Date().toISOString();
+          pollStartedMonotonicMs = monotonicNowMs();
+          this.logRuntimeDiagnostic?.("poll.started", {
+            pollSequenceId,
+            startedAt: pollStartedAt,
+            startedMonotonicMs: pollStartedMonotonicMs,
+            cursorBefore: safePollCursor(pollCursorBefore),
+          });
           const response = await this.channelAdapter.getUpdates({
-            syncBuffer: this.channelAdapter.loadSyncBuffer(),
+            syncBuffer: pollCursorBefore,
             timeoutMs: this.resolveLongPollTimeoutMs(),
           });
+          pollMeta = this.channelAdapter.consumeLastPollMeta?.() || {};
           assertWeixinUpdateResponse(response);
           consecutiveFailures = 0;
           const messages = sortInboundUpdateMessages(Array.isArray(response?.msgs) ? response.msgs : []);
-          for (const message of messages) {
-            if (shutdown.stopped) {
-              break;
+          let parserAcceptedCount = 0;
+          let parserRejectedCount = 0;
+          try {
+            for (const message of messages) {
+              if (shutdown.stopped) {
+                break;
+              }
+              let accepted;
+              try {
+                accepted = await this.handleIncomingMessage(message);
+              } catch (error) {
+                if (error && error.inboundParserAccepted) {
+                  parserAcceptedCount += 1;
+                }
+                throw error;
+              }
+              if (accepted) {
+                parserAcceptedCount += 1;
+              } else {
+                parserRejectedCount += 1;
+              }
             }
-            await this.handleIncomingMessage(message);
+          } finally {
+            this.logRuntimeDiagnostic?.("poll.result", buildPollResult({
+              pollSequenceId,
+              startedAt: pollStartedAt,
+              startedMonotonicMs: pollStartedMonotonicMs,
+              cursorBefore: pollCursorBefore,
+              cursorAfter: this.channelAdapter.loadSyncBuffer(),
+              responseMeta: pollMeta,
+              updates: Array.isArray(response?.msgs) ? response.msgs : [],
+              parserAcceptedCount,
+              parserRejectedCount,
+            }));
           }
           await Promise.all([
             this.flushDueReminders(account),
@@ -282,6 +333,17 @@ class CyberbossApp {
             break;
           }
 
+          pollMeta = this.channelAdapter.consumeLastPollMeta?.() || pollMeta;
+          if (pollStartedAt) {
+            this.logRuntimeDiagnostic?.("poll.error", buildPollError({
+              pollSequenceId,
+              startedAt: pollStartedAt,
+              startedMonotonicMs: pollStartedMonotonicMs,
+              cursorBefore: pollCursorBefore,
+              error,
+              responseMeta: pollMeta,
+            }));
+          }
           if (isSessionExpiredError(error)) {
             throw new Error("The WeChat session has expired. Run `npm run login` again.");
           }
@@ -417,11 +479,11 @@ class CyberbossApp {
   async handleIncomingMessage(message) {
     const normalized = this.channelAdapter.normalizeIncomingMessage(message);
     if (!normalized) {
-      return;
+      return false;
     }
 
     const turnCorrelation = crypto.randomUUID();
-    this.logRuntimeDiagnostic("inbound.received", {
+    this.logRuntimeDiagnostic?.("inbound.received", {
       turnCorrelation,
       runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
       profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
@@ -432,7 +494,23 @@ class CyberbossApp {
     });
 
     this.primeDeferredRepliesForSender(normalized);
-    await this.handlePreparedMessage({ ...normalized, turnCorrelation }, { allowCommands: true });
+    try {
+      await this.handlePreparedMessage({ ...normalized, turnCorrelation }, { allowCommands: true });
+    } catch (error) {
+      if (error && typeof error === "object") {
+        try {
+          Object.defineProperty(error, "inboundParserAccepted", {
+            configurable: true,
+            enumerable: false,
+            value: true,
+          });
+        } catch {
+          // Best-effort marker for poll telemetry; preserve the original error.
+        }
+      }
+      throw error;
+    }
+    return true;
   }
 
   deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply" }) {
@@ -471,7 +549,7 @@ class CyberbossApp {
   async handlePreparedMessage(normalized, { allowCommands }) {
     const turnCorrelation = normalizeText(normalized?.turnCorrelation) || crypto.randomUUID();
     if (!normalizeText(normalized?.turnCorrelation)) {
-      this.logRuntimeDiagnostic("inbound.received", {
+      this.logRuntimeDiagnostic?.("inbound.received", {
         turnCorrelation,
         runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
         profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
@@ -587,7 +665,7 @@ class CyberbossApp {
 
   async dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared }) {
     const turnCorrelation = normalizeText(prepared?.turnCorrelation) || crypto.randomUUID();
-    this.logRuntimeDiagnostic("dispatchPreparedTurn.entry", {
+    this.logRuntimeDiagnostic?.("dispatchPreparedTurn.entry", {
       turnCorrelation,
       runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
       profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
@@ -709,7 +787,7 @@ class CyberbossApp {
       this.activeTurnRecords.delete(activeRecordId);
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
       const errorCode = normalizeText(error?.code) || "RUNTIME_TURN_START_FAILED";
-      this.logRuntimeDiagnostic("dispatchPreparedTurn.failed", {
+      this.logRuntimeDiagnostic?.("dispatchPreparedTurn.failed", {
         turnCorrelation,
         runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
         profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
@@ -2342,6 +2420,10 @@ function sanitizeRuntimeDiagnosticText(value) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function safePollCursor(value) {
+  return fingerprint(value);
 }
 
 module.exports = { CyberbossApp };

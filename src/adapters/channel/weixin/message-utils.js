@@ -12,20 +12,23 @@ function createInboundFilter() {
 
   return {
     normalize(message, config, accountId) {
+      return this.normalizeDetailed(message, config, accountId).normalized;
+    },
+    normalizeDetailed(message, config, accountId) {
       if (!message || typeof message !== "object") {
-        return null;
+        return { normalized: null, rejectionReason: "invalid_update" };
       }
       const messageType = Number(message.message_type);
       if (messageType === MESSAGE_TYPE_BOT) {
-        return null;
+        return { normalized: null, rejectionReason: "bot_message" };
       }
       if (messageType !== 0 && messageType !== MESSAGE_TYPE_USER) {
-        return null;
+        return { normalized: null, rejectionReason: "unsupported_message_type" };
       }
 
       const senderId = normalizeText(message.from_user_id);
       if (!senderId) {
-        return null;
+        return { normalized: null, rejectionReason: "missing_sender" };
       }
 
       const createdAtMs = normalizeMessageTimestampMs(message);
@@ -33,7 +36,7 @@ function createInboundFilter() {
       const dedupKey = buildDedupKey(message, senderId, createdAtMs);
       pruneSeen(seen);
       if (dedupKey && seen.has(dedupKey)) {
-        return null;
+        return { normalized: null, rejectionReason: "duplicate" };
       }
       if (dedupKey) {
         seen.set(dedupKey, Date.now());
@@ -43,10 +46,10 @@ function createInboundFilter() {
       const text = bodyFromItemList(itemList);
       const attachments = extractAttachmentItems(itemList);
       if (!text && !attachments.length) {
-        return null;
+        return { normalized: null, rejectionReason: "empty_message" };
       }
 
-      return {
+      return { normalized: {
         provider: "weixin",
         accountId,
         workspaceId: config.workspaceId,
@@ -58,7 +61,7 @@ function createInboundFilter() {
         attachments,
         contextToken: normalizeText(message.context_token),
         receivedAt: createdAtMs > 0 ? new Date(createdAtMs).toISOString() : new Date().toISOString(),
-      };
+      }, rejectionReason: null };
     },
   };
 }

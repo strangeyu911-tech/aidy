@@ -4,6 +4,7 @@ const { loadPersistedContextTokens, persistContextToken } = require("./context-t
 const { runLoginFlow } = require("./login");
 const { getConfig, sendTyping } = require("./api");
 const { getUpdates, sendText } = require("./api");
+const { readPollMeta } = require("./poll-observability");
 const { createInboundFilter } = require("./message-utils");
 const { sendWeixinMediaFile } = require("./media-send");
 const { loadSyncBuffer, saveSyncBuffer } = require("./sync-buffer-store");
@@ -19,6 +20,7 @@ function createWeixinChannelAdapter(config) {
   let contextTokenCache = null;
   const inboundFilter = createInboundFilter();
   let minWeixinChunk = loadWeixinConfig(config).minChunkChars;
+  let lastPollMeta = null;
 
   function ensureAccount() {
     if (!selectedAccount) {
@@ -141,14 +143,27 @@ function createWeixinChannelAdapter(config) {
       saveSyncBuffer(config, account.accountId, buffer);
     },
     rememberContextToken,
+    consumeLastPollMeta() {
+      const result = lastPollMeta;
+      lastPollMeta = null;
+      return result;
+    },
     async getUpdates({ syncBuffer = "", timeoutMs = LONG_POLL_TIMEOUT_MS } = {}) {
       const account = ensureAccount();
-      const response = await getUpdates({
-        baseUrl: account.baseUrl,
-        token: account.token,
-        getUpdatesBuf: syncBuffer,
-        timeoutMs,
-      });
+      lastPollMeta = null;
+      let response;
+      try {
+        response = await getUpdates({
+          baseUrl: account.baseUrl,
+          token: account.token,
+          getUpdatesBuf: syncBuffer,
+          timeoutMs,
+        });
+        lastPollMeta = readPollMeta(response);
+      } catch (error) {
+        lastPollMeta = readPollMeta(error);
+        throw error;
+      }
       const newBuf = typeof response?.get_updates_buf === "string" ? response.get_updates_buf.trim() : "";
       if (newBuf && newBuf !== syncBuffer) {
         this.saveSyncBuffer(newBuf);

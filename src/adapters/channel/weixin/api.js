@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { redactSensitiveText } = require("./redact");
+const { attachPollMeta } = require("./poll-observability");
 
 function readChannelVersion() {
   try {
@@ -50,7 +51,7 @@ function truncateForLog(value, max) {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
-async function apiPost({ baseUrl, endpoint, token, body, timeoutMs = 0, label }) {
+async function apiPost({ baseUrl, endpoint, token, body, timeoutMs = 0, label, returnResponseMeta = false }) {
   const url = new URL(endpoint, ensureTrailingSlash(baseUrl)).toString();
   const controller = new AbortController();
   const timeout = timeoutMs > 0 ? timeoutMs : DEFAULT_API_TIMEOUT_MS;
@@ -65,12 +66,17 @@ async function apiPost({ baseUrl, endpoint, token, body, timeoutMs = 0, label })
     });
     const raw = await response.text();
     if (Buffer.byteLength(raw, "utf8") > MAX_RESPONSE_BODY_BYTES) {
-      throw new Error(`${label} response body exceeds ${MAX_RESPONSE_BODY_BYTES} bytes`);
+      const error = new Error(`${label} response body exceeds ${MAX_RESPONSE_BODY_BYTES} bytes`);
+      error.httpStatus = response.status;
+      throw error;
     }
     if (!response.ok) {
-      throw new Error(`${label} http ${response.status}: ${redactSensitiveText(truncateForLog(raw, 512))}`);
+      const error = new Error(`${label} http ${response.status}: ${redactSensitiveText(truncateForLog(raw, 512))}`);
+      error.httpStatus = response.status;
+      error.pollErrorClass = "http";
+      throw error;
     }
-    return raw;
+    return returnResponseMeta ? { raw, httpStatus: response.status } : raw;
   } finally {
     clearTimeout(timer);
   }
@@ -183,21 +189,76 @@ async function getUpdates({ baseUrl, token, getUpdatesBuf = "", timeoutMs = DEFA
     base_info: buildBaseInfo(),
   });
   try {
-    const raw = await apiPost({
+    const result = await apiPost({
       baseUrl,
       endpoint: "ilink/bot/getupdates",
       token,
       body: payload,
       timeoutMs,
       label: "getUpdates",
+      returnResponseMeta: true,
     });
-    return parseJson(raw, "getUpdates");
+    let parsed;
+    try {
+      parsed = parseJson(result.raw, "getUpdates");
+    } catch (error) {
+      error.pollErrorClass = "parse";
+      error.httpStatus = result.httpStatus;
+      error.responseEmpty = !String(result.raw || "").trim();
+      attachPollMeta(error, {
+        outcome: "error",
+        errorClass: "parse",
+        httpStatus: result.httpStatus,
+        responseEmpty: error.responseEmpty,
+        parseSuccess: false,
+      });
+      throw error;
+    }
+    attachPollMeta(parsed, {
+      outcome: "success",
+      httpStatus: result.httpStatus,
+      rpcSuccess: isSuccessfulRpcResponse(parsed),
+      rpcCode: resolveRpcCode(parsed),
+      responseEmpty: !String(result.raw || "").trim(),
+      parseSuccess: true,
+    });
+    return parsed;
   } catch (error) {
     if (error instanceof Error && (error.name === "AbortError" || String(error.message || "").includes("aborted"))) {
-      return { ret: 0, msgs: [], get_updates_buf: getUpdatesBuf };
+      return attachPollMeta({ ret: 0, msgs: [], get_updates_buf: getUpdatesBuf }, {
+        outcome: "timeout",
+        errorClass: "timeout",
+        httpStatus: null,
+        rpcSuccess: null,
+        responseEmpty: true,
+        parseSuccess: null,
+      });
+    }
+    if (!error.pollErrorClass) {
+      error.pollErrorClass = error.responseEmpty === true ? "parse" : "network";
     }
     throw error;
   }
+}
+
+function isSuccessfulRpcResponse(response) {
+  const ret = response?.ret;
+  const errcode = response?.errcode;
+  return (ret === undefined || ret === null || Number(ret) === 0)
+    && (errcode === undefined || errcode === null || Number(errcode) === 0);
+}
+
+function resolveRpcCode(response) {
+  for (const raw of [response?.ret, response?.errcode]) {
+    if (raw === undefined || raw === null || raw === "") {
+      continue;
+    }
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
 }
 
 async function sendText({ baseUrl, token, toUserId, text, contextToken, clientId }) {
@@ -247,6 +308,7 @@ module.exports = {
   getConfig,
   getUploadUrl,
   getUpdates,
+  isSuccessfulRpcResponse,
   sendMessage,
   sendTyping,
   sendText,
