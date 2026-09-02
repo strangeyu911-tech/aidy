@@ -95,25 +95,21 @@ function fingerprintAccountIdentity(value) {
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
-function encodeNewSessionParams({ workingDirectory, version = "" } = {}) {
+function encodeNewSessionParams({ workingDirectory } = {}) {
   const directory = normalizeText(workingDirectory);
   if (!directory) throw protocolError("CODEBUDDY_SESSION_FAILED", "CodeBuddy working directory is required.");
-  if (/^2\.115\./.test(normalizeText(version))) {
-    return { cwd: directory, mcpServers: [] };
-  }
-  return { workingDirectory: directory, mcpServers: [] };
+  // ACP initialize currently exposes protocol/capability data, but no session/new
+  // parameter schema. The observed ACP contract is therefore the single cwd shape.
+  return { cwd: directory, mcpServers: [] };
 }
 
-function encodeResumeSessionParams({ sessionId, workingDirectory, version = "" } = {}) {
+function encodeResumeSessionParams({ sessionId, workingDirectory } = {}) {
   const normalizedSessionId = normalizeText(sessionId);
   const directory = normalizeText(workingDirectory);
   if (!normalizedSessionId || !directory) {
     throw protocolError("CODEBUDDY_SESSION_FAILED", "CodeBuddy resume requires a session and working directory.");
   }
-  if (/^2\.115\./.test(normalizeText(version))) {
-    return { sessionId: normalizedSessionId, cwd: directory, mcpServers: [] };
-  }
-  return { sessionId: normalizedSessionId, workingDirectory: directory, mcpServers: [] };
+  return { sessionId: normalizedSessionId, cwd: directory, mcpServers: [] };
 }
 
 function protocolError(code, message) {

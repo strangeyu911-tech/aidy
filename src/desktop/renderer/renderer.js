@@ -13,6 +13,7 @@ const modelSettingsModelPicker = window.cyberbossModelSettingsModelPicker;
 const modelSettingsView = window.cyberbossModelSettingsViewState;
 let modelSettingsViewState = modelSettingsView.createModelSettingsViewState();
 const modelSettingsCoach = window.cyberbossModelSettingsCoachState;
+const connectionStatusView = window.cyberbossConnectionStatusView;
 const MODEL_SETTINGS_COACH_STORAGE_KEY = "cyberboss:model-settings-coach:v1";
 let modelSettingsCoachState = modelSettingsCoach.createModelSettingsCoachState({ completed: readModelCoachCompleted() });
 let modelCoachTarget = null;
@@ -164,7 +165,7 @@ function renderSnapshot(nextSnapshot) {
   snapshot = nextSnapshot;
   const desired = snapshot.settings.desiredState;
   const phase = snapshot.runtime.phase;
-  const display = stateDisplay(phase, desired, snapshot.onboarding);
+  const display = connectionStatusView.stateDisplay(phase, desired, snapshot.onboarding, snapshot.runtime.error);
   $("#state-title").textContent = display.title;
   $("#state-description").textContent = display.description;
   $("#header-state").textContent = display.short;
@@ -196,34 +197,23 @@ function renderSnapshot(nextSnapshot) {
   }
 }
 
-function stateDisplay(phase, desired, onboarding = null) {
-  if (onboarding?.complete && ["running", "quiet"].includes(phase)) {
-    return { title: "CyberBoss 已配置完成并正在运行", short: "运行中", description: "AI 模型已连接，微信已连接。现在可以关闭控制中心，CyberBoss 会继续在托盘运行。" };
-  }
-  if (onboarding?.step === "wechat" && phase !== "starting") {
-    return { title: "还差微信连接", short: "待连接", description: "模型已经准备好。连接微信后，才能接收和回复消息。" };
-  }
-  if (onboarding?.step === "start" && phase === "stopped") {
-    return { title: "准备启动", short: "待启动", description: "模型和微信都已准备好，启动 CyberBoss 后才会开始工作。" };
-  }
-  if (phase === "configuration_required") return { title: "需要设置模型", short: "未配置", description: "请先连接 AI 模型并完成测试。" };
-  if (phase === "switching") return { title: "正在切换模型", short: "切换中", description: "正在等待当前回复与工具安全结束，然后切换模型服务。" };
-  if (phase === "starting") return { title: "正在启动", short: "启动中", description: "正在依次连接模型服务与微信，完成后会自动进入监管状态。" };
-  if (phase === "stopping") return { title: "正在停止", short: "停止中", description: "正在安全关闭后台服务和当前任务。" };
-  if (phase === "error") return { title: "需要处理", short: "异常", description: "请按下面的修复建议完成连接。" };
-  if (desired === "quiet") return { title: "静默运行中", short: "静默", description: "会回复你的消息，并继续同步、日记和报表；不会主动发起查岗。" };
-  if (desired === "running") return { title: "监管运行中", short: "运行", description: "微信回复、随机查岗和固定安排都已启用。关闭窗口后仍会在托盘运行。" };
-  return { title: "已停止", short: "停止", description: "后台服务已停止；控制中心仍留在托盘，可随时重新启动。" };
-}
-
 function renderError(error) {
   const card = $("#error-card");
   if (!error) { card.classList.add("hidden"); card.textContent = ""; return; }
-  const capabilityLabel = ["bridge", "wechat"].includes(error.capability) ? "微信连接" : error.capability;
-  const summary = error.code === "BRIDGE_NOT_READY" ? "微信连接组件未能启动。" : error.summary;
+  const view = connectionStatusView.resolveErrorView(error);
   card.classList.remove("hidden");
-  card.innerHTML = `<strong>${escapeHtml(summary)}</strong><p>受影响：${escapeHtml(capabilityLabel)}。建议：${escapeHtml(error.repairAction)}。</p><button id="retry-button" type="button">重试启动</button>`;
-  $("#retry-button").addEventListener("click", async () => renderSnapshot(await api.retry()));
+  card.innerHTML = `<strong>${escapeHtml(view.summary)}</strong><p>受影响：${escapeHtml(view.capabilityLabel)}。建议：${escapeHtml(view.repairAction)}</p><small>诊断代码：${escapeHtml(view.code)}</small>${view.buttonLabel ? `<button id="error-action-button" type="button">${escapeHtml(view.buttonLabel)}</button>` : ""}`;
+  if (view.buttonAction === "retry") {
+    $("#error-action-button").addEventListener("click", async () => renderSnapshot(await api.retry()));
+  } else if (view.buttonAction === "wechat_login") {
+    $("#error-action-button").addEventListener("click", async () => {
+      const result = await api.startWeChatLogin();
+      const feedback = document.createElement("p");
+      feedback.textContent = result?.message || "微信登录窗口已打开。完成扫码后请重新检查。";
+      feedback.setAttribute("role", "status");
+      card.append(feedback);
+    });
+  }
 }
 
 function renderOnboarding(currentSnapshot) {

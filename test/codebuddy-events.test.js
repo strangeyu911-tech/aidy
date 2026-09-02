@@ -56,3 +56,19 @@ test("failure mapping keeps stable codes and removes upstream error text", () =>
   assert.equal(event.payload.code, "CODEBUDDY_MODEL_UNAVAILABLE");
   assert.equal(event.payload.text.includes("secret"), false);
 });
+
+test("failure mapping preserves bounded ACP diagnostics for protocol errors", () => {
+  const event = mapCodeBuddyFailure({
+    code: "CODEBUDDY_SESSION_FAILED",
+    diagnostic: {
+      method: "session/new",
+      upstreamCode: -32602,
+      upstreamMessage: "Invalid params: expected cwd",
+    },
+  }, { threadId: "s", turnId: "t" });
+  assert.deepEqual(event.payload.diagnostic, {
+    method: "session/new",
+    upstreamCode: -32602,
+    upstreamMessage: "Invalid params: expected cwd",
+  });
+});

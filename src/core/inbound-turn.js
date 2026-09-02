@@ -158,6 +158,7 @@ function clonePreparedInboundMessage(prepared) {
     accountId: prepared.accountId,
     senderId: prepared.senderId,
     messageId: prepared.messageId,
+    turnCorrelation: prepared.turnCorrelation,
     contextToken: prepared.contextToken,
     provider: prepared.provider,
     originalText: prepared.originalText,

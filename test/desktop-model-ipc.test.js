@@ -63,6 +63,7 @@ test("preload exposes the model whitelist and UI contains first-run gates", () =
   assert.match(html, /id="skip-model-coach"/);
   assert.match(html, /id="next-model-coach"/);
   assert.match(html, /src="\.\/model-settings-coach-state\.js"/);
+  assert.match(html, /src="\.\/connection-status-view\.js"/);
   assert.equal([...html.matchAll(/class="guide-step-index"/g)].length, 6);
   assert.equal([...html.matchAll(/class="guide-screenshot-slot hidden"/g)].length, 5);
   assert.match(html, /id="profile-api-key"[^>]*type="password"[^>]*autocomplete="off"/);
@@ -104,6 +105,7 @@ test("renderer maps CodeBuddy to the existing compatibility profile form", () =>
   assert.match(styles, /\.danger-link:focus-visible\s*\{/);
   assert.doesNotMatch(styles.match(/\.danger-link\s*\{[^}]*\}/)?.[0] || "", /position\s*:\s*absolute|\btop\s*:|\bleft\s*:/);
   assert.doesNotMatch(renderer, /\["codex", "claudecode"\]\.includes\(runtimeId\)/);
+  assert.doesNotMatch(renderer, /请按下面的修复建议完成连接/);
 });
 
 const rendererUrl = pathToFileURL(path.join(__dirname, "..", "src", "desktop", "renderer", "index.html")).href;

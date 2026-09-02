@@ -98,27 +98,57 @@ test("ACP smoke rejects mismatched ids, missing login, and non-exact model outpu
   await assert.rejects(noLogin.getIdentityFingerprint(), (error) => error.code === "CODEBUDDY_LOGIN_REQUIRED");
 });
 
-test("CodeBuddy 2.115 session creation stays isolated behind its versioned public parameter shape", async () => {
+test("session creation uses the canonical cwd parameter shape regardless of CLI version", async () => {
+  for (const cliVersion of ["2.114.9", "2.115.0", "2.132.0", "9.0.0", "unknown"]) {
+    const calls = [];
+    const responses = [
+      jsonResponse({ connectionId: "c", sessionToken: "t" }),
+      sseResponse([{ jsonrpc: "2.0", id: "id", result: { protocolVersion: 1 } }]),
+      sseResponse([{ jsonrpc: "2.0", id: "id", result: { sessionId: "s", models: {} } }]),
+      sseResponse([{ jsonrpc: "2.0", id: "id", result: {} }]),
+    ];
+    const client = new CodeBuddyClient({
+      endpoint: "http://127.0.0.1:44128",
+      servicePassword: "gateway-secret",
+      cliVersion,
+      randomUUID: () => "id",
+      fetchImpl: async (url, options) => { calls.push({ url, options }); return responses.shift(); },
+    });
+    await client.connect();
+    await client.initialize();
+    await client.newSession({ workingDirectory: "D:\\CyberBoss" });
+    await client.resumeSession({ sessionId: "s", workingDirectory: "D:\\CyberBoss" });
+    assert.deepEqual(JSON.parse(calls[2].options.body).params, { cwd: "D:\\CyberBoss", mcpServers: [] });
+    assert.deepEqual(JSON.parse(calls[3].options.body).params, { sessionId: "s", cwd: "D:\\CyberBoss", mcpServers: [] });
+  }
+});
+
+test("session/new Invalid params preserves protocol diagnostics and does not retry", async () => {
   const calls = [];
   const responses = [
     jsonResponse({ connectionId: "c", sessionToken: "t" }),
     sseResponse([{ jsonrpc: "2.0", id: "id", result: { protocolVersion: 1 } }]),
-    sseResponse([{ jsonrpc: "2.0", id: "id", result: { sessionId: "s", models: {} } }]),
-    sseResponse([{ jsonrpc: "2.0", id: "id", result: {} }]),
+    sseResponse([{ jsonrpc: "2.0", id: "id", error: { code: -32602, message: "Invalid params: expected cwd" } }]),
   ];
   const client = new CodeBuddyClient({
     endpoint: "http://127.0.0.1:44128",
     servicePassword: "gateway-secret",
-    cliVersion: "2.115.0",
     randomUUID: () => "id",
     fetchImpl: async (url, options) => { calls.push({ url, options }); return responses.shift(); },
   });
   await client.connect();
   await client.initialize();
-  await client.newSession({ workingDirectory: "D:\\CyberBoss" });
-  await client.resumeSession({ sessionId: "s", workingDirectory: "D:\\CyberBoss" });
-  assert.deepEqual(JSON.parse(calls[2].options.body).params, { cwd: "D:\\CyberBoss", mcpServers: [] });
-  assert.deepEqual(JSON.parse(calls[3].options.body).params, { sessionId: "s", cwd: "D:\\CyberBoss", mcpServers: [] });
+  await assert.rejects(client.newSession({ workingDirectory: "D:\\CyberBoss" }), (error) => {
+    assert.equal(error.code, "CODEBUDDY_SESSION_FAILED");
+    assert.deepEqual(error.diagnostic, {
+      method: "session/new",
+      upstreamCode: -32602,
+      upstreamMessage: "Invalid params: expected cwd",
+    });
+    return true;
+  });
+  assert.equal(calls.filter((call) => JSON.parse(call.options?.body || "{}").method === "session/new").length, 1);
+  assert.equal(calls.filter((call) => JSON.parse(call.options?.body || "{}").params?.workingDirectory).length, 0);
 });
 
 test("ACP model discovery returns the real model id separately from its display name", async () => {

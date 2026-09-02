@@ -52,6 +52,7 @@ const {
 } = require("../adapters/runtime/shared/approval-command");
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
+const { ComponentLogger } = require("./component-logger");
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
@@ -82,6 +83,10 @@ class CyberbossApp {
     this.profileStore = dependencies.profileStore || new ProviderProfileStore({ filePath: config.providerProfilesFile });
     this.credentialVault = dependencies.vault || new CredentialVault({ filePath: config.credentialVaultFile });
     this.diagnosticCapture = dependencies.capture || new DiagnosticCapture({ filePath: config.diagnosticCaptureFile });
+    this.logger = dependencies.logger || new ComponentLogger({
+      logDir: path.join(config.stateDir, "logs"),
+      component: "bridge",
+    });
     this.runtimeAdapterFactory = dependencies.runtimeAdapterFactory || createRuntimeAdapter;
     this.runtimeAdapter = null;
     this.activeProfile = null;
@@ -132,7 +137,7 @@ class CyberbossApp {
         code: "NO_ACTIVE_ENGINE",
       });
     }
-    const runtimeConfig = { ...this.config, capture: this.diagnosticCapture };
+    const runtimeConfig = { ...this.config, capture: this.diagnosticCapture, logger: this.logger };
     const adapter = await this.runtimeAdapterFactory({
       config: runtimeConfig,
       profileStore: this.profileStore,
@@ -415,8 +420,19 @@ class CyberbossApp {
       return;
     }
 
+    const turnCorrelation = crypto.randomUUID();
+    this.logRuntimeDiagnostic("inbound.received", {
+      turnCorrelation,
+      runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
+      profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
+      modelId: normalizeText(this.activeProfile?.modelId || this.profileStore?.getActive?.()?.modelId),
+      provider: normalizeText(normalized.provider),
+      hasText: Boolean(normalizeText(normalized.text)),
+      attachmentCount: Array.isArray(normalized.attachments) ? normalized.attachments.length : 0,
+    });
+
     this.primeDeferredRepliesForSender(normalized);
-    await this.handlePreparedMessage(normalized, { allowCommands: true });
+    await this.handlePreparedMessage({ ...normalized, turnCorrelation }, { allowCommands: true });
   }
 
   deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply" }) {
@@ -453,6 +469,19 @@ class CyberbossApp {
   }
 
   async handlePreparedMessage(normalized, { allowCommands }) {
+    const turnCorrelation = normalizeText(normalized?.turnCorrelation) || crypto.randomUUID();
+    if (!normalizeText(normalized?.turnCorrelation)) {
+      this.logRuntimeDiagnostic("inbound.received", {
+        turnCorrelation,
+        runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
+        profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
+        modelId: normalizeText(this.activeProfile?.modelId || this.profileStore?.getActive?.()?.modelId),
+        provider: normalizeText(normalized?.provider),
+        hasText: Boolean(normalizeText(normalized?.text)),
+        attachmentCount: Array.isArray(normalized?.attachments) ? normalized.attachments.length : 0,
+      });
+    }
+    normalized = { ...normalized, turnCorrelation };
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
       accountId: normalized.accountId,
@@ -557,6 +586,13 @@ class CyberbossApp {
   }
 
   async dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared }) {
+    const turnCorrelation = normalizeText(prepared?.turnCorrelation) || crypto.randomUUID();
+    this.logRuntimeDiagnostic("dispatchPreparedTurn.entry", {
+      turnCorrelation,
+      runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
+      profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
+      modelId: normalizeText(this.activeProfile?.modelId || this.profileStore?.getActive?.()?.modelId),
+    });
     if (this.drainingForSwitch) {
       this.bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared });
       return false;
@@ -570,6 +606,8 @@ class CyberbossApp {
       workspaceRoot,
       threadId: "",
       turnId: "",
+      turnCorrelation,
+      stage: "dispatchPreparedTurn.entry",
       controller,
       startedAt: new Date().toISOString(),
       systemMessage: prepared.provider === "system" && prepared.systemMessage?.id
@@ -583,6 +621,8 @@ class CyberbossApp {
     }).catch(() => {});
 
     try {
+      const activeRecord = this.activeTurnRecords.get(activeRecordId);
+      if (activeRecord) activeRecord.stage = "resolve_profile";
       const activeProfile = resolveGlobalActiveProfile(this, {
         sessionStore: this.runtimeAdapter.getSessionStore(),
         bindingKey,
@@ -597,10 +637,12 @@ class CyberbossApp {
       const runtimeSignal = prepared?.signal
         ? AbortSignal.any([controller.signal, prepared.signal])
         : controller.signal;
+      if (activeRecord) activeRecord.stage = "build_runtime_turn";
       const runtimeTurn = await this.buildRuntimeTurn({ prepared, model, parentTurn, signal: runtimeSignal });
       const sendTurn = typeof this.runtimeAdapter.sendTurn === "function"
         ? this.runtimeAdapter.sendTurn.bind(this.runtimeAdapter)
         : this.runtimeAdapter.sendTextTurn.bind(this.runtimeAdapter);
+      if (activeRecord) activeRecord.stage = "runtime_send";
       const turn = await sendTurn({
         bindingKey,
         workspaceRoot,
@@ -614,8 +656,9 @@ class CyberbossApp {
           activeProfileId: activeProfile.id,
           visionUsage: runtimeTurn.usageAttributions,
         },
+        turnCorrelation,
       });
-      const activeRecord = this.activeTurnRecords.get(activeRecordId);
+      if (activeRecord) activeRecord.stage = "runtime_turn_started";
       if (activeRecord) {
         activeRecord.threadId = normalizeText(turn.threadId);
         activeRecord.turnId = normalizeText(turn.turnId);
@@ -662,9 +705,18 @@ class CyberbossApp {
       }
       return true;
     } catch (error) {
+      const activeRecord = this.activeTurnRecords.get(activeRecordId);
       this.activeTurnRecords.delete(activeRecordId);
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
       const errorCode = normalizeText(error?.code) || "RUNTIME_TURN_START_FAILED";
+      this.logRuntimeDiagnostic("dispatchPreparedTurn.failed", {
+        turnCorrelation,
+        runtimeId: normalizeText(this.runtimeAdapter?.describe?.().id),
+        profileId: normalizeText(this.activeProfile?.id || this.profileStore?.getActive?.()?.id),
+        modelId: normalizeText(this.activeProfile?.modelId || this.profileStore?.getActive?.()?.modelId),
+        stage: normalizeText(activeRecord?.stage) || "runtime_send",
+        error: summarizeRuntimeDiagnosticError(error),
+      });
       console.error(`[cyberboss] runtime turn start failed provider=${prepared.provider || "user"} code=${errorCode}`);
       if (prepared.provider === "system" && prepared.systemMessage?.id) {
         this.scheduleSystemMessageRetry(prepared.systemMessage, error);
@@ -926,6 +978,7 @@ class CyberbossApp {
       workspaceId: prepared.workspaceId,
       accountId: prepared.accountId,
       senderId: prepared.senderId,
+      turnCorrelation: prepared.turnCorrelation,
       messageId: prepared.messageId,
       contextToken: prepared.contextToken,
       provider: prepared.provider,
@@ -974,6 +1027,7 @@ class CyberbossApp {
           workspaceId: pendingDispatch.prepared.workspaceId,
           accountId: pendingDispatch.prepared.accountId,
           senderId: pendingDispatch.prepared.senderId,
+          turnCorrelation: pendingDispatch.prepared.turnCorrelation,
           contextToken: pendingDispatch.prepared.contextToken,
           provider: pendingDispatch.prepared.provider,
           originalText: pendingDispatch.prepared.originalText,
@@ -1732,6 +1786,14 @@ class CyberbossApp {
     return sessionStore.getActiveWorkspaceRoot(bindingKey) || this.config.workspaceRoot;
   }
 
+  logRuntimeDiagnostic(event, data = {}) {
+    try {
+      this.logger?.info?.(event, data);
+    } catch {
+      // Diagnostics must never affect runtime behavior.
+    }
+  }
+
   async handleRuntimeEvent(event) {
     if (event?.type === "runtime.turn.started" && event.payload?.threadId) {
       const earlySystemRecord = [...this.activeTurnRecords.values()].find((record) => (
@@ -2258,6 +2320,24 @@ function formatErrorMessage(error) {
     return "The WeChat session has expired. Run `npm run login` again.";
   }
   return raw;
+}
+
+function summarizeRuntimeDiagnosticError(error) {
+  const diagnostic = error?.diagnostic && typeof error.diagnostic === "object" ? error.diagnostic : {};
+  const errorClass = normalizeText(error?.name) || "Error";
+  const code = diagnostic.upstreamCode ?? (normalizeText(error?.code) || null);
+  const detail = normalizeText(diagnostic.upstreamMessage);
+  return {
+    class: errorClass,
+    ...(code == null || code === "" ? {} : { code }),
+    ...(detail ? { detail: sanitizeRuntimeDiagnosticText(detail) } : {}),
+  };
+}
+
+function sanitizeRuntimeDiagnosticText(value) {
+  return normalizeText(value)
+    .slice(0, 300)
+    .replace(/[A-Za-z0-9_-]{24,}/g, "[REDACTED]");
 }
 
 function sleep(ms) {

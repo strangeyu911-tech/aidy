@@ -82,7 +82,6 @@ async function verifyCodeBuddyCompatibility({
     client = clientFactory({
       endpoint: started.endpoint,
       servicePassword,
-      cliVersion: distribution.version,
       timeoutMs: positiveInteger(config.codebuddyVerificationTimeoutMs, 120_000),
     });
     const verified = verification.kind === "echo-tool"

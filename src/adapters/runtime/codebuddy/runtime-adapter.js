@@ -39,6 +39,7 @@ function createCodeBuddyRuntimeAdapter({
   const activeTurns = new Map();
   const attachedSessions = new Set();
   const pendingApprovals = new Map();
+  const logger = config.logger;
   const capabilityMode = normalizeCapabilityMode(config.codebuddyCapabilityMode);
   const supervisorAllowedTools = capabilityMode === "supervisor"
     ? normalizeSupervisorAllowedTools(config.codebuddyAllowedTools)
@@ -65,6 +66,24 @@ function createCodeBuddyRuntimeAdapter({
 
   function emit(event, raw = null) {
     emitter.emit("event", event, raw);
+  }
+
+  function logDiagnostic(event, data = {}) {
+    try {
+      logger?.info?.(event, data);
+    } catch {
+      // Diagnostics must never affect runtime behavior.
+    }
+  }
+
+  function diagnosticContext(turnCorrelation, extra = {}) {
+    return {
+      runtimeId: "codebuddy",
+      profileId: normalizedProfile.id,
+      modelId: normalizedProfile.modelId,
+      ...(normalizeText(turnCorrelation) ? { turnCorrelation: normalizeText(turnCorrelation) } : {}),
+      ...extra,
+    };
   }
 
   async function verifyLiveIdentity(signal) {
@@ -99,8 +118,8 @@ function createCodeBuddyRuntimeAdapter({
       client = clientFactory({
         endpoint: started.endpoint,
         servicePassword,
-        cliVersion: distribution.version,
         timeoutMs: positiveInteger(config.codebuddyRequestTimeoutMs, 120_000),
+        logger,
       });
       await client.connect({ signal });
       const initialized = await client.initialize({ signal });
@@ -129,27 +148,89 @@ function createCodeBuddyRuntimeAdapter({
     }
   }
 
-  async function attachSession({ bindingKey, workspaceRoot, metadata, signal }) {
+  async function attachSession({ bindingKey, workspaceRoot, metadata, signal, turnCorrelation }) {
     let sessionId = sessionStore.getThreadIdForScope(bindingKey, workspaceRoot, runtimeScope());
+    const hasPersistedSessionId = Boolean(sessionId);
+    logDiagnostic("runtime.session_attach.started", diagnosticContext(turnCorrelation, {
+      phase: "attach",
+      hasPersistedSessionId,
+    }));
     if (sessionId && !attachedSessions.has(sessionId)) {
+      logDiagnostic("runtime.session_attach.decision", diagnosticContext(turnCorrelation, {
+        phase: "resume",
+        attachDecision: "resume",
+        hasPersistedSessionId,
+        sessionId,
+      }));
       try {
-        await client.resumeSession({ sessionId, workingDirectory: workspaceRoot, signal });
+        await client.resumeSession({
+          sessionId,
+          workingDirectory: workspaceRoot,
+          signal,
+          observability: diagnosticContext(turnCorrelation, {
+            phase: "resume",
+            attachDecision: "resume",
+            hasPersistedSessionId,
+          }),
+        });
         attachedSessions.add(sessionId);
-      } catch {
+        logDiagnostic("runtime.session_attach.succeeded", diagnosticContext(turnCorrelation, {
+          phase: "resume",
+          attachDecision: "resume",
+          hasPersistedSessionId,
+          sessionId,
+        }));
+      } catch (error) {
+        logDiagnostic("runtime.session_attach.failed", diagnosticContext(turnCorrelation, {
+          phase: "resume",
+          attachDecision: "resume",
+          hasPersistedSessionId,
+          sessionId,
+          error: summarizeDiagnosticError(error),
+        }));
         sessionStore.clearThreadIdForScope(bindingKey, workspaceRoot, runtimeScope());
         sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
         sessionId = "";
       }
     }
     if (!sessionId) {
-      const created = await client.newSession({ workingDirectory: workspaceRoot, signal });
-      sessionId = requireText(created.sessionId, "CODEBUDDY_SESSION_FAILED", "CodeBuddy did not create a session.");
-      if (created.modelId && created.modelId !== normalizedProfile.modelId) {
-        throw runtimeError("CODEBUDDY_MODEL_UNAVAILABLE", "CodeBuddy did not select the configured model.");
+      logDiagnostic("runtime.session_attach.decision", diagnosticContext(turnCorrelation, {
+        phase: "new",
+        attachDecision: "new",
+        hasPersistedSessionId,
+      }));
+      try {
+        const created = await client.newSession({
+          workingDirectory: workspaceRoot,
+          signal,
+          observability: diagnosticContext(turnCorrelation, {
+            phase: "new",
+            attachDecision: "new",
+            hasPersistedSessionId,
+          }),
+        });
+        sessionId = requireText(created.sessionId, "CODEBUDDY_SESSION_FAILED", "CodeBuddy did not create a session.");
+        if (created.modelId && created.modelId !== normalizedProfile.modelId) {
+          throw runtimeError("CODEBUDDY_MODEL_UNAVAILABLE", "CodeBuddy did not select the configured model.");
+        }
+        attachedSessions.add(sessionId);
+        sessionStore.setThreadIdForScope(bindingKey, workspaceRoot, runtimeScope(), sessionId, metadata);
+        sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, sessionId, metadata);
+        logDiagnostic("runtime.session_attach.succeeded", diagnosticContext(turnCorrelation, {
+          phase: "new",
+          attachDecision: "new",
+          hasPersistedSessionId,
+          sessionId,
+        }));
+      } catch (error) {
+        logDiagnostic("runtime.session_attach.failed", diagnosticContext(turnCorrelation, {
+          phase: "new",
+          attachDecision: "new",
+          hasPersistedSessionId,
+          error: summarizeDiagnosticError(error),
+        }));
+        throw error;
       }
-      attachedSessions.add(sessionId);
-      sessionStore.setThreadIdForScope(bindingKey, workspaceRoot, runtimeScope(), sessionId, metadata);
-      sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, sessionId, metadata);
     }
     sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, {
       model: normalizedProfile.modelId,
@@ -314,29 +395,55 @@ function createCodeBuddyRuntimeAdapter({
     async sendTextTurn(args) {
       return this.sendTurn(args);
     },
-    async sendTurn({ bindingKey, workspaceRoot, text, attachments = [], metadata = {}, signal } = {}) {
-      await initialize({ signal });
-      const binding = requireText(bindingKey, "INVALID_TURN", "A CodeBuddy binding key is required.");
-      const directory = path.resolve(requireText(workspaceRoot, "INVALID_TURN", "A CodeBuddy workspace is required."));
-      const promptText = requireText(text, "CODEBUDDY_TURN_FAILED", "A CodeBuddy prompt is required.");
-      if (Array.isArray(attachments) && attachments.length) {
-        throw runtimeError("CODEBUDDY_TURN_FAILED", "CodeBuddy attachments are not enabled yet.");
-      }
-      await verifyLiveIdentity(signal);
-      const threadId = await attachSession({ bindingKey: binding, workspaceRoot: directory, metadata, signal });
-      const turnId = requireText(randomUUID(), "CODEBUDDY_TURN_FAILED", "A CodeBuddy turn identifier is unavailable.");
-      const controller = new AbortController();
-      const abortFromParent = () => controller.abort(signal?.reason);
-      if (signal?.aborted) abortFromParent();
-      else signal?.addEventListener?.("abort", abortFromParent, { once: true });
-      emit({ type: "runtime.turn.started", payload: runtimePayload({ threadId, turnId, workspaceRoot: directory }) });
-      const pending = runTurn({ threadId, turnId, workspaceRoot: directory, text: promptText, controller })
-        .finally(() => {
-          signal?.removeEventListener?.("abort", abortFromParent);
-          activeTurns.delete(turnId);
+    async sendTurn({ bindingKey, workspaceRoot, text, attachments = [], metadata = {}, signal, turnCorrelation = "" } = {}) {
+      const correlation = normalizeText(turnCorrelation) || normalizeText(metadata?.turnCorrelation);
+      let stage = "initialize";
+      logDiagnostic("runtime.dispatch.started", diagnosticContext(correlation, { phase: "dispatch" }));
+      try {
+        await initialize({ signal });
+        stage = "validate_input";
+        const binding = requireText(bindingKey, "INVALID_TURN", "A CodeBuddy binding key is required.");
+        const directory = path.resolve(requireText(workspaceRoot, "INVALID_TURN", "A CodeBuddy workspace is required."));
+        const promptText = requireText(text, "CODEBUDDY_TURN_FAILED", "A CodeBuddy prompt is required.");
+        if (Array.isArray(attachments) && attachments.length) {
+          throw runtimeError("CODEBUDDY_TURN_FAILED", "CodeBuddy attachments are not enabled yet.");
+        }
+        stage = "verify_identity";
+        await verifyLiveIdentity(signal);
+        stage = "attach_session";
+        const threadId = await attachSession({
+          bindingKey: binding,
+          workspaceRoot: directory,
+          metadata,
+          signal,
+          turnCorrelation: correlation,
         });
-      activeTurns.set(turnId, { controller, pending, threadId });
-      return { threadId, turnId };
+        stage = "create_turn";
+        const turnId = requireText(randomUUID(), "CODEBUDDY_TURN_FAILED", "A CodeBuddy turn identifier is unavailable.");
+        const controller = new AbortController();
+        const abortFromParent = () => controller.abort(signal?.reason);
+        if (signal?.aborted) abortFromParent();
+        else signal?.addEventListener?.("abort", abortFromParent, { once: true });
+        logDiagnostic("runtime.turn.started", diagnosticContext(correlation, {
+          phase: "runtime_turn_started",
+          threadId,
+          turnId,
+        }));
+        emit({ type: "runtime.turn.started", payload: runtimePayload({ threadId, turnId, workspaceRoot: directory, turnCorrelation: correlation }) });
+        const pending = runTurn({ threadId, turnId, workspaceRoot: directory, text: promptText, controller })
+          .finally(() => {
+            signal?.removeEventListener?.("abort", abortFromParent);
+            activeTurns.delete(turnId);
+          });
+        activeTurns.set(turnId, { controller, pending, threadId });
+        return { threadId, turnId };
+      } catch (error) {
+        logDiagnostic("runtime.dispatch.failed", diagnosticContext(correlation, {
+          phase: stage,
+          error: summarizeDiagnosticError(error),
+        }));
+        throw error;
+      }
     },
     async cancelTurn({ turnId = "" } = {}) {
       const normalizedTurnId = normalizeText(turnId);
@@ -478,6 +585,19 @@ function normalizeRpcId(value) {
 }
 
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
+function summarizeDiagnosticError(error) {
+  const diagnostic = error?.diagnostic && typeof error.diagnostic === "object" ? error.diagnostic : {};
+  const code = diagnostic.upstreamCode ?? (normalizeText(error?.code) || null);
+  const detail = normalizeText(diagnostic.upstreamMessage);
+  return {
+    class: normalizeText(error?.name) || "Error",
+    ...(code == null || code === "" ? {} : { code }),
+    ...(detail ? { detail: sanitizeDiagnosticText(detail) } : {}),
+  };
+}
+function sanitizeDiagnosticText(value) {
+  return normalizeText(value).slice(0, 300).replace(/[A-Za-z0-9_-]{24,}/g, "[REDACTED]");
+}
 function normalizeCapabilityMode(value) {
   return normalizeText(value).toLowerCase() === "developer" ? "developer" : "supervisor";
 }

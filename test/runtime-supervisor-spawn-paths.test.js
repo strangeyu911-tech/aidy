@@ -6,7 +6,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { friendlyProcessError, resolveOwnedSpawnSpec } = require("../src/desktop/runtime-supervisor");
+const {
+  assertElectronNodeRuntimeAvailable,
+  friendlyProcessError,
+  resolveOwnedSpawnSpec,
+} = require("../src/desktop/runtime-supervisor");
 
 test("missing WeChat account becomes an actionable desktop error", () => {
   const result = friendlyProcessError(Object.assign(new Error("raw account error"), {
@@ -16,8 +20,24 @@ test("missing WeChat account becomes an actionable desktop error", () => {
 
   assert.deepEqual(
     { code: result.code, capability: result.capability, summary: result.summary, repairAction: result.repairAction },
-    { code: "WECHAT_LOGIN_REQUIRED", capability: "wechat", summary: "尚未连接微信。", repairAction: "点击“连接微信”并扫码登录" },
+    { code: "WECHAT_LOGIN_REQUIRED", capability: "wechat", summary: "微信登录信息不可用。", repairAction: "点击“连接微信”，重新扫码登录。" },
   );
+});
+
+test("missing packaged Electron ICU data is diagnosed before spawning the bridge", () => {
+  assert.throws(() => assertElectronNodeRuntimeAvailable({
+    executable: "C:\\portable\\CyberBoss.exe",
+    platform: "win32",
+    electronVersion: "43.4.1",
+    existsSync: () => false,
+  }), (error) => error.code === "BRIDGE_RUNTIME_FILES_MISSING" && error.capability === "bridge");
+
+  assert.doesNotThrow(() => assertElectronNodeRuntimeAvailable({
+    executable: "C:\\portable\\CyberBoss.exe",
+    platform: "win32",
+    electronVersion: "43.4.1",
+    existsSync: (filePath) => filePath.endsWith("icudtl.dat"),
+  }));
 });
 
 test("packaged app.asar bridge falls back to Electron Node with a real cwd", () => {

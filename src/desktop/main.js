@@ -40,6 +40,7 @@ const { SupervisionDispatcher } = require("./supervision-dispatcher");
 const { WindowsTaskService } = require("./windows-task-service");
 const { resolveOnboardingStatus, resolveWeixinAccountStatus } = require("./onboarding-state");
 const { prepareElectronWorkingDirectory } = require("./electron-working-directory");
+const { resolveWechatStatus } = require("./connection-diagnostics");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 loadEnvironment(rootDir);
@@ -581,14 +582,6 @@ function writeClaudeVerificationConfig(workspaceRoot, mcpServer) {
     throw Object.assign(new Error("The isolated Claude verification config could not be reopened."), { code: "RUNTIME_CONFIG_WRITE_FAILED" });
   }
   return configPath;
-}
-
-function resolveWechatStatus(runtime, account) {
-  if (["running", "quiet"].includes(runtime.phase)) return { ...account, state: "connected", label: "已连接", detail: "微信回复和监管安排已启用。" };
-  if (runtime.phase === "starting") return { ...account, state: "connecting", label: "正在连接", detail: "正在连接微信和模型服务。" };
-  if (runtime.phase === "error" && account.configured) return { ...account, state: "error", label: "连接异常", detail: "微信连接没有成功，请检查状态并重试。" };
-  if (!account.configured) return account;
-  return { ...account, state: "ready", label: "已登录", detail: "启动 CyberBoss 后会连接微信。" };
 }
 
 function publishSnapshot() {

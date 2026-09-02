@@ -23,7 +23,7 @@ class CodeBuddyClient {
     fetchImpl = globalThis.fetch,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     randomUUID = cryptoRandomUUID,
-    cliVersion = "",
+    logger = null,
   } = {}) {
     this.endpoint = normalizeLoopbackEndpoint(endpoint);
     Object.defineProperty(this, "servicePassword", {
@@ -34,7 +34,7 @@ class CodeBuddyClient {
     this.fetchImpl = fetchImpl;
     this.timeoutMs = positiveInteger(timeoutMs, DEFAULT_TIMEOUT_MS);
     this.randomUUID = randomUUID;
-    this.cliVersion = normalizeText(cliVersion);
+    this.logger = logger;
     this.connectionId = "";
   }
 
@@ -69,11 +69,10 @@ class CodeBuddyClient {
     return fingerprintAccountIdentity(response.result?.userInfo);
   }
 
-  async newSession({ workingDirectory, signal } = {}) {
+  async newSession({ workingDirectory, signal, observability = {} } = {}) {
     const response = await this.rpc("session/new", encodeNewSessionParams({
       workingDirectory,
-      version: this.cliVersion,
-    }), { signal });
+    }), { signal, observability });
     const sessionId = normalizeText(response.result?.sessionId);
     if (!sessionId) throw protocolError("CODEBUDDY_SESSION_FAILED", "CodeBuddy did not create a session.");
     return {
@@ -96,12 +95,11 @@ class CodeBuddyClient {
     };
   }
 
-  async resumeSession({ sessionId, workingDirectory, signal } = {}) {
+  async resumeSession({ sessionId, workingDirectory, signal, observability = {} } = {}) {
     await this.rpc("session/resume", encodeResumeSessionParams({
       sessionId,
       workingDirectory,
-      version: this.cliVersion,
-    }), { signal });
+    }), { signal, observability });
     return { sessionId: requireText(sessionId, "CODEBUDDY_SESSION_FAILED", "CodeBuddy session is required.") };
   }
 
@@ -171,22 +169,50 @@ class CodeBuddyClient {
     };
   }
 
-  async rpc(method, params, { signal, onNotification, onRequest } = {}) {
+  async rpc(method, params, { signal, onNotification, onRequest, observability = {} } = {}) {
     if (!this.connectionId) throw protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy ACP is not connected.");
     const id = requireText(this.randomUUID(), "CODEBUDDY_API_INCOMPATIBLE", "ACP request ID is unavailable.");
-    const messages = await this.requestSse(PUBLIC_ROUTES.acp, {
-      method: "POST",
-      signal,
-      headers: { "acp-connection-id": this.connectionId },
-      body: { jsonrpc: "2.0", id, method, params },
-      onMessage: (message) => {
-        if (!message?.method) return;
-        if (message.id != null && typeof onRequest === "function") onRequest(message);
-        else if (typeof onNotification === "function") onNotification(message);
-      },
-    });
+    const observed = ["session/new", "session/resume"].includes(method);
+    const requestContext = observed ? {
+      ...observability,
+      method,
+      requestId: id,
+      transport: { status: 0 },
+    } : null;
+    if (requestContext) this.logDiagnostic("runtime.acp.request.started", requestContext);
+    let transportStatus = 0;
+    let messages;
+    try {
+      messages = await this.requestSse(PUBLIC_ROUTES.acp, {
+        method: "POST",
+        signal,
+        headers: { "acp-connection-id": this.connectionId },
+        body: { jsonrpc: "2.0", id, method, params },
+        onResponse: (response) => { transportStatus = Number(response?.status) || 0; },
+        onMessage: (message) => {
+          if (!message?.method) return;
+          if (message.id != null && typeof onRequest === "function") onRequest(message);
+          else if (typeof onNotification === "function") onNotification(message);
+        },
+      });
+    } catch (error) {
+      if (requestContext) this.logDiagnostic("runtime.acp.response.error", {
+        ...requestContext,
+        transport: { status: transportStatus },
+        error: summarizeDiagnosticError(error),
+      });
+      throw error;
+    }
     const response = messages.find((message) => String(message.id ?? "") === id);
-    if (!response) throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP response correlation failed.");
+    if (!response) {
+      const error = protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP response correlation failed.");
+      if (requestContext) this.logDiagnostic("runtime.acp.response.error", {
+        ...requestContext,
+        transport: { status: transportStatus },
+        error: summarizeDiagnosticError(error),
+      });
+      throw error;
+    }
     if (response.error) {
       const code = method === "initialize" ? "CODEBUDDY_API_INCOMPATIBLE"
         : method === "_codebuddy.ai/getUserInfo" ? "CODEBUDDY_LOGIN_REQUIRED"
@@ -203,9 +229,31 @@ class CodeBuddyClient {
         }),
         enumerable: false,
       });
+      if (requestContext) this.logDiagnostic("runtime.acp.response.error", {
+        ...requestContext,
+        transport: { status: transportStatus },
+        error: {
+          class: "JsonRpcError",
+          code: response.error.code ?? null,
+          detail: sanitizeDiagnosticText(response.error.message),
+        },
+      });
       throw error;
     }
+    if (requestContext) this.logDiagnostic("runtime.acp.response.succeeded", {
+      ...requestContext,
+      transport: { status: transportStatus },
+      sessionId: normalizeText(response.result?.sessionId) || normalizeText(params?.sessionId),
+    });
     return { result: response.result || {}, notifications: messages.filter((message) => message !== response) };
+  }
+
+  logDiagnostic(event, data) {
+    try {
+      this.logger?.info?.(event, data);
+    } catch {
+      // Diagnostics must never affect protocol behavior.
+    }
   }
 
   async respondPermission({ requestId, outcome, sessionId = "", signal } = {}) {
@@ -278,7 +326,7 @@ class CodeBuddyClient {
   }
 
   async requestSse(route, {
-    method = "POST", body, signal, timeoutMs = this.timeoutMs, headers = {}, onMessage,
+    method = "POST", body, signal, timeoutMs = this.timeoutMs, headers = {}, onMessage, onResponse,
   } = {}) {
     return this.fetchProtected(route, {
       method,
@@ -286,12 +334,13 @@ class CodeBuddyClient {
       signal,
       timeoutMs,
       headers: { Accept: "application/json, text/event-stream", ...headers },
+      onResponse,
       readResponse: (response) => readSseMessages(response, 256 * 1024, onMessage),
     });
   }
 
   async fetchProtected(route, {
-    method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {}, readResponse,
+    method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {}, readResponse, onResponse,
   } = {}) {
     const controller = new AbortController();
     const forwardAbort = () => controller.abort(signal?.reason);
@@ -311,6 +360,7 @@ class CodeBuddyClient {
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
+      onResponse?.(response);
       if (response.status === 401 || response.status === 403) throw protocolError("CODEBUDDY_AUTH_FAILED", "CodeBuddy rejected the managed gateway credentials.");
       if (!response.ok) throw protocolError("CODEBUDDY_CONNECTION_LOST", `CodeBuddy public API returned HTTP ${Number(response.status) || 0}.`);
       return typeof readResponse === "function" ? await readResponse(response) : response;
@@ -431,6 +481,16 @@ function requireRpcId(value) {
   return value;
 }
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
+function summarizeDiagnosticError(error) {
+  const diagnostic = error?.diagnostic && typeof error.diagnostic === "object" ? error.diagnostic : {};
+  const code = diagnostic.upstreamCode ?? (normalizeText(error?.code) || null);
+  const detail = normalizeText(diagnostic.upstreamMessage);
+  return {
+    class: normalizeText(error?.name) || "Error",
+    ...(code == null || code === "" ? {} : { code }),
+    ...(detail ? { detail: sanitizeDiagnosticText(detail) } : {}),
+  };
+}
 function sanitizeDiagnosticText(value) {
   return normalizeText(value).slice(0, 300).replace(/[A-Za-z0-9_-]{24,}/g, "[REDACTED]");
 }

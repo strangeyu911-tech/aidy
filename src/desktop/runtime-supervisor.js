@@ -10,6 +10,7 @@ const { AtomicJsonStore } = require("../core/atomic-json-store");
 const { computeVerificationFingerprint } = require("../core/provider-profile-store");
 const { getRuntimeDefinition } = require("../core/runtime-registry");
 const { BridgeControlClient } = require("./bridge-control-client");
+const { createConnectionDiagnostic } = require("./connection-diagnostics");
 const {
   buildCodexMcpConfigArgs,
   resolveAdditionalMcpServerConfigs,
@@ -318,6 +319,7 @@ class RuntimeSupervisor extends EventEmitter {
     const existing = this.children.get("bridge");
     if (existing && existing.exitCode == null) return;
     const executable = process.execPath;
+    assertElectronNodeRuntimeAvailable({ executable });
     this.bridgeControlToken = crypto.randomBytes(32).toString("base64url");
     this.bridgeControlPort = await reserveLoopbackPort();
     const child = this.spawnOwned("bridge", executable, [path.join(this.rootDir, "bin", "cyberboss.js"), "start"], {
@@ -639,35 +641,25 @@ function normalizeText(value) {
 }
 
 function friendlyProcessError(error) {
-  const code = error?.code || "PROCESS_ERROR";
-  if (code === "WECHAT_LOGIN_REQUIRED") {
-    return {
-      category: "configuration",
-      code,
-      capability: "wechat",
-      summary: "尚未连接微信。",
-      repairAction: "点击“连接微信”并扫码登录",
-      timestamp: new Date().toISOString(),
-    };
-  }
-  if (code === "WECHAT_ACCOUNT_SELECTION_REQUIRED") {
-    return {
-      category: "configuration",
-      code,
-      capability: "wechat",
-      summary: "检测到多个微信账号。",
-      repairAction: "设置默认微信账号后重试",
-      timestamp: new Date().toISOString(),
-    };
-  }
-  return {
-    category: "process",
-    code,
-    capability: error?.capability || "runtime",
-    summary: error?.message || "后台服务启动失败。",
-    repairAction: "重试启动",
-    timestamp: new Date().toISOString(),
-  };
+  return createConnectionDiagnostic(error);
+}
+
+function assertElectronNodeRuntimeAvailable({
+  executable = process.execPath,
+  platform = process.platform,
+  electronVersion = process.versions.electron,
+  existsSync = fs.existsSync,
+} = {}) {
+  if (platform !== "win32" || !electronVersion) return;
+  const icuDataPath = path.join(path.dirname(executable), "icudtl.dat");
+  if (existsSync(icuDataPath)) return;
+  const error = processError(
+    "BRIDGE_RUNTIME_FILES_MISSING",
+    "The packaged Electron runtime is missing icudtl.dat.",
+    "bridge",
+  );
+  error.missingFile = icuDataPath;
+  throw error;
 }
 
 function normalizeProcessRegistry(value) {
@@ -770,6 +762,7 @@ function isAsarPath(value) {
 
 module.exports = {
   RuntimeSupervisor,
+  assertElectronNodeRuntimeAvailable,
   checkReady,
   friendlyProcessError,
   normalizeGraceMs,

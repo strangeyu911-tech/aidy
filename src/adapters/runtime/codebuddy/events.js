@@ -88,6 +88,7 @@ function mapCodeBuddyNotification(notification, context = {}) {
 
 function mapCodeBuddyFailure(error, context = {}) {
   const code = mapFailureCode(error);
+  const diagnostic = sanitizeFailureDiagnostic(error?.diagnostic);
   return {
     type: "runtime.turn.failed",
     payload: {
@@ -96,6 +97,7 @@ function mapCodeBuddyFailure(error, context = {}) {
       turnId: normalizeText(context.turnId),
       code,
       text: failureText(code),
+      ...(diagnostic ? { diagnostic } : {}),
     },
   };
 }
@@ -247,6 +249,20 @@ function sanitizeRecord(value, depth, seen) {
 
 function normalizeRpcId(value) {
   return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+function sanitizeFailureDiagnostic(value) {
+  if (!isRecord(value)) return null;
+  const method = normalizeText(value.method);
+  const upstreamMessage = truncateText(value.upstreamMessage);
+  const upstreamCode = typeof value.upstreamCode === "string" || typeof value.upstreamCode === "number"
+    ? value.upstreamCode
+    : null;
+  if (!method && !upstreamMessage && upstreamCode == null) return null;
+  return {
+    ...(method ? { method } : {}),
+    ...(upstreamCode == null ? {} : { upstreamCode }),
+    ...(upstreamMessage ? { upstreamMessage } : {}),
+  };
 }
 function truncateText(value) { return normalizeText(value).slice(0, MAX_APPROVAL_TEXT); }
 function nonNegativeInteger(value) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0; }
