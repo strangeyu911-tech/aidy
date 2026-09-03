@@ -7,23 +7,27 @@ const TASK_NAME = "\\CyberBoss\\CyberBoss 桌面控制中心";
 const LEGACY_TASK_NAME = "\\CyberBoss\\CyberBoss 自动运行";
 
 class WindowsTaskService {
-  constructor({ rootDir, stateDir, executable, entryScript, logger } = {}) {
+  constructor({ rootDir, stateDir, executable, args, entryScript, workingDirectory, logger } = {}) {
     this.rootDir = path.resolve(rootDir);
     this.stateDir = path.resolve(stateDir);
     this.executable = path.resolve(executable);
-    this.entryScript = path.resolve(entryScript);
+    this.args = Array.isArray(args) ? args.map((value) => String(value)) : (entryScript ? [path.resolve(entryScript)] : []);
+    this.workingDirectory = path.resolve(workingDirectory || path.dirname(this.executable));
     this.logger = logger;
   }
 
   async install({ enabled = true } = {}) {
     if (process.platform !== "win32") return { supported: false };
+    if (!fs.existsSync(this.executable)) {
+      throw Object.assign(new Error(`CyberBoss packaged executable does not exist: ${this.executable}`), { code: "WINDOWS_TASK_RUNTIME_MISSING" });
+    }
     const taskDir = path.join(this.stateDir, "tasks");
     fs.mkdirSync(taskDir, { recursive: true });
     const xmlPath = path.join(taskDir, "cyberboss-desktop-task.xml");
     fs.writeFileSync(xmlPath, `\uFEFF${buildTaskXml({
       executable: this.executable,
-      args: [this.entryScript],
-      workingDirectory: this.rootDir,
+      args: this.args,
+      workingDirectory: this.workingDirectory,
       userId: resolveTaskUserId(),
     })}`, "utf16le");
     await runWindowsCommand("schtasks.exe", ["/Create", "/TN", TASK_NAME, "/XML", xmlPath, "/F"]);

@@ -223,3 +223,128 @@ test("low-level ACP successful session/new records transport status and session 
   assert.equal(succeeded.data.transport.status, 200);
   assert.equal(succeeded.data.sessionId, "session-1");
 });
+
+test("session/prompt records fetch, headers, SSE, terminal, and abort-safe metadata", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-prompt-wire-"));
+  const logger = new ComponentLogger({ logDir: path.join(root, "logs"), component: "bridge" });
+  const responses = [
+    { ok: true, status: 200, async text() { return JSON.stringify({ connectionId: "connection-secret", sessionToken: "credential-token" }); } },
+    {
+      ok: true,
+      status: 200,
+      headers: { get(name) { return name === "content-type" ? "text/event-stream" : ""; } },
+      async text() {
+        return [
+          "data: {\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\"}}}",
+          "",
+          "data: {\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_thought_chunk\"}}}",
+          "",
+          "data: {\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\"}}}",
+          "",
+          "data: {\"jsonrpc\":\"2.0\",\"id\":\"rpc-prompt\",\"result\":{\"stopReason\":\"end_turn\"}}",
+          "",
+        ].join("\n");
+      },
+    },
+  ];
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:45000",
+    servicePassword: "credential-token",
+    logger,
+    randomUUID: () => "rpc-prompt",
+    runtimeInstanceId: "adapter-instance-1",
+    transportGenerationId: "transport-generation-1",
+    fetchImpl: async () => responses.shift(),
+  });
+  await client.connect();
+  await client.prompt({
+    sessionId: "session-secret",
+    text: "private prompt body",
+    observability: { turnCorrelation: "corr-prompt" },
+  });
+
+  const records = readRecords(path.join(root, "logs"));
+  const relevant = records.filter((record) => record.data.turnCorrelation === "corr-prompt");
+  const events = relevant.map((record) => record.event);
+  assert.deepEqual(events, [
+    "runtime.acp.request.prepared",
+    "runtime.acp.request.started",
+    "runtime.acp.fetch.started",
+    "runtime.acp.headers",
+    "runtime.acp.sse.opened",
+    "runtime.acp.sse.first_event",
+    "runtime.acp.sse.closed",
+    "runtime.acp.response.succeeded",
+  ]);
+  const started = relevant.find((record) => record.event === "runtime.acp.request.started");
+  assert.equal(started.data.method, "session/prompt");
+  assert.equal(started.data.requestSequenceId, "rpc-prompt");
+  assert.equal(started.data.runtimeInstanceId, "adapter-instance-1");
+  assert.equal(started.data.transportGenerationId, "transport-generation-1");
+  assert.match(started.data.sessionIdFingerprint, /^sha256:[a-f0-9]{16}$/);
+  assert.match(started.data.connectionIdFingerprint, /^sha256:[a-f0-9]{16}$/);
+  const headers = relevant.find((record) => record.event === "runtime.acp.headers");
+  assert.deepEqual({
+    headersReceived: headers.data.headersReceived,
+    latencyToHeadersMs: typeof headers.data.latencyToHeadersMs,
+    httpStatus: headers.data.httpStatus,
+    contentType: headers.data.contentType,
+  }, { headersReceived: true, latencyToHeadersMs: "number", httpStatus: 200, contentType: "text/event-stream" });
+  const closed = relevant.find((record) => record.event === "runtime.acp.sse.closed");
+  assert.equal(closed.data.firstSseEventReceived, true);
+  assert.equal(closed.data.sseEventCount, 4);
+  assert.deepEqual(closed.data.sseEventTypeCounts, { assistant: 1, thought: 1, other: 1, jsonrpc_result: 1 });
+  assert.equal(closed.data.terminalEventSeen, true);
+  assert.equal(closed.data.terminalSignal, "end_turn");
+  assert.equal(closed.data.jsonRpcResultSeen, true);
+  assert.equal(closed.data.jsonRpcErrorSeen, false);
+  assert.equal(JSON.stringify(records).includes("private prompt body"), false);
+  assert.equal(JSON.stringify(records).includes("credential-token"), false);
+  assert.equal(JSON.stringify(records).includes("session-secret"), false);
+  assert.equal(JSON.stringify(records).includes("connection-secret"), false);
+});
+
+test("session/prompt timeout records the wire stage without changing the timeout error", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-prompt-abort-"));
+  const logger = new ComponentLogger({ logDir: path.join(root, "logs"), component: "bridge" });
+  let call = 0;
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:45000",
+    servicePassword: "credential-token",
+    timeoutMs: 20,
+    logger,
+    randomUUID: () => "rpc-timeout",
+    runtimeInstanceId: "adapter-instance-timeout",
+    transportGenerationId: "transport-generation-timeout",
+    fetchImpl: async (_url, options) => {
+      call += 1;
+      if (call === 1) return { ok: true, status: 200, async text() { return JSON.stringify({ connectionId: "connection-secret", sessionToken: "credential-token" }); } };
+      return {
+        ok: true,
+        status: 200,
+        headers: { get() { return "text/event-stream"; } },
+        text: () => new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        }),
+      };
+    },
+  });
+  await client.connect();
+  await assert.rejects(
+    client.prompt({ sessionId: "session-timeout", text: "private timeout prompt", observability: { turnCorrelation: "corr-timeout" } }),
+    (error) => error.code === "CODEBUDDY_START_TIMEOUT",
+  );
+
+  const records = readRecords(path.join(root, "logs"));
+  const relevant = records.filter((record) => record.data.turnCorrelation === "corr-timeout");
+  const aborted = relevant.find((record) => record.event === "runtime.acp.request.aborted");
+  assert.equal(aborted.data.method, "session/prompt");
+  assert.equal(aborted.data.stage, "awaiting_first_sse");
+  assert.equal(aborted.data.httpStatus, 200);
+  assert.equal(aborted.data.sseEventCount, 0);
+  assert.equal(aborted.data.terminalEventSeen, false);
+  assert.equal(relevant.find((record) => record.event === "runtime.acp.headers").data.headersReceived, true);
+  assert.equal(JSON.stringify(records).includes("private timeout prompt"), false);
+  assert.equal(JSON.stringify(records).includes("session-timeout"), false);
+  assert.equal(JSON.stringify(records).includes("credential-token"), false);
+});

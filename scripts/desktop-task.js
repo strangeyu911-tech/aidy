@@ -8,13 +8,20 @@ const { isPidAlive, readPidFile } = require("./shared-common");
 
 const rootDir = path.resolve(__dirname, "..");
 const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss");
-const electronExecutable = path.join(rootDir, "node_modules", "electron", "dist", "electron.exe");
-const entryScript = path.join(rootDir, "src", "desktop", "main.js");
+const packagedExecutable = path.join(rootDir, "dist", "win-unpacked", "CyberBoss.exe");
 
 async function main() {
   const action = String(process.argv[2] || "status").toLowerCase();
-  if (!fs.existsSync(electronExecutable)) throw new Error("Electron desktop runtime is not installed.");
-  const service = new WindowsTaskService({ rootDir, stateDir, executable: electronExecutable, entryScript });
+  if (["install", "install-disabled", "enable", "migrate"].includes(action) && !fs.existsSync(packagedExecutable)) {
+    throw new Error(`CyberBoss packaged executable does not exist: ${packagedExecutable}`);
+  }
+  const service = new WindowsTaskService({
+    rootDir,
+    stateDir,
+    executable: packagedExecutable,
+    args: [],
+    workingDirectory: path.dirname(packagedExecutable),
+  });
   if (action === "install") console.log(JSON.stringify(await service.install({ enabled: true })));
   else if (action === "install-disabled") console.log(JSON.stringify(await service.install({ enabled: false })));
   else if (action === "enable") console.log(JSON.stringify(await service.setEnabled(true)));

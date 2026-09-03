@@ -30,6 +30,8 @@ function createCodeBuddyRuntimeAdapter({
   const expectedIdentity = normalizeIdentity(normalizedProfile.capabilities.accountIdentityFingerprint);
   const discoveryOnly = config.discoveryOnly === true;
   if (!expectedIdentity && !discoveryOnly) throw runtimeError("CODEBUDDY_LOGIN_REQUIRED", "CodeBuddy profile identity has not been verified.");
+  const runtimeInstanceId = normalizeText(config.runtimeInstanceId) || crypto.randomUUID();
+  const transportGenerationId = crypto.randomUUID();
   const sessionStore = new SessionStore({
     filePath: normalizeText(config.sessionsFile) || path.join(stateDir, "sessions.json"),
     runtimeId: "codebuddy",
@@ -120,6 +122,8 @@ function createCodeBuddyRuntimeAdapter({
         servicePassword,
         timeoutMs: positiveInteger(config.codebuddyRequestTimeoutMs, 120_000),
         logger,
+        runtimeInstanceId,
+        transportGenerationId,
       });
       await client.connect({ signal });
       const initialized = await client.initialize({ signal });
@@ -302,6 +306,7 @@ function createCodeBuddyRuntimeAdapter({
         sessionId: threadId,
         text,
         signal: controller.signal,
+        observability: diagnosticContext(correlation, { phase: "prompt" }),
         onNotification: (message) => {
           const events = forwardNotification(message, { threadId, turnId, workspaceRoot, turnCorrelation: correlation });
           if (events.some((event) => event?.type === "runtime.reply.delta")) {

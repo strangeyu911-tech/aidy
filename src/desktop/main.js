@@ -107,11 +107,13 @@ const zhijiantimeSync = new ZhijiantimeSyncService({
   logger: integrationLogger,
   onStatus: () => publishSnapshot(),
 });
+const desktopExecutable = app.isPackaged ? process.execPath : path.join(rootDir, "dist", "win-unpacked", "CyberBoss.exe");
 const windowsTaskService = new WindowsTaskService({
   rootDir,
   stateDir,
-  executable: process.execPath,
-  entryScript: __filename,
+  executable: desktopExecutable,
+  args: [],
+  workingDirectory: path.dirname(desktopExecutable),
   logger,
 });
 let startupTaskError = null;
