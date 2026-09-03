@@ -1,12 +1,14 @@
+const crypto = require("node:crypto");
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
 const { OutboundMessageBoundary } = require("./outbound-message-boundary");
 
 class StreamDelivery {
-  constructor({ channelAdapter, sessionStore, runtimeId = "", onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
+  constructor({ channelAdapter, sessionStore, runtimeId = "", logger, onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
     this.channelAdapter = channelAdapter;
     this.outboundBoundary = new OutboundMessageBoundary({ channelAdapter });
     this.sessionStore = sessionStore;
     this.runtimeId = normalizeRuntimeId(runtimeId);
+    this.logger = logger;
     this.systemReplyPolicy = createSystemReplyPolicy(this.runtimeId);
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
     this.systemReplyRetryScheduleMs = Array.isArray(systemReplyRetryScheduleMs) && systemReplyRetryScheduleMs.length
@@ -113,11 +115,14 @@ class StreamDelivery {
       case "runtime.turn.started": {
         const state = this.ensureRunState(threadId, turnId);
         state.turnId = turnId || state.turnId;
+        this.captureTurnCorrelation(state, event.payload);
+        state.startedAt = state.startedAt || Date.now();
         this.attachReplyTarget(state);
         return;
       }
       case "runtime.reply.delta": {
         const state = this.ensureRunState(threadId, turnId);
+        this.captureTurnCorrelation(state, event.payload);
         this.upsertItem(state, {
           itemId: normalizeText(event.payload.itemId) || `item-${state.itemOrder.length + 1}`,
           text: normalizeLineEndings(event.payload.text),
@@ -127,6 +132,7 @@ class StreamDelivery {
       }
       case "runtime.reply.completed": {
         const state = this.ensureRunState(threadId, turnId);
+        this.captureTurnCorrelation(state, event.payload);
         this.upsertItem(state, {
           itemId: normalizeText(event.payload.itemId) || `item-${state.itemOrder.length + 1}`,
           text: normalizeLineEndings(event.payload.text),
@@ -138,14 +144,19 @@ class StreamDelivery {
       case "runtime.turn.completed": {
         const state = this.ensureRunState(threadId, turnId);
         state.turnId = turnId || state.turnId;
+        this.captureTurnCorrelation(state, event.payload);
         this.captureTurnCompletionText(state, event.payload.text);
         await this.flush(state, { force: true });
         this.disposeRunState(state.runKey);
         return;
       }
-      case "runtime.turn.failed":
+      case "runtime.turn.failed": {
+        const state = this.ensureRunState(threadId, turnId);
+        this.captureTurnCorrelation(state, event.payload);
+        this.logReplySkipped(state, "runtime_failed", "runtime.turn.failed");
         this.disposeRunState(buildRunKey(threadId, turnId));
         return;
+      }
       default:
         return;
     }
@@ -165,6 +176,8 @@ class StreamDelivery {
       replyTarget: null,
       deferredReplyPrefix: "",
       turnId: normalizeText(turnId),
+      turnCorrelation: "",
+      startedAt: Date.now(),
       itemOrder: [],
       items: new Map(),
       sentItemIds: new Set(),
@@ -283,6 +296,7 @@ class StreamDelivery {
 
   async flushNow(state, { force }) {
     if (!state.replyTarget) {
+      this.logReplySkipped(state, "missing_target", "reply_dispatch");
       return;
     }
 
@@ -293,9 +307,35 @@ class StreamDelivery {
 
     const pendingDeliveries = collectPendingReplyDeliveries(state, { force });
     if (!pendingDeliveries.length) {
+      this.logReplySkipped(state, state.itemOrder.length ? "empty_after_filter" : "empty_reply", "reply_dispatch");
       return;
     }
 
+    const usableDeliveries = pendingDeliveries.filter((delivery) => delivery?.kind === "plain" || delivery?.kind === "action");
+    if (usableDeliveries.length) {
+      const replyText = usableDeliveries.map(buildDeliveryPreviewText).join("\n\n");
+      this.logDiagnostic("reply.prepared", {
+        ...this.stateDiagnosticContext(state),
+        replyPresent: true,
+        charLength: replyText.length,
+        byteLength: Buffer.byteLength(replyText, "utf8"),
+        channel: normalizeText(state.replyTarget.provider) || "unknown",
+        targetFingerprint: fingerprintIdentifier(state.replyTarget.userId),
+        messageCount: usableDeliveries.length,
+      });
+    }
+    for (const delivery of pendingDeliveries.filter((item) => item?.kind === "silent" || item?.kind === "invalid_action")) {
+      this.logReplySkipped(state, delivery.kind === "silent" ? "silent" : normalizeSuppressionReason(delivery.reason), "reply_filter");
+    }
+
+    if (usableDeliveries.length) {
+      this.logDiagnostic("sender.enqueued", {
+        ...this.stateDiagnosticContext(state),
+        channel: normalizeText(state.replyTarget.provider) || "unknown",
+        targetFingerprint: fingerprintIdentifier(state.replyTarget.userId),
+        messageCount: usableDeliveries.length,
+      });
+    }
     state.sendChain = state.sendChain.then(async () => {
       for (let index = 0; index < pendingDeliveries.length; index += 1) {
         const delivery = pendingDeliveries[index];
@@ -326,18 +366,30 @@ class StreamDelivery {
     const resolved = resolveSystemReplyDelivery(replyText, this.systemReplyPolicy);
     if (resolved.kind === "silent") {
       this.markAllItemsSent(state);
-      console.log(
-        `[cyberboss] suppressed system reply thread=${state.threadId} action=silent preview=${JSON.stringify(replyText.slice(0, 120))}`
-      );
+      this.logReplySkipped(state, "silent", "system_reply");
       return;
     }
 
     if (resolved.kind !== "send_message") {
-      console.error(
-        `[cyberboss] invalid system reply thread=${state.threadId} reason=${resolved.reason} preview=${JSON.stringify(replyText.slice(0, 160))}`
-      );
+      this.logReplySkipped(state, normalizeSuppressionReason(resolved.reason), "system_reply");
       return;
     }
+
+    this.logDiagnostic("reply.prepared", {
+      ...this.stateDiagnosticContext(state),
+      replyPresent: true,
+      charLength: resolved.message.length,
+      byteLength: Buffer.byteLength(resolved.message, "utf8"),
+      channel: normalizeText(state.replyTarget.provider) || "unknown",
+      targetFingerprint: fingerprintIdentifier(state.replyTarget.userId),
+      messageCount: 1,
+    });
+    this.logDiagnostic("sender.enqueued", {
+      ...this.stateDiagnosticContext(state),
+      channel: normalizeText(state.replyTarget.provider) || "unknown",
+      targetFingerprint: fingerprintIdentifier(state.replyTarget.userId),
+      messageCount: 1,
+    });
 
     state.sendChain = state.sendChain.then(async () => {
       await this.sendSystemReply(state, resolved.message);
@@ -378,7 +430,7 @@ class StreamDelivery {
     if (prependDeferredPrefix) {
       payload.preserveBlock = true;
     }
-    await this.sendTextWithRetry(state, payload, { kind: "plain_reply" });
+    await this.sendTextWithRetry(state, payload, { kind: "plain_reply", deliveryKey: `${state.runKey}:${delivery.itemId}` });
   }
 
   async sendSystemReply(state, text) {
@@ -388,13 +440,46 @@ class StreamDelivery {
       text,
       contextToken: initialTarget.contextToken,
     };
-    await this.sendTextWithRetry(state, payload, { kind: "system_reply" });
+    await this.sendTextWithRetry(state, payload, { kind: "system_reply", deliveryKey: `${state.runKey}:system` });
   }
 
-  async sendTextWithRetry(state, payload, { kind }) {
+  async sendTextWithRetry(state, payload, { kind, deliveryKey = "" }) {
     const initialTarget = state.replyTarget;
+    let attempt = 0;
+    const send = async (target, retry = false) => {
+      attempt += 1;
+      const startedAt = Date.now();
+      const base = {
+        ...this.stateDiagnosticContext(state),
+        channel: normalizeText(target.provider) || "unknown",
+        targetFingerprint: fingerprintIdentifier(target.userId),
+        attempt,
+        retry,
+        dedupeKeyFingerprint: fingerprintIdentifier(deliveryKey || state.runKey),
+      };
+      this.logDiagnostic("sender.started", base);
+      try {
+        const result = await this.outboundBoundary.send(toFinalAssistantEnvelope({ ...payload, userId: target.userId, contextToken: target.contextToken }, kind));
+        this.logDiagnostic("sender.succeeded", {
+          ...base,
+          latencyMs: Date.now() - startedAt,
+          apiStatus: summarizeProviderResult(result),
+          ...(providerMessageFingerprint(result) ? { providerMessageIdFingerprint: providerMessageFingerprint(result) } : {}),
+        });
+        return result;
+      } catch (error) {
+        this.logDiagnostic("sender.failed", {
+          ...base,
+          latencyMs: Date.now() - startedAt,
+          failureClass: normalizeText(error?.name) || "Error",
+          failureCode: normalizeText(error?.code) || normalizeNumericCode(error?.ret) || normalizeNumericCode(error?.errcode) || "SEND_FAILED",
+          apiStatus: summarizeProviderResult(error),
+        });
+        throw error;
+      }
+    };
     try {
-      await this.outboundBoundary.send(toFinalAssistantEnvelope(payload, kind));
+      await send(initialTarget);
       return;
     } catch (error) {
       const retryTarget = this.resolveRetriableReplyTarget(initialTarget, error);
@@ -417,7 +502,7 @@ class StreamDelivery {
         if (payload.preserveBlock) {
           retryPayload.preserveBlock = true;
         }
-        await this.outboundBoundary.send(toFinalAssistantEnvelope(retryPayload, kind));
+        await send(retryTarget, true);
         state.replyTarget = retryTarget;
         if (state.bindingKey) {
           this.replyTargetByBindingKey.set(state.bindingKey, {
@@ -434,6 +519,33 @@ class StreamDelivery {
         throw retryError;
       }
     }
+  }
+
+  captureTurnCorrelation(state, payload) {
+    const correlation = normalizeText(payload?.turnCorrelation);
+    if (correlation) state.turnCorrelation = correlation;
+  }
+
+  stateDiagnosticContext(state) {
+    return {
+      turnCorrelation: normalizeText(state?.turnCorrelation),
+      runtimeId: this.runtimeId,
+      sessionIdFingerprint: fingerprintIdentifier(state?.threadId),
+      turnIdFingerprint: fingerprintIdentifier(state?.turnId),
+    };
+  }
+
+  logReplySkipped(state, reason, stage) {
+    this.logDiagnostic("reply.skipped", {
+      ...this.stateDiagnosticContext(state),
+      replyPresent: false,
+      reason: normalizeSuppressionReason(reason),
+      stage: normalizeText(stage) || "reply_dispatch",
+    });
+  }
+
+  logDiagnostic(event, data) {
+    try { this.logger?.info?.(event, data); } catch { /* diagnostics must not affect delivery */ }
   }
 
   async deferSystemReply(state, text, error, kind = "plain_reply") {
@@ -701,6 +813,59 @@ function indentBlock(text) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function fingerprintIdentifier(value) {
+  const normalized = normalizeText(value);
+  return normalized
+    ? `sha256:${crypto.createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 16)}`
+    : "";
+}
+
+function normalizeSuppressionReason(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) return "unspecified";
+  if (normalized.includes("empty")) return "empty_reply";
+  if (normalized.includes("silent")) return "silent";
+  if (normalized.includes("unsupported")) return "unsupported_action";
+  if (normalized.includes("unsafe")) return "policy_filter";
+  if (normalized.includes("missing") && normalized.includes("target")) return "missing_target";
+  if (normalized === "runtime_failed") return "runtime_failed";
+  if (normalized === "empty_after_filter") return "empty_after_filter";
+  return "other";
+}
+
+function normalizeNumericCode(value) {
+  if (value === undefined || value === null || value === "") return "";
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : String(value).slice(0, 80);
+}
+
+function summarizeProviderResult(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const ret = normalizeNumericCode(source.ret);
+  const errcode = normalizeNumericCode(source.errcode);
+  const rpcCode = errcode !== "" ? errcode : ret;
+  return {
+    rpcCode: rpcCode === "" ? null : rpcCode,
+    rpcSuccess: rpcCode === "" ? null : Number(rpcCode) === 0,
+  };
+}
+
+function providerMessageFingerprint(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const candidates = [
+    source.msg_id,
+    source.message_id,
+    source.messageId,
+    source.id,
+    source.msg?.msg_id,
+    source.message?.id,
+  ];
+  const identifier = candidates.find((candidate) => typeof candidate === "string" || typeof candidate === "number");
+  return identifier === undefined || identifier === null || String(identifier).trim() === ""
+    ? ""
+    : fingerprintIdentifier(String(identifier));
 }
 
 function normalizeReplyTarget(target) {

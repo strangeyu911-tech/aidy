@@ -92,11 +92,11 @@ function createWeixinChannelAdapter(config) {
           clientId: `cb-${crypto.randomUUID()}`,
         });
       })
-      .then(() => {
+      .then((result) => {
         if (index < sendChunks.length - 1) {
-          return sleep(SEND_MESSAGE_CHUNK_INTERVAL_MS);
+          return sleep(SEND_MESSAGE_CHUNK_INTERVAL_MS).then(() => null);
         }
-        return null;
+        return result;
       }), Promise.resolve());
   }
 
@@ -183,7 +183,7 @@ function createWeixinChannelAdapter(config) {
       return inboundFilter.normalize(message, config, account.accountId);
     },
     async sendText({ userId, text, contextToken = "", preserveBlock = false }) {
-      await sendTextChunks({ userId, text, contextToken, preserveBlock });
+      return sendTextChunks({ userId, text, contextToken, preserveBlock });
     },
     async sendTyping({ userId, status = 1, contextToken = "" }) {
       const account = ensureAccount();

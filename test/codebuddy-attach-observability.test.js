@@ -81,6 +81,7 @@ test("new attach persists a correlation trace through runtime.turn.started", asy
     "runtime.session_attach.decision",
     "runtime.session_attach.succeeded",
     "runtime.turn.started",
+    "runtime.turn.completed",
   ]);
   assert.equal(relevant.find((record) => record.event === "runtime.session_attach.decision").data.attachDecision, "new");
   assert.equal(relevant.find((record) => record.event === "runtime.session_attach.succeeded").data.sessionId, "session-1");

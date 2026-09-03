@@ -239,15 +239,15 @@ function createCodeBuddyRuntimeAdapter({
     return sessionId;
   }
 
-  function forwardNotification(message, { threadId, turnId, workspaceRoot }) {
-    return forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
+  function forwardNotification(message, { threadId, turnId, workspaceRoot, turnCorrelation }) {
+    return forwardMappedEvents(message, { threadId, turnId, workspaceRoot, turnCorrelation });
   }
 
-  function forwardProtocolRequest(message, { threadId, turnId, workspaceRoot }) {
-    return forwardMappedEvents(message, { threadId, turnId, workspaceRoot });
+  function forwardProtocolRequest(message, { threadId, turnId, workspaceRoot, turnCorrelation }) {
+    return forwardMappedEvents(message, { threadId, turnId, workspaceRoot, turnCorrelation });
   }
 
-  function forwardMappedEvents(message, { threadId, turnId, workspaceRoot }) {
+  function forwardMappedEvents(message, { threadId, turnId, workspaceRoot, turnCorrelation }) {
     const events = mapCodeBuddyNotification(message, { threadId, turnId, workspaceRoot });
     for (const event of events) {
       if (event?.type === "runtime.approval.requested" && capabilityMode !== "developer") {
@@ -280,7 +280,7 @@ function createCodeBuddyRuntimeAdapter({
       }
       emit({
         ...event,
-        payload: runtimePayload({ ...event.payload, workspaceRoot }),
+        payload: runtimePayload({ ...event.payload, workspaceRoot, turnCorrelation }),
       }, message);
       if (event?.type === "runtime.approval.denied" && event.payload.response?.outcome) {
         Promise.resolve(client?.respondPermission?.({
@@ -293,7 +293,9 @@ function createCodeBuddyRuntimeAdapter({
     return events;
   }
 
-  async function runTurn({ threadId, turnId, workspaceRoot, text, controller }) {
+  async function runTurn({ threadId, turnId, workspaceRoot, text, controller, turnCorrelation = "" }) {
+    const startedAt = Date.now();
+    const correlation = normalizeText(turnCorrelation);
     try {
       let streamedReply = false;
       const reply = await client.prompt({
@@ -301,23 +303,32 @@ function createCodeBuddyRuntimeAdapter({
         text,
         signal: controller.signal,
         onNotification: (message) => {
-          const events = forwardNotification(message, { threadId, turnId, workspaceRoot });
+          const events = forwardNotification(message, { threadId, turnId, workspaceRoot, turnCorrelation: correlation });
           if (events.some((event) => event?.type === "runtime.reply.delta")) {
             streamedReply = true;
           }
         },
-        onRequest: (message) => forwardProtocolRequest(message, { threadId, turnId, workspaceRoot }),
+        onRequest: (message) => forwardProtocolRequest(message, { threadId, turnId, workspaceRoot, turnCorrelation: correlation }),
       });
       const normalizedUsage = hasUsageFields(reply.usage) ? normalizeCodeBuddyUsage(reply.usage) : {};
       const completionPayload = {
         threadId,
         turnId,
         workspaceRoot,
+        turnCorrelation: correlation,
         text: reply.text,
         ...(normalizedUsage.usage ? { usage: normalizedUsage.usage } : {}),
         ...(normalizedUsage.vendorUsage ? { vendorUsage: normalizedUsage.vendorUsage } : {}),
       };
       if (reply.stopReason === "cancelled") {
+        logDiagnostic("runtime.turn.failed", diagnosticContext(correlation, {
+          phase: "runtime_turn",
+          sessionIdFingerprint: fingerprintIdentifier(threadId),
+          latencyMs: Date.now() - startedAt,
+          failureStage: "runtime.turn",
+          errorClass: "CancelledError",
+          errorCode: "CANCELLED",
+        }));
         emit({
           type: "runtime.turn.failed",
           payload: runtimePayload({ ...completionPayload, code: "CANCELLED", text: "The CodeBuddy turn was cancelled." }),
@@ -330,13 +341,32 @@ function createCodeBuddyRuntimeAdapter({
           payload: runtimePayload(completionPayload),
         });
       }
+      const replyText = typeof reply.text === "string" ? reply.text : "";
+      logDiagnostic("runtime.turn.completed", diagnosticContext(correlation, {
+        phase: "runtime_turn_completed",
+        sessionIdFingerprint: fingerprintIdentifier(threadId),
+        latencyMs: Date.now() - startedAt,
+        stopReason: normalizeStopReason(reply.stopReason),
+        assistantReplyPresent: Boolean(replyText.trim()),
+        replyCharLength: replyText.length,
+        replyByteLength: Buffer.byteLength(replyText, "utf8"),
+        replyEmpty: !replyText.trim(),
+      }));
       emit({
         type: "runtime.turn.completed",
         payload: runtimePayload(completionPayload),
       });
     } catch (error) {
       const cancelled = controller.signal.aborted;
-      const failure = mapCodeBuddyFailure(cancelled ? { code: "CANCELLED" } : error, { threadId, turnId });
+      const failure = mapCodeBuddyFailure(cancelled ? { code: "CANCELLED" } : error, { threadId, turnId, turnCorrelation: correlation });
+      logDiagnostic("runtime.turn.failed", diagnosticContext(correlation, {
+        phase: "runtime_turn",
+        sessionIdFingerprint: fingerprintIdentifier(threadId),
+        latencyMs: Date.now() - startedAt,
+        failureStage: "runtime.turn",
+        errorClass: cancelled ? "CancelledError" : normalizeText(error?.name) || "Error",
+        errorCode: cancelled ? "CANCELLED" : normalizeText(error?.code) || normalizeText(failure.payload?.code) || "CODEBUDDY_TURN_FAILED",
+      }));
       emit({
         ...failure,
         payload: runtimePayload({ ...failure.payload, workspaceRoot,
@@ -430,7 +460,7 @@ function createCodeBuddyRuntimeAdapter({
           turnId,
         }));
         emit({ type: "runtime.turn.started", payload: runtimePayload({ threadId, turnId, workspaceRoot: directory, turnCorrelation: correlation }) });
-        const pending = runTurn({ threadId, turnId, workspaceRoot: directory, text: promptText, controller })
+        const pending = runTurn({ threadId, turnId, workspaceRoot: directory, text: promptText, controller, turnCorrelation: correlation })
           .finally(() => {
             signal?.removeEventListener?.("abort", abortFromParent);
             activeTurns.delete(turnId);
@@ -585,6 +615,18 @@ function normalizeRpcId(value) {
 }
 
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
+function normalizeStopReason(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  return new Set(["end_turn", "cancelled", "max_tokens", "tool_use", "stop"]).has(normalized)
+    ? normalized
+    : normalized ? "other" : "unspecified";
+}
+function fingerprintIdentifier(value) {
+  const normalized = normalizeText(value);
+  return normalized
+    ? `sha256:${crypto.createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 16)}`
+    : "";
+}
 function summarizeDiagnosticError(error) {
   const diagnostic = error?.diagnostic && typeof error.diagnostic === "object" ? error.diagnostic : {};
   const code = diagnostic.upstreamCode ?? (normalizeText(error?.code) || null);

@@ -95,6 +95,7 @@ function mapCodeBuddyFailure(error, context = {}) {
       runtimeId: "codebuddy",
       threadId: normalizeText(context.threadId),
       turnId: normalizeText(context.turnId),
+      ...(normalizeText(context.turnCorrelation) ? { turnCorrelation: normalizeText(context.turnCorrelation) } : {}),
       code,
       text: failureText(code),
       ...(diagnostic ? { diagnostic } : {}),

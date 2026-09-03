@@ -104,7 +104,10 @@ async function sendMessage({ baseUrl, token, body, timeoutMs }) {
   const errcode = parsed?.errcode;
   if ((ret !== undefined && ret !== 0) || (errcode !== undefined && errcode !== 0)) {
     const errmsg = typeof parsed?.errmsg === "string" ? parsed.errmsg.trim() : "";
-    throw new Error(`sendMessage ret=${ret ?? ""} errcode=${errcode ?? ""} errmsg=${redactSensitiveText(errmsg)}`);
+    throw Object.assign(
+      new Error(`sendMessage ret=${ret ?? ""} errcode=${errcode ?? ""} errmsg=${redactSensitiveText(errmsg)}`),
+      { code: "WEIXIN_SEND_FAILED", ret: ret ?? null, errcode: errcode ?? null },
+    );
   }
   return parsed;
 }

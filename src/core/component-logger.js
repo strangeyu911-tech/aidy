@@ -3,7 +3,7 @@ const path = require("path");
 
 const LEVELS = Object.freeze({ DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 });
 const COMPONENTS = new Set(["desktop", "bridge", "runtime", "integrations", "reports"]);
-const SENSITIVE_KEY = /(token|secret|password|authorization|cookie|message|body|diary|command|args|api[-_]?key|ciphertext|wechat.*id|sender.*id)/i;
+const SENSITIVE_KEY = /(token|secret|password|authorization|credential|cookie|message|body|diary|command|args|api[-_]?key|ciphertext|wechat.*id|sender.*id)/i;
 const HEADER_CONTAINER_KEY = /headers$/i;
 
 class ComponentLogger {

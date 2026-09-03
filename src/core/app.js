@@ -169,6 +169,7 @@ class CyberbossApp {
       channelAdapter: this.channelAdapter,
       sessionStore: adapter.getSessionStore(),
       runtimeId: adapter.describe().id,
+      logger: this.logger,
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
     });
     adapter.onEvent((event) => {
