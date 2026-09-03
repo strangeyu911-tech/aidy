@@ -35,14 +35,18 @@ const { DesktopStateStore } = require("./desktop-state-store");
 const { extractExplicitCheckpoint } = require("./explicit-checkpoint");
 const { inferContextualCheckpoint } = require("./contextual-checkpoint");
 const { SupervisionPlanStore } = require("./supervision-plan-store");
-const { resolveSupervisionKey, sourcePriority } = require("./supervision-policy");
+const {
+  isStaleTimeSensitiveSystemMessage,
+  resolveSupervisionKey,
+  sourcePriority,
+} = require("./supervision-policy");
 const { ProviderProfileStore } = require("./provider-profile-store");
 const { BridgeControlServer } = require("./bridge-control-server");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
 const { DeferredSystemReplyStore } = require("./deferred-system-reply-store");
-const { SystemMessageQueueStore } = require("./system-message-queue-store");
+const { coalesceSystemMessages, SystemMessageQueueStore } = require("./system-message-queue-store");
 const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
 const { TurnGateStore } = require("./turn-gate-store");
@@ -721,9 +725,12 @@ class CyberbossApp {
       const sendTurn = typeof this.runtimeAdapter.sendTurn === "function"
         ? this.runtimeAdapter.sendTurn.bind(this.runtimeAdapter)
         : this.runtimeAdapter.sendTextTurn.bind(this.runtimeAdapter);
+      const runtimeBindingKey = prepared.provider === "system"
+        ? buildSystemRuntimeBindingKey(bindingKey)
+        : bindingKey;
       if (activeRecord) activeRecord.stage = "runtime_send";
       const turn = await sendTurn({
-        bindingKey,
+        bindingKey: runtimeBindingKey,
         workspaceRoot,
         text: runtimeTurn.text,
         attachments: runtimeTurn.attachments,
@@ -754,14 +761,16 @@ class CyberbossApp {
           kind: "vision",
         });
       }
-      this.runtimeContextStore?.setActiveContext?.({
-        workspaceRoot,
-        runtimeId: this.runtimeAdapter.describe().id,
-        threadId: turn.threadId,
-        bindingKey,
-        accountId: prepared.accountId,
-        senderId: prepared.senderId,
-      });
+      if (prepared.provider !== "system") {
+        this.runtimeContextStore?.setActiveContext?.({
+          workspaceRoot,
+          runtimeId: this.runtimeAdapter.describe().id,
+          threadId: turn.threadId,
+          bindingKey,
+          accountId: prepared.accountId,
+          senderId: prepared.senderId,
+        });
+      }
       this.turnGateStore.attachThread(pendingScopeKey, turn.threadId);
       const replyTarget = {
         userId: prepared.senderId,
@@ -778,7 +787,11 @@ class CyberbossApp {
         this.streamDelivery.queueReplyTargetForThread(turn.threadId, replyTarget);
       }
       if (prepared.provider === "system" && prepared.systemMessage?.id) {
-        this.systemMessageByRunKey.set(buildRunKey(turn.threadId, turn.turnId), { ...prepared.systemMessage });
+        this.systemMessageByRunKey.set(buildRunKey(turn.threadId, turn.turnId), {
+          ...prepared.systemMessage,
+          __bindingKey: bindingKey,
+          __workspaceRoot: workspaceRoot,
+        });
       } else {
         this.beginProactiveBurst?.(bindingKey, workspaceRoot);
       }
@@ -1239,8 +1252,12 @@ class CyberbossApp {
     if (this.proactiveProviderCooldownUntil > Date.now()) {
       return;
     }
-    const pendingMessages = (this.systemMessageDispatcher?.drainPending() || [])
-      .slice()
+    const pendingMessages = coalesceSystemMessages(this.systemMessageDispatcher?.drainPending() || [])
+      .filter((message) => {
+        if (!isStaleTimeSensitiveSystemMessage(message)) return true;
+        this.logSystemMessageEvent?.("expired", message);
+        return false;
+      })
       .sort(compareProactiveMessages);
     for (const message of pendingMessages) {
       if (skipCheckin && isCheckinSystemMessage(message)) {
@@ -1885,7 +1902,11 @@ class CyberbossApp {
         earlySystemRecord.turnId = normalizeText(event.payload.turnId);
         this.systemMessageByRunKey.set(
           buildRunKey(event.payload.threadId, event.payload.turnId),
-          { ...earlySystemRecord.systemMessage },
+          {
+            ...earlySystemRecord.systemMessage,
+            __bindingKey: earlySystemRecord.bindingKey,
+            __workspaceRoot: earlySystemRecord.workspaceRoot,
+          },
         );
       }
     }
@@ -1911,8 +1932,10 @@ class CyberbossApp {
       const sessionStore = this.runtimeAdapter.getSessionStore();
       sessionStore.clearApprovalPrompt(event.payload.threadId);
       const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(event.payload.threadId);
-      const scopeKey = linked?.bindingKey && linked?.workspaceRoot
-        ? buildScopeKey(linked.bindingKey, linked.workspaceRoot)
+      const completionBindingKey = normalizeText(systemMessage?.__bindingKey) || linked?.bindingKey;
+      const completionWorkspaceRoot = normalizeText(systemMessage?.__workspaceRoot) || linked?.workspaceRoot;
+      const scopeKey = completionBindingKey && completionWorkspaceRoot
+        ? buildScopeKey(completionBindingKey, completionWorkspaceRoot)
         : "";
       if (scopeKey) {
         this.turnBoundaryScopeKeys.add(scopeKey);
@@ -1925,10 +1948,10 @@ class CyberbossApp {
           this.recordProactiveProviderSuccess();
           this.logSystemMessageEvent?.("delivered", systemMessage);
         }
-        if (linked?.bindingKey && linked?.workspaceRoot) {
+        if (completionBindingKey && completionWorkspaceRoot) {
           await this.flushPendingInboundMessages({
-            bindingKey: linked.bindingKey,
-            workspaceRoot: linked.workspaceRoot,
+            bindingKey: completionBindingKey,
+            workspaceRoot: completionWorkspaceRoot,
             ignoreBoundary: true,
           });
         } else {
@@ -1942,10 +1965,10 @@ class CyberbossApp {
             contextToken: pendingOperation.contextToken,
           }).catch(() => {});
         }
-        const shouldKeepTyping = linked?.bindingKey && linked?.workspaceRoot
+        const shouldKeepTyping = completionBindingKey && completionWorkspaceRoot
           ? (
-            this.turnGateStore.isPending(linked.bindingKey, linked.workspaceRoot)
-            || this.hasPendingInboundMessage(linked.bindingKey, linked.workspaceRoot)
+            this.turnGateStore.isPending(completionBindingKey, completionWorkspaceRoot)
+            || this.hasPendingInboundMessage(completionBindingKey, completionWorkspaceRoot)
           )
           : false;
         if (!shouldKeepTyping) {
@@ -2754,6 +2777,11 @@ function buildScopeKey(bindingKey, workspaceRoot) {
     return "";
   }
   return `${normalizedBindingKey}::${normalizedWorkspaceRoot}`;
+}
+
+function buildSystemRuntimeBindingKey(bindingKey) {
+  const normalized = normalizeText(bindingKey);
+  return normalized ? `${normalized}::system` : normalized;
 }
 
 function compareProactiveMessages(left, right) {

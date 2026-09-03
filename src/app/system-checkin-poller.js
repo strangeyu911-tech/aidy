@@ -5,7 +5,7 @@ const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
-const { buildDailySupervisionKey } = require("../core/supervision-policy");
+const { buildDailySupervisionKey, isWithinQuietHours } = require("../core/supervision-policy");
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATE = "%USER% comes to mind again.";
 
@@ -28,6 +28,10 @@ async function runSystemCheckinPoller(config) {
     console.log(`[cyberboss] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt}`);
     await sleep(delayMs);
 
+    if (isWithinQuietHours(new Date())) {
+      console.log("[cyberboss] checkin skipped: quiet hours");
+      continue;
+    }
     if (queue.hasPendingForAccount(account.accountId)) {
       console.log("[cyberboss] checkin skipped: pending system message still in queue");
       continue;

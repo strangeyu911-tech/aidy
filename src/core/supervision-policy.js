@@ -1,4 +1,13 @@
-function resolveDueCheckpointAction({ desiredState, checkpoint }) {
+const DEFAULT_TIME_ZONE = "Asia/Shanghai";
+const QUIET_HOURS_START = 0;
+const QUIET_HOURS_END = 6;
+
+function resolveDueCheckpointAction({
+  desiredState,
+  checkpoint,
+  now = new Date(),
+  timeZone = checkpoint?.timezone || DEFAULT_TIME_ZONE,
+}) {
   if (!checkpoint || checkpoint.state !== "pending") {
     return { action: "ignore", outcome: "not_pending" };
   }
@@ -10,7 +19,70 @@ function resolveDueCheckpointAction({ desiredState, checkpoint }) {
       ? { action: "discard", outcome: "suppressed_quiet" }
       : { action: "archive", outcome: "suppressed_quiet" };
   }
+  if (isTimeSensitiveCheckpoint(checkpoint)) {
+    if (isStaleTimeSensitiveCheckpoint(checkpoint, now, timeZone)) {
+      return checkpoint.source === "random"
+        ? { action: "discard", outcome: "stale_quiet_hours" }
+        : { action: "archive", outcome: "stale_quiet_hours" };
+    }
+    if (isWithinQuietHours(now, timeZone)) {
+      return checkpoint.source === "random"
+        ? { action: "discard", outcome: "suppressed_quiet_hours" }
+        : { action: "archive", outcome: "suppressed_quiet_hours" };
+    }
+  }
   return { action: "dispatch", outcome: "queued" };
+}
+
+function isWithinQuietHours(value, timeZone = DEFAULT_TIME_ZONE) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return false;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
+  return Number.isInteger(hour) && hour >= QUIET_HOURS_START && hour < QUIET_HOURS_END;
+}
+
+function isTimeSensitiveCheckpoint(checkpoint) {
+  const source = normalizeText(checkpoint?.source).toLowerCase();
+  if (source === "random") return true;
+  return source === "zhijiantime"
+    && normalizeText(checkpoint?.canonicalTaskId).startsWith("zhijiantime:daily-planning:");
+}
+
+function isStaleTimeSensitiveCheckpoint(checkpoint, now = new Date(), timeZone = DEFAULT_TIME_ZONE) {
+  if (!isTimeSensitiveCheckpoint(checkpoint)) return false;
+  const dueAtMs = Date.parse(normalizeText(checkpoint?.dueAt));
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  return Number.isFinite(dueAtMs)
+    && Number.isFinite(nowMs)
+    && dueAtMs < nowMs
+    && isWithinQuietHours(new Date(dueAtMs), timeZone);
+}
+
+function isStaleTimeSensitiveSystemMessage(message, now = new Date(), timeZone = DEFAULT_TIME_ZONE) {
+  const source = normalizeText(message?.source).toLowerCase();
+  const id = normalizeText(message?.id).toLowerCase();
+  const supervisionKey = normalizeText(message?.supervisionKey).toLowerCase();
+  const isLegacyDailyPlanning = supervisionKey.startsWith("daily_plan:")
+    && (source === "random"
+      || source === "zhijiantime"
+      || id.startsWith("checkin:")
+      || id.startsWith("supervision:random:")
+      || id.startsWith("supervision:zhijiantime-planning:"));
+  if (message?.taskType !== "supervision" || (!isLegacyDailyPlanning && source !== "random")) {
+    return false;
+  }
+  return isStaleTimeSensitiveCheckpoint({
+    source: source || (isLegacyDailyPlanning ? "random" : ""),
+    canonicalTaskId: source === "zhijiantime"
+      ? `zhijiantime:daily-planning:${supervisionKey.slice("daily_plan:".length)}`
+      : "random:current",
+    dueAt: message?.dueAt,
+  }, now, timeZone);
 }
 
 function sourcePriority(source) {
@@ -73,9 +145,16 @@ function normalizeText(value) {
 }
 
 module.exports = {
+  DEFAULT_TIME_ZONE,
+  QUIET_HOURS_START,
+  QUIET_HOURS_END,
   resolveDueCheckpointAction,
   shouldSupersede,
   sourcePriority,
   resolveSupervisionKey,
   buildDailySupervisionKey,
+  isWithinQuietHours,
+  isTimeSensitiveCheckpoint,
+  isStaleTimeSensitiveCheckpoint,
+  isStaleTimeSensitiveSystemMessage,
 };

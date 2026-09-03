@@ -4,7 +4,12 @@ const { resolveSelectedAccount } = require("../adapters/channel/weixin/account-s
 const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
-const { resolveDueCheckpointAction, resolveSupervisionKey, sourcePriority } = require("../core/supervision-policy");
+const {
+  isWithinQuietHours,
+  resolveDueCheckpointAction,
+  resolveSupervisionKey,
+  sourcePriority,
+} = require("../core/supervision-policy");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
 
 class SupervisionDispatcher {
@@ -41,9 +46,15 @@ class SupervisionDispatcher {
     if (this.dispatching) return;
     this.dispatching = true;
     try {
-      const desiredState = this.desktopStateStore.get().desiredState;
+      const settings = this.desktopStateStore.get();
+      const desiredState = settings.desiredState;
       for (const checkpoint of this.planStore.due(now)) {
-        const decision = resolveDueCheckpointAction({ desiredState, checkpoint });
+        const decision = resolveDueCheckpointAction({
+          desiredState,
+          checkpoint,
+          now,
+          timeZone: checkpoint.timezone,
+        });
         if (decision.action === "hold") continue;
         if (decision.action === "discard" || decision.action === "archive") {
           this.planStore.update(checkpoint.id, { state: "skipped", outcome: decision.outcome });
@@ -104,6 +115,7 @@ class SupervisionDispatcher {
   ensureRandomCheckpoint(now = new Date()) {
     const settings = this.desktopStateStore.get();
     if (!settings.randomCheckinsEnabled || settings.desiredState === "stopped") return null;
+    if (settings.desiredState === "quiet" || isWithinQuietHours(now)) return null;
     const existing = this.planStore.list({ state: "pending" }).find((item) => item.source === "random");
     if (existing) return existing;
     const range = this.checkinConfig.getRange(resolveDefaultCheckinRange());

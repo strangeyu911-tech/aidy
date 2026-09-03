@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const { isStaleTimeSensitiveSystemMessage } = require("./supervision-policy");
+
 class SystemMessageQueueStore {
   constructor({ filePath, resolveSupervisionKey = null } = {}) {
     this.filePath = filePath;
@@ -21,7 +23,8 @@ class SystemMessageQueueStore {
       const messages = Array.isArray(parsed?.messages) ? parsed.messages : [];
       const normalizedMessages = messages
         .map((message) => normalizeSystemMessage(message, this.resolveSupervisionKey))
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter((message) => !isStaleTimeSensitiveSystemMessage(message));
       const coalescedMessages = coalesceSystemMessages(normalizedMessages);
       this.state = {
         messages: coalescedMessages.sort(compareSystemMessages),

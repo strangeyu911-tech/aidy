@@ -7,7 +7,13 @@ const path = require("path");
 const { inferContextualCheckpoint } = require("../src/core/contextual-checkpoint");
 const { extractExplicitCheckpoint } = require("../src/core/explicit-checkpoint");
 const { SupervisionPlanStore } = require("../src/core/supervision-plan-store");
-const { resolveDueCheckpointAction, shouldSupersede } = require("../src/core/supervision-policy");
+const {
+  isStaleTimeSensitiveCheckpoint,
+  isWithinQuietHours,
+  resolveDueCheckpointAction,
+  shouldSupersede,
+} = require("../src/core/supervision-policy");
+const { SupervisionDispatcher } = require("../src/desktop/supervision-dispatcher");
 
 function makeStore() {
   return new SupervisionPlanStore({
@@ -31,6 +37,93 @@ test("stopped checkpoints are held without replay policy changes", () => {
     desiredState: "stopped",
     checkpoint: { state: "pending", source: "conversation" },
   }), { action: "hold", outcome: "service_stopped" });
+});
+
+test("time-sensitive planning is suppressed at night and is stale after quiet hours", () => {
+  const dueAt = "2026-09-02T19:30:00.000Z"; // 2026-09-03 03:30 Asia/Shanghai
+  const checkpoint = {
+    state: "pending",
+    source: "zhijiantime",
+    canonicalTaskId: "zhijiantime:daily-planning:2026-09-03",
+    dueAt,
+    timezone: "Asia/Shanghai",
+  };
+
+  assert.equal(isWithinQuietHours(new Date("2026-09-02T19:30:00.000Z")), true);
+  assert.deepEqual(resolveDueCheckpointAction({
+    desiredState: "running",
+    checkpoint,
+    now: new Date("2026-09-02T19:30:00.000Z"),
+  }), { action: "archive", outcome: "suppressed_quiet_hours" });
+  assert.equal(isStaleTimeSensitiveCheckpoint(checkpoint, new Date("2026-09-03T03:00:00.000Z")), true);
+  assert.deepEqual(resolveDueCheckpointAction({
+    desiredState: "running",
+    checkpoint,
+    now: new Date("2026-09-03T03:00:00.000Z"),
+  }), { action: "archive", outcome: "stale_quiet_hours" });
+});
+
+test("scheduler does not create or replay quiet-hours supervision backlog", async () => {
+  const checkpoints = [
+    {
+      id: "planning-night",
+      state: "pending",
+      source: "zhijiantime",
+      canonicalTaskId: "zhijiantime:daily-planning:2026-09-03",
+      dueAt: "2026-09-02T19:30:00.000Z",
+      timezone: "Asia/Shanghai",
+    },
+    {
+      id: "random-night",
+      state: "pending",
+      source: "random",
+      canonicalTaskId: "random:current",
+      dueAt: "2026-09-02T19:30:00.000Z",
+      timezone: "Asia/Shanghai",
+    },
+  ];
+  const updates = [];
+  const added = [];
+  const planStore = {
+    due(now) {
+      return checkpoints.filter((item) => item.state === "pending" && Date.parse(item.dueAt) <= now.getTime());
+    },
+    list({ state } = {}) {
+      return checkpoints.concat(added).filter((item) => !state || item.state === state);
+    },
+    update(id, patch) {
+      const item = checkpoints.find((candidate) => candidate.id === id);
+      if (item) Object.assign(item, patch);
+      updates.push({ id, ...patch });
+      return item;
+    },
+    add(item) {
+      const addedItem = { id: item.id || "new", state: "pending", ...item };
+      added.push(addedItem);
+      return addedItem;
+    },
+  };
+  const stateStore = { get: () => ({ desiredState: "running", randomCheckinsEnabled: true }) };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-supervision-dispatcher-"));
+  const dispatcher = new SupervisionDispatcher({
+    config: {
+      systemMessageQueueFile: path.join(dir, "queue.json"),
+      checkinConfigFile: path.join(dir, "checkin.json"),
+    },
+    desktopStateStore: stateStore,
+    planStore,
+  });
+
+  await dispatcher.tick(new Date("2026-09-02T19:30:00.000Z"));
+  await dispatcher.tick(new Date("2026-09-03T03:00:00.000Z")); // 11:00 local
+
+  assert.deepEqual(updates.map(({ id, state, outcome }) => ({ id, state, outcome })), [
+    { id: "planning-night", state: "skipped", outcome: "suppressed_quiet_hours" },
+    { id: "random-night", state: "skipped", outcome: "suppressed_quiet_hours" },
+  ]);
+  assert.equal(dispatcher.queue.state.messages.length, 0);
+  assert.equal(added.length, 1);
+  assert.ok(Date.parse(added[0].dueAt) > Date.parse("2026-09-03T03:00:00.000Z"));
 });
 
 test("context inference schedules meal and shower follow-ups and announces them", () => {

@@ -108,6 +108,24 @@ test("persisted outbox restart coalesces five overdue copies before dispatch", (
   assert.equal(queue.drainForAccount("account-1", Date.parse("2026-08-29T10:00:00.000Z")).length, 1);
 });
 
+test("persisted quiet-hours planning backlog is discarded on restart", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-proactive-quiet-recovery-"));
+  const filePath = path.join(dir, "queue.json");
+  fs.writeFileSync(filePath, JSON.stringify({
+    messages: [message({
+      id: "supervision:quiet-planning",
+      source: "zhijiantime",
+      supervisionKey: "daily_plan:2026-08-29",
+      createdAt: "2026-08-28T19:35:00.000Z",
+      dueAt: "2026-08-28T19:30:00.000Z",
+    })],
+  }), "utf8");
+
+  const queue = new SystemMessageQueueStore({ filePath });
+  assert.deepEqual(queue.state.messages, []);
+  assert.deepEqual(JSON.parse(fs.readFileSync(filePath, "utf8")).messages, []);
+});
+
 test("legacy supervision task ids can be migrated through the existing canonical task identity", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-proactive-legacy-"));
   const filePath = path.join(dir, "queue.json");
@@ -160,6 +178,28 @@ test("a normal user turn leaves only one proactive message in the burst", async 
   assert.deepEqual(requeued.map((item) => item.id), ["supervision:random"]);
   assert.equal(requeued[0].lastErrorCode, "BURST_PROTECTION");
   assert.ok(Date.parse(requeued[0].nextAttemptAt) > Date.now());
+});
+
+test("one runtime flush sees only the newest message for one business key", async () => {
+  const messages = [
+    "2026-08-29T05:00:00.000Z",
+    "2026-08-29T05:30:00.000Z",
+    "2026-08-29T06:30:00.000Z",
+    "2026-08-29T07:00:00.000Z",
+  ].map((timestamp, index) => message({
+    id: `supervision:planning-${index}`,
+    source: "zhijiantime",
+    supervisionKey: "daily_plan:2026-08-29",
+    text: `planning reminder ${index}`,
+    createdAt: timestamp,
+    dueAt: timestamp,
+  }));
+  const { app, requeued, dispatched } = createBurstApp(messages);
+
+  await CyberbossApp.prototype.flushPendingSystemMessages.call(app);
+
+  assert.deepEqual(dispatched.map((item) => item.id), ["supervision:planning-3"]);
+  assert.deepEqual(requeued, []);
 });
 
 test("without a user turn, burst protection allows three and retains the fourth", async () => {

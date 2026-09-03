@@ -219,9 +219,11 @@ test("handlePreparedMessage queues while the scope is in a turn-boundary handoff
 test("dispatchPreparedTurn binds reply target to the explicit turn id when runtime returns one", async () => {
   const turnBindings = [];
   const queuedBindings = [];
+  const runtimeBindingKeys = [];
   const order = [];
   const appLike = {
     activeTurnRecords: new Map(),
+    systemMessageByRunKey: new Map(),
     channelAdapter: {
       async sendTyping() {
         order.push("typing");
@@ -240,7 +242,8 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
       describe() {
         return { id: "codex" };
       },
-      async sendTextTurn() {
+      async sendTextTurn(args) {
+        runtimeBindingKeys.push(args.bindingKey);
         return { threadId: "thread-1", turnId: "turn-1" };
       },
       getSessionStore() {
@@ -283,6 +286,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
       contextToken: "ctx-1",
       provider: "system",
       text: "ping",
+      systemMessage: { id: "supervision:one" },
     },
   });
 
@@ -297,6 +301,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
     },
   }]);
   assert.deepEqual(queuedBindings, []);
+  assert.deepEqual(runtimeBindingKeys, ["binding-1::system"]);
   assert.deepEqual(order, ["begin", "typing"]);
 });
 
