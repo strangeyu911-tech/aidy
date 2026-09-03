@@ -25,6 +25,7 @@
     "desktop:shortcut": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-desktop-shortcut.ps1",
     "desktop:sync-start-menu": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/sync-start-menu-shortcut.ps1",
     "desktop:build-host": "node ./scripts/build-process-host.js",
+    "verify:acceptance-skill": "node ./scripts/verify-cyberboss-acceptance-skill.js",
     "test:desktop": "node --test ./test/desktop-state-store.test.js ./test/component-logger.test.js ./test/supervision-plan.test.js ./test/report-scheduler.test.js ./test/backup-service.test.js ./test/zhijiantime-sync.test.js ./test/windows-task-service.test.js ./test/windows-process-host.test.js",
     "start": "node ./bin/cyberboss.js start",
     "start:checkin": "node ./bin/cyberboss.js start --checkin",
