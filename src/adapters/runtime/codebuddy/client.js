@@ -26,6 +26,7 @@ class CodeBuddyClient {
     logger = null,
     runtimeInstanceId = "",
     transportGenerationId = "",
+    onLifecycle = null,
   } = {}) {
     this.endpoint = normalizeLoopbackEndpoint(endpoint);
     Object.defineProperty(this, "servicePassword", {
@@ -39,8 +40,10 @@ class CodeBuddyClient {
     this.logger = logger;
     this.runtimeInstanceId = normalizeText(runtimeInstanceId) || cryptoRandomUUID();
     this.transportGenerationId = normalizeText(transportGenerationId) || cryptoRandomUUID();
+    this.onLifecycle = typeof onLifecycle === "function" ? onLifecycle : null;
     this.connectionId = "";
     this.requestSequence = 0;
+    this.hasConnected = false;
   }
 
   async probeCompatibility({ signal } = {}) {
@@ -49,8 +52,11 @@ class CodeBuddyClient {
   }
 
   async connect({ signal } = {}) {
+    if (this.hasConnected && !this.connectionId) this.transportGenerationId = cryptoRandomUUID();
     const connected = decodeConnect(await this.requestJson(PUBLIC_ROUTES.acpConnect, { method: "POST", signal }));
     this.connectionId = connected.connectionId;
+    this.hasConnected = true;
+    this.notifyLifecycle({ type: "connected", generationId: this.transportGenerationId, connectionId: this.connectionId });
     return { connectionId: this.connectionId };
   }
 
@@ -305,11 +311,15 @@ class CodeBuddyClient {
     const connectionId = this.connectionId;
     this.connectionId = "";
     if (!connectionId) return;
-    await this.requestJson(PUBLIC_ROUTES.acp, {
-      method: "DELETE",
-      signal,
-      headers: { "acp-connection-id": connectionId },
-    });
+    try {
+      await this.requestJson(PUBLIC_ROUTES.acp, {
+        method: "DELETE",
+        signal,
+        headers: { "acp-connection-id": connectionId },
+      });
+    } finally {
+      this.notifyLifecycle({ type: "disconnected", generationId: this.transportGenerationId });
+    }
   }
 
   async requestJson(route, { method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {} } = {}) {
@@ -339,11 +349,16 @@ class CodeBuddyClient {
       }
       return await readBoundedJson(response);
     } catch (error) {
-      if (error?.code) throw error;
+      if (error?.code) {
+        if (error.code === "CODEBUDDY_CONNECTION_LOST") this.markDisconnected("connection_lost", error);
+        throw error;
+      }
       if (controller.signal.aborted) {
         throw protocolError("CODEBUDDY_START_TIMEOUT", "CodeBuddy public API did not become ready in time.");
       }
-      throw protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy public API is unavailable.");
+      const mapped = protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy public API is unavailable.");
+      this.markDisconnected("connection_lost", mapped);
+      throw mapped;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener?.("abort", forwardAbort);
@@ -434,13 +449,33 @@ class CodeBuddyClient {
           });
         }
       }
-      if (error?.code) throw error;
+      if (error?.code) {
+        if (error.code === "CODEBUDDY_CONNECTION_LOST") this.markDisconnected("connection_lost", error);
+        throw error;
+      }
       if (controller.signal.aborted) throw protocolError("CODEBUDDY_START_TIMEOUT", "CodeBuddy public API did not respond in time.");
-      throw protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy public API is unavailable.");
+      const mapped = protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy public API is unavailable.");
+      this.markDisconnected("connection_lost", mapped);
+      throw mapped;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener?.("abort", forwardAbort);
     }
+  }
+
+  markDisconnected(reason = "disconnected", error = null) {
+    const hadConnection = Boolean(this.connectionId);
+    this.connectionId = "";
+    if (!hadConnection) return;
+    this.notifyLifecycle({
+      type: reason,
+      generationId: this.transportGenerationId,
+      ...(error?.code ? { code: error.code } : {}),
+    });
+  }
+
+  notifyLifecycle(event) {
+    try { this.onLifecycle?.(event); } catch {}
   }
 }
 

@@ -21,6 +21,7 @@ class CodeBuddyProcessHost {
     healthProbe = defaultHealthProbe,
     randomUUID = crypto.randomUUID,
     startTimeoutMs = DEFAULT_START_TIMEOUT_MS,
+    onLifecycle = null,
   } = {}) {
     this.stateDir = path.resolve(requireText(stateDir, "CODEBUDDY_START_TIMEOUT", "CodeBuddy state directory is required."));
     this.fs = fsImpl;
@@ -30,6 +31,7 @@ class CodeBuddyProcessHost {
     this.healthProbe = healthProbe;
     this.randomUUID = randomUUID;
     this.startTimeoutMs = positiveInteger(startTimeoutMs, DEFAULT_START_TIMEOUT_MS);
+    this.onLifecycle = typeof onLifecycle === "function" ? onLifecycle : null;
     this.child = null;
     this.overlayDir = "";
     this.closing = false;
@@ -77,12 +79,16 @@ class CodeBuddyProcessHost {
       child.stdout?.on?.("data", collectStartupOutput);
       child.stderr?.on?.("data", collectStartupOutput);
       const earlyExit = new Promise((_, reject) => {
-        child.once("error", () => reject(hostError(
-          "CODEBUDDY_START_TIMEOUT",
-          "Managed CodeBuddy failed before readiness.",
-          redactDiagnostic(startupTail, [password, overlayDir, cwd, selected.command]),
-        )));
+        child.once("error", (error) => {
+          this.notifyLifecycle({ type: "process_error", error });
+          reject(hostError(
+            "CODEBUDDY_START_TIMEOUT",
+            "Managed CodeBuddy failed before readiness.",
+            redactDiagnostic(startupTail, [password, overlayDir, cwd, selected.command]),
+          ));
+        });
         child.once("exit", (code) => {
+          this.notifyLifecycle({ type: "process_exit", code: Number(code) || 0 });
           if (!this.closing) reject(hostError(
             "CODEBUDDY_START_TIMEOUT",
             `Managed CodeBuddy exited before readiness (${Number(code) || 0}).`,
@@ -116,6 +122,10 @@ class CodeBuddyProcessHost {
       try { await this.fs.promises.rm(overlayDir, { recursive: true, force: true }); } catch {}
     }
     this.closing = false;
+  }
+
+  notifyLifecycle(event) {
+    try { this.onLifecycle?.(event); } catch {}
   }
 }
 

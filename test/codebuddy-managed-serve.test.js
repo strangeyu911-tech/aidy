@@ -157,6 +157,31 @@ test("managed serve passes the selected model id to CodeBuddy", async () => {
   await host.stop();
 });
 
+test("managed serve reports child process lifecycle failures after readiness", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-host-lifecycle-"));
+  const child = new FakeChild();
+  const lifecycle = [];
+  const host = new CodeBuddyProcessHost({
+    stateDir,
+    reservePort: async () => 44127,
+    protectDirectory: async () => {},
+    spawnImpl: () => child,
+    onLifecycle: (event) => lifecycle.push(event),
+    healthProbe: async () => ({ ok: true, status: "ok" }),
+  });
+
+  await host.start({
+    distribution: distribution(),
+    workspaceRoot: stateDir,
+    servicePassword: "temporary-secret",
+  });
+  child.exitCode = 23;
+  child.emit("exit", 23, null);
+
+  assert.deepEqual(lifecycle, [{ type: "process_exit", code: 23 }]);
+  await host.stop();
+});
+
 test("health compatibility probe accepts documented envelope and rejects malformed health", async () => {
   const calls = [];
   const client = new CodeBuddyClient({

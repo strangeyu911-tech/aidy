@@ -31,7 +31,7 @@ function createCodeBuddyRuntimeAdapter({
   const discoveryOnly = config.discoveryOnly === true;
   if (!expectedIdentity && !discoveryOnly) throw runtimeError("CODEBUDDY_LOGIN_REQUIRED", "CodeBuddy profile identity has not been verified.");
   const runtimeInstanceId = normalizeText(config.runtimeInstanceId) || crypto.randomUUID();
-  const transportGenerationId = crypto.randomUUID();
+  let transportGenerationId = crypto.randomUUID();
   const sessionStore = new SessionStore({
     filePath: normalizeText(config.sessionsFile) || path.join(stateDir, "sessions.json"),
     runtimeId: "codebuddy",
@@ -39,7 +39,9 @@ function createCodeBuddyRuntimeAdapter({
   const emitter = new EventEmitter();
   const randomUUID = typeof config.randomUUID === "function" ? config.randomUUID : crypto.randomUUID;
   const activeTurns = new Map();
-  const attachedSessions = new Set();
+  // A persisted session remains durable, but an in-process attachment is only
+  // valid for the transport generation that established it.
+  const attachedSessions = new Map();
   const pendingApprovals = new Map();
   const logger = config.logger;
   const capabilityMode = normalizeCapabilityMode(config.codebuddyCapabilityMode);
@@ -55,6 +57,29 @@ function createCodeBuddyRuntimeAdapter({
   let closed = false;
   let liveIdentity = "";
   let agentCapabilities = {};
+
+  function invalidateAttachments({ reason = "lifecycle", generationId = "" } = {}) {
+    const nextGenerationId = normalizeText(generationId);
+    const generationChanged = Boolean(nextGenerationId && nextGenerationId !== transportGenerationId);
+    const previousGenerationId = transportGenerationId;
+    if (generationChanged) transportGenerationId = nextGenerationId;
+    attachedSessions.clear();
+    logDiagnostic("runtime.transport.lifecycle", diagnosticContext("", {
+      phase: "transport_lifecycle",
+      lifecycle: reason,
+      previousTransportGenerationId: previousGenerationId,
+      transportGenerationId,
+      generationChanged,
+      attachedSessionCount: 0,
+    }));
+  }
+
+  function handleLifecycle(event = {}) {
+    const lifecycle = normalizeText(event?.type || event?.lifecycle).toLowerCase();
+    const generationId = normalizeText(event?.generationId);
+    if (lifecycle === "connected" && generationId && generationId === transportGenerationId) return;
+    invalidateAttachments({ reason: lifecycle || "transport_lifecycle", generationId });
+  }
 
   function runtimeScope() {
     return {
@@ -106,7 +131,7 @@ function createCodeBuddyRuntimeAdapter({
       distribution = await locateDistribution({
         explicitExecutablePath: normalizeText(normalizedProfile.options.executablePath),
       });
-      host = processHostFactory({ stateDir });
+      host = processHostFactory({ stateDir, onLifecycle: handleLifecycle });
       const started = await host.start({
         distribution,
         workspaceRoot: defaultWorkspaceRoot,
@@ -124,6 +149,7 @@ function createCodeBuddyRuntimeAdapter({
         logger,
         runtimeInstanceId,
         transportGenerationId,
+        onLifecycle: handleLifecycle,
       });
       await client.connect({ signal });
       const initialized = await client.initialize({ signal });
@@ -159,7 +185,7 @@ function createCodeBuddyRuntimeAdapter({
       phase: "attach",
       hasPersistedSessionId,
     }));
-    if (sessionId && !attachedSessions.has(sessionId)) {
+    if (sessionId && attachedSessions.get(sessionId) !== transportGenerationId) {
       logDiagnostic("runtime.session_attach.decision", diagnosticContext(turnCorrelation, {
         phase: "resume",
         attachDecision: "resume",
@@ -177,7 +203,7 @@ function createCodeBuddyRuntimeAdapter({
             hasPersistedSessionId,
           }),
         });
-        attachedSessions.add(sessionId);
+        attachedSessions.set(sessionId, transportGenerationId);
         logDiagnostic("runtime.session_attach.succeeded", diagnosticContext(turnCorrelation, {
           phase: "resume",
           attachDecision: "resume",
@@ -217,7 +243,7 @@ function createCodeBuddyRuntimeAdapter({
         if (created.modelId && created.modelId !== normalizedProfile.modelId) {
           throw runtimeError("CODEBUDDY_MODEL_UNAVAILABLE", "CodeBuddy did not select the configured model.");
         }
-        attachedSessions.add(sessionId);
+        attachedSessions.set(sessionId, transportGenerationId);
         sessionStore.setThreadIdForScope(bindingKey, workspaceRoot, runtimeScope(), sessionId, metadata);
         sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, sessionId, metadata);
         logDiagnostic("runtime.session_attach.succeeded", diagnosticContext(turnCorrelation, {
@@ -520,7 +546,7 @@ function createCodeBuddyRuntimeAdapter({
         workingDirectory: path.resolve(normalizeText(workspaceRoot) || defaultWorkspaceRoot),
         signal,
       });
-      attachedSessions.add(normalizedThreadId);
+      attachedSessions.set(normalizedThreadId, transportGenerationId);
       return { threadId: normalizedThreadId };
     },
     async compactThread({ threadId, workspaceRoot, signal } = {}) {
@@ -565,7 +591,7 @@ function createCodeBuddyRuntimeAdapter({
       ready = null;
       agentCapabilities = {};
       pendingApprovals.clear();
-      attachedSessions.clear();
+      invalidateAttachments({ reason: "adapter_close" });
     },
   };
 
