@@ -230,6 +230,48 @@ test("ACP timeout remains active while the SSE response body is streaming", asyn
   await assert.rejects(client.initialize(), (error) => error.code === "CODEBUDDY_START_TIMEOUT");
 });
 
+test("a transport loss aborts another in-flight prompt without waiting for its timeout", async () => {
+  const encoder = new TextEncoder();
+  let call = 0;
+  let promptStartedResolve;
+  const promptStarted = new Promise((resolve) => { promptStartedResolve = resolve; });
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:44130",
+    servicePassword: "gateway-secret",
+    timeoutMs: 1_000,
+    randomUUID: (() => { let value = 0; return () => `rpc-${++value}`; })(),
+    fetchImpl: async (_url, options) => {
+      call += 1;
+      if (call === 1) return jsonResponse({ connectionId: "c", sessionToken: "t" });
+      if (call === 2) {
+        promptStartedResolve();
+        let read = 0;
+        return {
+          ok: true,
+          status: 200,
+          body: { getReader: () => ({
+            async read() {
+              if (read++ === 0) {
+                return { done: false, value: encoder.encode("data: {\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\"}}}\n\n") };
+              }
+              return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("prompt aborted")), { once: true }));
+            },
+            async cancel() {},
+            releaseLock() {},
+          }) },
+        };
+      }
+      return { ok: false, status: 503, async text() { return ""; } };
+    },
+  });
+  await client.connect();
+  const prompt = client.prompt({ sessionId: "s", text: "hello" });
+  await promptStarted;
+  await assert.rejects(client.getIdentityFingerprint(), (error) => error.code === "CODEBUDDY_CONNECTION_LOST");
+  await assert.rejects(prompt, (error) => error.code === "CODEBUDDY_CONNECTION_LOST");
+  assert.equal(client.isConnected(), false);
+});
+
 test("ACP notifications are delivered incrementally across chunk boundaries before the correlated response", async () => {
   const encoder = new TextEncoder();
   const first = JSON.stringify({

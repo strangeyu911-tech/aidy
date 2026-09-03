@@ -44,6 +44,7 @@ class CodeBuddyClient {
     this.connectionId = "";
     this.requestSequence = 0;
     this.hasConnected = false;
+    this.activeRequests = new Set();
   }
 
   async probeCompatibility({ signal } = {}) {
@@ -357,6 +358,7 @@ class CodeBuddyClient {
 
   async requestJson(route, { method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {} } = {}) {
     const controller = new AbortController();
+    this.activeRequests.add(controller);
     const forwardAbort = () => controller.abort(signal?.reason);
     if (signal?.aborted) forwardAbort();
     else signal?.addEventListener?.("abort", forwardAbort, { once: true });
@@ -382,6 +384,9 @@ class CodeBuddyClient {
       }
       return await readBoundedJson(response);
     } catch (error) {
+      if (controller.signal.reason?.code === "CODEBUDDY_CONNECTION_LOST") {
+        throw controller.signal.reason;
+      }
       if (error?.code) {
         if (error.code === "CODEBUDDY_CONNECTION_LOST") this.markDisconnected("connection_lost", error);
         throw error;
@@ -394,6 +399,7 @@ class CodeBuddyClient {
       throw mapped;
     } finally {
       clearTimeout(timer);
+      this.activeRequests.delete(controller);
       signal?.removeEventListener?.("abort", forwardAbort);
     }
   }
@@ -417,6 +423,7 @@ class CodeBuddyClient {
     method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {}, readResponse, onResponse, trace,
   } = {}) {
     const controller = new AbortController();
+    this.activeRequests.add(controller);
     let timeoutTriggered = false;
     const timeoutBudgetMs = positiveInteger(timeoutMs, this.timeoutMs);
     const forwardAbort = () => {
@@ -484,7 +491,11 @@ class CodeBuddyClient {
         }
         if (aborted) {
           trace.stage = abortStage(trace);
-          trace.abortSource = trace.abortSource || (timeoutTriggered ? "client_timeout" : "caller_signal");
+          trace.abortSource = trace.abortSource || (
+            controller.signal.reason?.code === "CODEBUDDY_CONNECTION_LOST"
+              ? "transport_lifecycle"
+              : timeoutTriggered ? "client_timeout" : "caller_signal"
+          );
           this.logTrace(trace, "runtime.acp.request.aborted", {
             stage: trace.stage,
             elapsedMs: monotonicMs() - trace.startedAt,
@@ -501,6 +512,9 @@ class CodeBuddyClient {
             lastEventMatchesRequest: trace.lastEventMatchesRequest,
           });
         }
+      }
+      if (controller.signal.reason?.code === "CODEBUDDY_CONNECTION_LOST") {
+        throw controller.signal.reason;
       }
       if (timeoutTriggered) {
         const timeoutError = protocolError("CODEBUDDY_START_TIMEOUT", "CodeBuddy public API did not respond in time.");
@@ -521,6 +535,7 @@ class CodeBuddyClient {
       throw mapped;
     } finally {
       clearTimeout(timer);
+      this.activeRequests.delete(controller);
       signal?.removeEventListener?.("abort", forwardAbort);
     }
   }
@@ -529,10 +544,16 @@ class CodeBuddyClient {
     const hadConnection = Boolean(this.connectionId);
     this.connectionId = "";
     if (!hadConnection) return;
+    const disconnectError = error?.code
+      ? error
+      : protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy ACP transport was disconnected.");
+    for (const controller of this.activeRequests) {
+      try { controller.abort(disconnectError); } catch {}
+    }
     this.notifyLifecycle({
       type: reason,
       generationId: this.transportGenerationId,
-      ...(error?.code ? { code: error.code } : {}),
+      ...(disconnectError.code ? { code: disconnectError.code } : {}),
     });
   }
 
