@@ -94,6 +94,28 @@ test("disconnect and generation change invalidate only the in-memory attachment"
   await resumed.adapter.close();
 });
 
+test("a live turn reconnects the ACP transport after an out-of-band connection loss", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-lifecycle-reconnect-"));
+  let connected = true;
+  const { adapter, calls, getLifecycle } = createHarness({
+    root,
+    clientOverrides: {
+      isConnected() { return connected; },
+      async connect() { connected = true; calls.push("connect"); },
+    },
+  });
+  await sendAndWait(adapter, calls, "first");
+  connected = false;
+  getLifecycle()({ type: "connection_lost", generationId: "generation-1" });
+  await adapter.sendTurn({ bindingKey: "binding", workspaceRoot: "D:\\CyberBoss", text: "after reconnect" });
+  await waitFor(() => calls.filter((call) => call === "prompt").length >= 2);
+
+  assert.equal(calls.filter((call) => call === "connect").length, 2);
+  assert.equal(calls.filter((call) => call === "initialize").length, 2);
+  assert.equal(calls.filter((call) => Array.isArray(call) && call[0] === "resume").length, 1);
+  await adapter.close();
+});
+
 test("prompt timeout does not invalidate a healthy attachment or delete persistence", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-lifecycle-timeout-"));
   const { adapter, calls } = createHarness({
@@ -112,6 +134,42 @@ test("prompt timeout does not invalidate a healthy attachment or delete persiste
   assert.equal(calls.filter((call) => call === "new").length, 1);
   assert.equal(calls.filter((call) => Array.isArray(call) && call[0] === "resume").length, 0);
   assert.equal(adapter.getSessionStore().getThreadIdForWorkspace("binding", "D:\\CyberBoss"), "session-1");
+  await adapter.close();
+});
+
+test("a nonterminal overall turn timeout resets only the ordinary persisted session", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-lifecycle-recovery-"));
+  let failOrdinary = false;
+  const { adapter, calls } = createHarness({
+    root,
+    clientOverrides: {
+      async prompt() {
+        calls.push("prompt");
+        if (!failOrdinary) return { text: "system reply", stopReason: "end_turn" };
+        throw Object.assign(new Error("stream ended without a correlated terminal"), {
+          code: "CODEBUDDY_START_TIMEOUT",
+          diagnostic: {
+            method: "session/prompt",
+            timeoutKind: "overall_turn",
+            stage: "streaming_nonterminal",
+            sseEventCount: 4,
+            terminalEventSeen: false,
+            lastEventType: "assistant",
+          },
+        });
+      },
+    },
+  });
+  const events = [];
+  adapter.onEvent((event) => events.push(event));
+
+  await adapter.sendTurn({ bindingKey: "binding::system", workspaceRoot: "D:\\CyberBoss", text: "system" });
+  await waitFor(() => events.some((event) => event.type === "runtime.turn.completed"));
+  failOrdinary = true;
+  await adapter.sendTurn({ bindingKey: "binding", workspaceRoot: "D:\\CyberBoss", text: "timeout" });
+  await waitFor(() => events.some((event) => event.type === "runtime.turn.failed"));
+  assert.equal(adapter.getSessionStore().getThreadIdForWorkspace("binding", "D:\\CyberBoss"), "");
+  assert.equal(adapter.getSessionStore().getThreadIdForWorkspace("binding::system", "D:\\CyberBoss"), "session-1");
   await adapter.close();
 });
 

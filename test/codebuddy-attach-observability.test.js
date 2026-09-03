@@ -298,6 +298,10 @@ test("session/prompt records fetch, headers, SSE, terminal, and abort-safe metad
   assert.equal(closed.data.terminalSignal, "end_turn");
   assert.equal(closed.data.jsonRpcResultSeen, true);
   assert.equal(closed.data.jsonRpcErrorSeen, false);
+  assert.equal(closed.data.lastEventType, "jsonrpc_result");
+  assert.equal(closed.data.lastEventHasId, true);
+  assert.equal(closed.data.lastEventMatchesRequest, true);
+  assert.equal(closed.data.timeoutKind, "overall_turn");
   assert.equal(JSON.stringify(records).includes("private prompt body"), false);
   assert.equal(JSON.stringify(records).includes("credential-token"), false);
   assert.equal(JSON.stringify(records).includes("session-secret"), false);
@@ -343,6 +347,9 @@ test("session/prompt timeout records the wire stage without changing the timeout
   assert.equal(aborted.data.httpStatus, 200);
   assert.equal(aborted.data.sseEventCount, 0);
   assert.equal(aborted.data.terminalEventSeen, false);
+  assert.equal(aborted.data.abortSource, "client_timeout");
+  assert.equal(aborted.data.timeoutKind, "overall_turn");
+  assert.equal(aborted.data.lastEventType, "");
   assert.equal(relevant.find((record) => record.event === "runtime.acp.headers").data.headersReceived, true);
   assert.equal(JSON.stringify(records).includes("private timeout prompt"), false);
   assert.equal(JSON.stringify(records).includes("session-timeout"), false);

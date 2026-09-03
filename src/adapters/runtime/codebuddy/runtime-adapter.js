@@ -113,6 +113,28 @@ function createCodeBuddyRuntimeAdapter({
     };
   }
 
+  async function ensureTransportConnected(signal, turnCorrelation = "") {
+    if (!client || typeof client.isConnected !== "function" || client.isConnected()) return;
+    logDiagnostic("runtime.transport.reconnect.started", diagnosticContext(turnCorrelation, {
+      phase: "transport_reconnect",
+    }));
+    try {
+      await client.connect({ signal });
+      const initialized = await client.initialize({ signal });
+      agentCapabilities = isRecord(initialized?.agentCapabilities) ? { ...initialized.agentCapabilities } : agentCapabilities;
+      logDiagnostic("runtime.transport.reconnect.succeeded", diagnosticContext(turnCorrelation, {
+        phase: "transport_reconnect",
+        transportGenerationId,
+      }));
+    } catch (error) {
+      logDiagnostic("runtime.transport.reconnect.failed", diagnosticContext(turnCorrelation, {
+        phase: "transport_reconnect",
+        error: summarizeDiagnosticError(error),
+      }));
+      throw error;
+    }
+  }
+
   async function verifyLiveIdentity(signal) {
     const fingerprint = normalizeIdentity(await client.getIdentityFingerprint({ signal }));
     if (!fingerprint || (expectedIdentity && fingerprint !== expectedIdentity)) {
@@ -293,11 +315,13 @@ function createCodeBuddyRuntimeAdapter({
           }),
         }, message);
         if (outcome) {
-          Promise.resolve(client?.respondPermission?.({
+          void sendPermissionResponse({
             requestId: message?.id ?? event.payload.requestId,
             outcome,
             sessionId: threadId,
-          })).catch(() => {});
+            turnCorrelation,
+            phase: "automatic_denial",
+          }).catch(() => {});
         }
         continue;
       }
@@ -313,17 +337,76 @@ function createCodeBuddyRuntimeAdapter({
         payload: runtimePayload({ ...event.payload, workspaceRoot, turnCorrelation }),
       }, message);
       if (event?.type === "runtime.approval.denied" && event.payload.response?.outcome) {
-        Promise.resolve(client?.respondPermission?.({
+        void sendPermissionResponse({
           requestId: message?.id ?? event.payload.requestId,
           outcome: event.payload.response.outcome,
           sessionId: threadId,
-        })).catch(() => {});
+          turnCorrelation,
+          phase: "automatic_denial",
+        }).catch(() => {});
       }
     }
     return events;
   }
 
-  async function runTurn({ threadId, turnId, workspaceRoot, text, controller, turnCorrelation = "" }) {
+  async function sendPermissionResponse({ requestId, outcome, sessionId, turnCorrelation, phase, signal }) {
+    const normalizedRequestId = normalizeRpcId(requestId);
+    logDiagnostic("runtime.approval.response.started", diagnosticContext(turnCorrelation, {
+      phase,
+      requestIdFingerprint: fingerprintIdentifier(normalizedRequestId),
+      sessionIdFingerprint: fingerprintIdentifier(sessionId),
+    }));
+    try {
+      const response = await client?.respondPermission?.({
+        requestId,
+        outcome,
+        sessionId,
+        signal,
+        observability: diagnosticContext(turnCorrelation, {
+          phase,
+          requestIdFingerprint: fingerprintIdentifier(normalizedRequestId),
+        }),
+      });
+      logDiagnostic("runtime.approval.response.succeeded", diagnosticContext(turnCorrelation, {
+        phase,
+        requestIdFingerprint: fingerprintIdentifier(normalizedRequestId),
+        sessionIdFingerprint: fingerprintIdentifier(sessionId),
+        responsePresent: Boolean(response),
+      }));
+      return response;
+    } catch (error) {
+      logDiagnostic("runtime.approval.response.failed", diagnosticContext(turnCorrelation, {
+        phase,
+        requestIdFingerprint: fingerprintIdentifier(normalizedRequestId),
+        sessionIdFingerprint: fingerprintIdentifier(sessionId),
+        error: summarizeDiagnosticError(error),
+      }));
+      throw error;
+    }
+  }
+
+  function resetOrdinarySessionAfterTimeout({ bindingKey, workspaceRoot, threadId, turnCorrelation, error, controller }) {
+    const diagnostic = error?.diagnostic;
+    if (controller?.signal?.aborted || normalizeText(bindingKey).endsWith("::system")) return false;
+    if (normalizeText(error?.code) !== "CODEBUDDY_START_TIMEOUT"
+      || normalizeText(diagnostic?.timeoutKind) !== "overall_turn"
+      || diagnostic?.terminalEventSeen !== false) return false;
+    sessionStore.clearThreadIdForScope(bindingKey, workspaceRoot, runtimeScope());
+    sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+    attachedSessions.delete(threadId);
+    logDiagnostic("runtime.session_migration.reset", diagnosticContext(turnCorrelation, {
+      phase: "ordinary_session_recovery",
+      bindingKind: "ordinary",
+      resetReason: "overall_turn_timeout_nonterminal",
+      sessionIdFingerprint: fingerprintIdentifier(threadId),
+      timeoutStage: normalizeText(diagnostic.stage),
+      sseEventCount: nonNegativeInteger(diagnostic.sseEventCount),
+      lastEventType: normalizeText(diagnostic.lastEventType),
+    }));
+    return true;
+  }
+
+  async function runTurn({ bindingKey, threadId, turnId, workspaceRoot, text, controller, turnCorrelation = "" }) {
     const startedAt = Date.now();
     const correlation = normalizeText(turnCorrelation);
     try {
@@ -389,6 +472,14 @@ function createCodeBuddyRuntimeAdapter({
       });
     } catch (error) {
       const cancelled = controller.signal.aborted;
+      const sessionReset = resetOrdinarySessionAfterTimeout({
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        turnCorrelation: correlation,
+        error,
+        controller,
+      });
       const failure = mapCodeBuddyFailure(cancelled ? { code: "CANCELLED" } : error, { threadId, turnId, turnCorrelation: correlation });
       logDiagnostic("runtime.turn.failed", diagnosticContext(correlation, {
         phase: "runtime_turn",
@@ -397,6 +488,14 @@ function createCodeBuddyRuntimeAdapter({
         failureStage: "runtime.turn",
         errorClass: cancelled ? "CancelledError" : normalizeText(error?.name) || "Error",
         errorCode: cancelled ? "CANCELLED" : normalizeText(error?.code) || normalizeText(failure.payload?.code) || "CODEBUDDY_TURN_FAILED",
+        ...(sessionReset ? { sessionRecovery: "ordinary_session_reset" } : {}),
+        ...(!cancelled && error?.diagnostic?.timeoutKind ? {
+          timeoutKind: normalizeText(error.diagnostic.timeoutKind),
+          timeoutStage: normalizeText(error.diagnostic.stage),
+          sseEventCount: nonNegativeInteger(error.diagnostic.sseEventCount),
+          terminalEventSeen: error.diagnostic.terminalEventSeen === true,
+          lastEventType: normalizeText(error.diagnostic.lastEventType),
+        } : {}),
       }));
       emit({
         ...failure,
@@ -439,6 +538,7 @@ function createCodeBuddyRuntimeAdapter({
     initialize,
     async listModels({ signal } = {}) {
       await initialize({ signal });
+      await ensureTransportConnected(signal);
       await verifyLiveIdentity(signal);
       if (typeof client?.listModels !== "function") {
         throw runtimeError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy model discovery is unavailable.");
@@ -462,6 +562,7 @@ function createCodeBuddyRuntimeAdapter({
       logDiagnostic("runtime.dispatch.started", diagnosticContext(correlation, { phase: "dispatch" }));
       try {
         await initialize({ signal });
+        await ensureTransportConnected(signal, correlation);
         stage = "validate_input";
         const binding = requireText(bindingKey, "INVALID_TURN", "A CodeBuddy binding key is required.");
         const directory = path.resolve(requireText(workspaceRoot, "INVALID_TURN", "A CodeBuddy workspace is required."));
@@ -491,7 +592,7 @@ function createCodeBuddyRuntimeAdapter({
           turnId,
         }));
         emit({ type: "runtime.turn.started", payload: runtimePayload({ threadId, turnId, workspaceRoot: directory, turnCorrelation: correlation }) });
-        const pending = runTurn({ threadId, turnId, workspaceRoot: directory, text: promptText, controller, turnCorrelation: correlation })
+        const pending = runTurn({ bindingKey: binding, threadId, turnId, workspaceRoot: directory, text: promptText, controller, turnCorrelation: correlation })
           .finally(() => {
             signal?.removeEventListener?.("abort", abortFromParent);
             activeTurns.delete(turnId);
@@ -528,10 +629,12 @@ function createCodeBuddyRuntimeAdapter({
       if (!outcome || typeof client?.respondPermission !== "function") {
         throw runtimeError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy permission response is unavailable.");
       }
-      await client.respondPermission({
+      await sendPermissionResponse({
         requestId: pending.rpcId ?? normalizedRequestId,
         outcome,
         sessionId: pending.threadId,
+        turnCorrelation: "",
+        phase: "user_decision",
         signal,
       });
       pendingApprovals.delete(normalizedRequestId);
@@ -539,6 +642,7 @@ function createCodeBuddyRuntimeAdapter({
     },
     async resumeThread({ threadId, workspaceRoot, signal } = {}) {
       await initialize({ signal });
+      await ensureTransportConnected(signal);
       const normalizedThreadId = requireText(threadId, "CODEBUDDY_SESSION_FAILED", "A CodeBuddy session is required.");
       await verifyLiveIdentity(signal);
       await client.resumeSession({
@@ -551,6 +655,7 @@ function createCodeBuddyRuntimeAdapter({
     },
     async compactThread({ threadId, workspaceRoot, signal } = {}) {
       await initialize({ signal });
+      await ensureTransportConnected(signal);
       const normalizedThreadId = requireText(threadId, "CODEBUDDY_SESSION_FAILED", "A CodeBuddy session is required.");
       if (!ready?.compactionSupported || typeof client?.compactSession !== "function") {
         throw runtimeError("CODEBUDDY_COMPACTION_UNSUPPORTED", `CodeBuddy compaction is unavailable for session ${normalizedThreadId}.`);

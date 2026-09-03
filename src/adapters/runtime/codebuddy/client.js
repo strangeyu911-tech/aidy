@@ -60,6 +60,10 @@ class CodeBuddyClient {
     return { connectionId: this.connectionId };
   }
 
+  isConnected() {
+    return Boolean(this.connectionId);
+  }
+
   async initialize({ signal } = {}) {
     const response = await this.rpc("initialize", {
       protocolVersion: 1,
@@ -287,23 +291,52 @@ class CodeBuddyClient {
     });
   }
 
-  async respondPermission({ requestId, outcome, sessionId = "", signal } = {}) {
+  async respondPermission({ requestId, outcome, sessionId = "", signal, observability = {} } = {}) {
     const id = requireRpcId(requestId);
     const selected = requireText(outcome, "CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy permission outcome is required.");
-    await this.fetchProtected(PUBLIC_ROUTES.acp, {
-      method: "POST",
-      signal,
-      headers: {
-        "acp-connection-id": this.connectionId,
-        ...(normalizeText(sessionId) ? { "acp-session-id": normalizeText(sessionId) } : {}),
-      },
-      body: { jsonrpc: "2.0", id, result: { outcome: selected } },
-      readResponse: async (response) => {
-        if ([202, 204].includes(Number(response.status))) return true;
-        await readBoundedJson(response);
-        return true;
-      },
-    });
+    const trace = createAcpTrace({
+      ...observability,
+      correlationId: normalizeText(observability.correlationId || observability.turnCorrelation),
+      method: "session/respond_permission",
+      requestId: id,
+      requestSequenceId: id,
+      requestSequence: ++this.requestSequence,
+      sessionIdFingerprint: fingerprintIdentifier(sessionId),
+      connectionIdFingerprint: fingerprintIdentifier(this.connectionId),
+      runtimeInstanceId: this.runtimeInstanceId,
+      transportGenerationId: this.transportGenerationId,
+      timestamp: new Date().toISOString(),
+      monotonicMs: monotonicMs(),
+      transport: { status: 0 },
+    }, this.timeoutMs);
+    this.logTrace(trace, "runtime.acp.request.prepared", { stage: "before_fetch" });
+    this.logTrace(trace, "runtime.acp.request.started", { stage: "before_fetch" });
+    try {
+      await this.fetchProtected(PUBLIC_ROUTES.acp, {
+        method: "POST",
+        signal,
+        headers: {
+          "acp-connection-id": this.connectionId,
+          ...(normalizeText(sessionId) ? { "acp-session-id": normalizeText(sessionId) } : {}),
+        },
+        body: { jsonrpc: "2.0", id, result: { outcome: selected } },
+        readResponse: async (response) => {
+          if ([202, 204].includes(Number(response.status))) return true;
+          await readBoundedJson(response);
+          return true;
+        },
+        trace,
+      });
+      this.logTrace(trace, "runtime.acp.response.succeeded", {
+        transport: { status: trace.httpStatus || 0 },
+      });
+    } catch (error) {
+      this.logTrace(trace, "runtime.acp.response.error", {
+        transport: { status: trace.httpStatus || 0 },
+        error: summarizeDiagnosticError(error),
+      });
+      throw error;
+    }
     return { requestId: id, outcome: selected };
   }
 
@@ -384,17 +417,29 @@ class CodeBuddyClient {
     method = "GET", body, signal, timeoutMs = this.timeoutMs, headers = {}, readResponse, onResponse, trace,
   } = {}) {
     const controller = new AbortController();
-    const forwardAbort = () => controller.abort(signal?.reason);
+    let timeoutTriggered = false;
+    const timeoutBudgetMs = positiveInteger(timeoutMs, this.timeoutMs);
+    const forwardAbort = () => {
+      if (trace && !timeoutTriggered) trace.abortSource = "caller_signal";
+      controller.abort(signal?.reason);
+    };
     if (signal?.aborted) forwardAbort();
     else signal?.addEventListener?.("abort", forwardAbort, { once: true });
-    const timer = setTimeout(() => controller.abort(), positiveInteger(timeoutMs, this.timeoutMs));
+    const timer = setTimeout(() => {
+      timeoutTriggered = true;
+      if (trace) {
+        trace.abortSource = "client_timeout";
+        trace.timeoutKind = trace.context.method === "session/prompt" ? "overall_turn" : "overall_request";
+      }
+      controller.abort();
+    }, timeoutBudgetMs);
     try {
       if (trace) {
         trace.stage = "awaiting_headers";
         trace.fetchStartedAt = monotonicMs();
         this.logTrace(trace, "runtime.acp.fetch.started", {
           endpointCategory: "acp",
-          timeoutBudgetMs: positiveInteger(timeoutMs, this.timeoutMs),
+          timeoutBudgetMs,
         });
       }
       const response = await this.fetchImpl(new URL(route, `${this.endpoint}/`).href, {
@@ -439,6 +484,7 @@ class CodeBuddyClient {
         }
         if (aborted) {
           trace.stage = abortStage(trace);
+          trace.abortSource = trace.abortSource || (timeoutTriggered ? "client_timeout" : "caller_signal");
           this.logTrace(trace, "runtime.acp.request.aborted", {
             stage: trace.stage,
             elapsedMs: monotonicMs() - trace.startedAt,
@@ -446,14 +492,30 @@ class CodeBuddyClient {
             sseEventCount: trace.sseEventCount,
             timeSinceLastEventMs: trace.lastEventAt ? monotonicMs() - trace.lastEventAt : null,
             terminalEventSeen: trace.terminalEventSeen,
+            abortSource: trace.abortSource,
+            timeoutKind: trace.timeoutKind,
+            lastEventType: trace.lastEventType,
+            lastEventMethod: trace.lastEventMethod,
+            lastSessionUpdate: trace.lastSessionUpdate,
+            lastEventHasId: trace.lastEventHasId,
+            lastEventMatchesRequest: trace.lastEventMatchesRequest,
           });
         }
+      }
+      if (timeoutTriggered) {
+        const timeoutError = protocolError("CODEBUDDY_START_TIMEOUT", "CodeBuddy public API did not respond in time.");
+        attachDiagnostic(timeoutError, traceTimeoutDiagnostic(trace));
+        throw timeoutError;
       }
       if (error?.code) {
         if (error.code === "CODEBUDDY_CONNECTION_LOST") this.markDisconnected("connection_lost", error);
         throw error;
       }
-      if (controller.signal.aborted) throw protocolError("CODEBUDDY_START_TIMEOUT", "CodeBuddy public API did not respond in time.");
+      if (controller.signal.aborted) {
+        const timeoutError = protocolError("CODEBUDDY_START_TIMEOUT", "CodeBuddy public API did not respond in time.");
+        attachDiagnostic(timeoutError, traceTimeoutDiagnostic(trace));
+        throw timeoutError;
+      }
       const mapped = protocolError("CODEBUDDY_CONNECTION_LOST", "CodeBuddy public API is unavailable.");
       this.markDisconnected("connection_lost", mapped);
       throw mapped;
@@ -517,6 +579,7 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
       logTraceWith(trace, logDiagnostic, "runtime.acp.sse.opened", {});
     }
     let completed = false;
+    let terminalDrainRequested = false;
     try {
       while (true) {
         const chunk = await reader.read();
@@ -525,10 +588,25 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
           ? chunk.value
           : Buffer.from(String(chunk?.value ?? ""), "utf8");
         append(decoder.decode(bytes, { stream: true }), bytes.byteLength);
+        if (trace?.terminalEventSeen) {
+          terminalDrainRequested = true;
+          break;
+        }
       }
       append(decoder.decode(), 0);
       const messages = parser.finish();
       completed = true;
+      if (terminalDrainRequested) {
+        await Promise.resolve(reader.cancel?.()).catch(() => {});
+        if (trace) {
+          trace.readerCancelled = true;
+          trace.streamEndReason = "terminal_cancel";
+          trace.streamClosed = false;
+        }
+      } else if (trace) {
+        trace.streamEndReason = "eof";
+        trace.streamClosed = true;
+      }
       if (trace) trace.stage = trace.terminalEventSeen ? "terminal_received" : "parse";
       return messages;
     } catch (error) {
@@ -536,11 +614,11 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
       throw error;
     } finally {
       if (trace) {
-        trace.streamClosed = completed;
+        trace.streamClosed = trace.streamClosed || (completed && !terminalDrainRequested);
         logTraceWith(trace, logDiagnostic, "runtime.acp.sse.closed", {
           ...traceSummary(trace),
-          streamClosed: completed,
-          readerCancelled: !completed,
+          streamClosed: trace.streamClosed,
+          readerCancelled: Boolean(trace?.readerCancelled || !completed),
         });
       }
       reader.releaseLock?.();
@@ -560,14 +638,18 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
     append(text);
     const messages = parser.finish();
     completed = true;
-    if (trace) trace.stage = trace.terminalEventSeen ? "terminal_received" : "parse";
+    if (trace) {
+      trace.stage = trace.terminalEventSeen ? "terminal_received" : "parse";
+      trace.streamEndReason = "eof";
+      trace.streamClosed = true;
+    }
     return messages;
   } finally {
     if (trace) {
-      trace.streamClosed = completed;
+      trace.streamClosed = trace.streamClosed || completed;
       logTraceWith(trace, logDiagnostic, "runtime.acp.sse.closed", {
         ...traceSummary(trace),
-        streamClosed: completed,
+        streamClosed: trace.streamClosed,
         readerCancelled: false,
       });
     }
@@ -597,6 +679,15 @@ function createAcpTrace(context, timeoutMs) {
     jsonRpcErrorSeen: false,
     jsonRpcErrorCode: null,
     streamClosed: false,
+    streamEndReason: "",
+    readerCancelled: false,
+    abortSource: "",
+    timeoutKind: context.method === "session/prompt" ? "overall_turn" : "overall_request",
+    lastEventType: "",
+    lastEventMethod: "",
+    lastSessionUpdate: "",
+    lastEventHasId: false,
+    lastEventMatchesRequest: false,
   };
 }
 
@@ -608,6 +699,11 @@ function observeSseMessage(trace, message, logDiagnostic) {
   trace.sseEventTypeCounts[eventType] = (trace.sseEventTypeCounts[eventType] || 0) + 1;
   trace.lastEventAt = now;
   trace.lastEventTimestamp = new Date().toISOString();
+  trace.lastEventType = eventType;
+  trace.lastEventMethod = normalizeText(message.method);
+  trace.lastSessionUpdate = normalizeText(message.params?.update?.sessionUpdate);
+  trace.lastEventHasId = message.id != null;
+  trace.lastEventMatchesRequest = String(message.id ?? "") === String(trace.context.requestId ?? "");
   if (!trace.firstSseEventReceived) {
     trace.firstSseEventReceived = true;
     trace.stage = "streaming_nonterminal";
@@ -616,7 +712,7 @@ function observeSseMessage(trace, message, logDiagnostic) {
       eventByteLength: safeSerializedByteLength(message),
     });
   }
-  if (String(message.id ?? "") !== String(trace.context.requestId ?? "")) return;
+  if (!trace.lastEventMatchesRequest) return;
   trace.terminalEventSeen = true;
   trace.stage = "terminal_received";
   if (message.error && typeof message.error === "object") {
@@ -645,7 +741,7 @@ function abortStage(trace) {
   if (!trace.headersReceived) return "awaiting_headers";
   if (!trace.firstSseEventReceived) return "awaiting_first_sse";
   if (!trace.terminalEventSeen) return "streaming_nonterminal";
-  return "awaiting_terminal";
+  return "terminal_received";
 }
 
 function traceSummary(trace) {
@@ -661,6 +757,14 @@ function traceSummary(trace) {
     terminalSignal: trace.terminalSignal || "",
     jsonRpcResultSeen: trace.jsonRpcResultSeen,
     jsonRpcErrorSeen: trace.jsonRpcErrorSeen,
+    abortSource: trace.abortSource || "",
+    timeoutKind: trace.timeoutKind || "",
+    streamEndReason: trace.streamEndReason || "",
+    lastEventType: trace.lastEventType || "",
+    lastEventMethod: trace.lastEventMethod || "",
+    lastSessionUpdate: trace.lastSessionUpdate || "",
+    lastEventHasId: trace.lastEventHasId,
+    lastEventMatchesRequest: trace.lastEventMatchesRequest,
     ...(trace.jsonRpcErrorSeen ? { jsonRpcErrorCode: trace.jsonRpcErrorCode } : {}),
   };
 }
@@ -752,6 +856,38 @@ function summarizeDiagnosticError(error) {
     class: normalizeText(error?.name) || "Error",
     ...(code == null || code === "" ? {} : { code }),
     ...(detail ? { detail: sanitizeDiagnosticText(detail) } : {}),
+    ...(diagnostic.timeoutKind ? { timeoutKind: normalizeText(diagnostic.timeoutKind) } : {}),
+    ...(diagnostic.abortSource ? { abortSource: normalizeText(diagnostic.abortSource) } : {}),
+    ...(Number.isSafeInteger(diagnostic.sseEventCount) ? { sseEventCount: diagnostic.sseEventCount } : {}),
+    ...(typeof diagnostic.terminalEventSeen === "boolean" ? { terminalEventSeen: diagnostic.terminalEventSeen } : {}),
+    ...(diagnostic.lastEventType ? { lastEventType: normalizeText(diagnostic.lastEventType) } : {}),
+  };
+}
+
+function attachDiagnostic(error, diagnostic) {
+  if (!error || !diagnostic || typeof diagnostic !== "object") return error;
+  Object.defineProperty(error, "diagnostic", {
+    value: Object.freeze({ ...diagnostic }),
+    enumerable: false,
+    configurable: true,
+  });
+  return error;
+}
+
+function traceTimeoutDiagnostic(trace) {
+  if (!trace) return {};
+  return {
+    method: normalizeText(trace.context?.method),
+    timeoutKind: normalizeText(trace.timeoutKind),
+    abortSource: normalizeText(trace.abortSource),
+    stage: normalizeText(trace.stage),
+    sseEventCount: trace.sseEventCount,
+    terminalEventSeen: trace.terminalEventSeen,
+    lastEventType: normalizeText(trace.lastEventType),
+    lastEventMethod: normalizeText(trace.lastEventMethod),
+    lastSessionUpdate: normalizeText(trace.lastSessionUpdate),
+    lastEventHasId: trace.lastEventHasId,
+    lastEventMatchesRequest: trace.lastEventMatchesRequest,
   };
 }
 function sanitizeDiagnosticText(value) {

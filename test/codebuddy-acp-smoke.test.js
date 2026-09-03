@@ -250,6 +250,7 @@ test("ACP notifications are delivered incrementally across chunk boundaries befo
     `data: ${second}\n\ndata: ${terminal}\n\n`,
   ];
   let readIndex = 0;
+  let readerCancelled = false;
   let releaseTerminal;
   const terminalGate = new Promise((resolve) => { releaseTerminal = resolve; });
   const response = {
@@ -263,7 +264,7 @@ test("ACP notifications are delivered incrementally across chunk boundaries befo
             if (readIndex >= chunks.length) return { done: true };
             return { done: false, value: encoder.encode(chunks[readIndex++]) };
           },
-          async cancel() {},
+          async cancel() { readerCancelled = true; },
           releaseLock() {},
         };
       },
@@ -295,6 +296,7 @@ test("ACP notifications are delivered incrementally across chunk boundaries befo
   const result = await pending;
   assert.equal(result.text, "HELLO");
   assert.equal(notifications.length, 2);
+  assert.equal(readerCancelled, true);
 });
 
 test("ACP incremental stream enforces the total response byte limit", async () => {

@@ -315,6 +315,7 @@ test("supervisor CodeBuddy denies permission requests without emitting an approv
 
   await waitFor(() => calls.some(([name]) => name === "permission.response"));
   assert.equal(calls.find(([name]) => name === "permission.response")[1].outcome, "reject");
+  assert.equal(calls.find(([name]) => name === "permission.response")[1].observability.phase, "automatic_denial");
   const start = calls.find(([name]) => name === "host.start")[1];
   assert.deepEqual(start.allowedTools, ["mcp__cyberboss_supervisor__disabled"]);
   await adapter.close();

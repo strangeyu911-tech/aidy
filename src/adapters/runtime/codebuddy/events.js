@@ -258,11 +258,25 @@ function sanitizeFailureDiagnostic(value) {
   const upstreamCode = typeof value.upstreamCode === "string" || typeof value.upstreamCode === "number"
     ? value.upstreamCode
     : null;
-  if (!method && !upstreamMessage && upstreamCode == null) return null;
+  const timeoutKind = normalizeText(value.timeoutKind);
+  const stage = normalizeText(value.stage);
+  const abortSource = normalizeText(value.abortSource);
+  const lastEventType = normalizeText(value.lastEventType);
+  const hasSseEventCount = Number.isSafeInteger(value.sseEventCount);
+  const sseEventCount = nonNegativeInteger(value.sseEventCount);
+  const terminalEventSeen = typeof value.terminalEventSeen === "boolean" ? value.terminalEventSeen : null;
+  if (!method && !upstreamMessage && upstreamCode == null && !timeoutKind && !stage && !abortSource
+    && !lastEventType && !hasSseEventCount && terminalEventSeen == null) return null;
   return {
     ...(method ? { method } : {}),
     ...(upstreamCode == null ? {} : { upstreamCode }),
     ...(upstreamMessage ? { upstreamMessage } : {}),
+    ...(timeoutKind ? { timeoutKind } : {}),
+    ...(stage ? { stage } : {}),
+    ...(abortSource ? { abortSource } : {}),
+    ...(hasSseEventCount ? { sseEventCount } : {}),
+    ...(terminalEventSeen == null ? {} : { terminalEventSeen }),
+    ...(lastEventType ? { lastEventType } : {}),
   };
 }
 function truncateText(value) { return normalizeText(value).slice(0, MAX_APPROVAL_TEXT); }
