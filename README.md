@@ -1,12 +1,8 @@
 # Aidy（艾迪）
 
-Originally forked from [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss).
+一个运行在 Windows 与微信中的个人 AI 助手。Aidy 让 AI 能持续理解上下文、感知时间与任务状态，并在合适的时候主动出现；在你的授权边界内，它也能通过本地工具帮助你把事情继续推进下去。
 
-Aidy（艾迪）保留上游“在微信里主动监督 Agent”的核心思路；这个 fork 经过较大幅度二次开发，以新的产品名继续维护，重点面向真实的 Windows + 微信 + WorkBuddy 使用场景。
-
-> 本项目是 upstream 的 fork / derivative work，不是完全原创项目。
-
-## 为什么做Aidy
+## 为什么做 Aidy
 
 大多数 AI 助手只有在你主动打开它、输入问题时才开始工作。但真正融入日常生活的 AI，不应该只是一个等待提问的聊天窗口。
 
@@ -22,30 +18,36 @@ Aidy 支持接入多种 AI 能力来源。我们默认推荐使用 WorkBuddy：�
 
 因此 Aidy 提供了一个 Windows 桌面控制中心，把 WorkBuddy、Codex 或自定义 API 的连接、微信登录、运行状态和主动监督整合到同一条使用路径中，让一个能够持续运行的个人 Agent 更接近普通软件，而不是一套需要开发者手动拼装的基础设施。
 
-## 相比上游的主要改进
+## Aidy 能做什么
 
-| 方向 | 本 fork 的改进 | 用户体验 |
-| --- | --- | --- |
-| WorkBuddy runtime | 将 WorkBuddy 作为实际可用的 CodeBuddy ACP runtime 接入；通过运行时能力、实际协议和连接测试确认兼容性，当前会话使用已验证的 `cwd` contract。 | 可以从艾迪内完成发现、检查和激活，不需要手工猜 ACP 参数。 |
-| Windows 桌面化 | Electron 控制中心、首次启动引导、模型设置、微信连接入口、运行状态和错误反馈。 | 新用户不必先配置整套命令行；开始菜单或桌面即可启动。 |
-| 模型配置 | WorkBuddy 模型动态发现/刷新，保留真实 model ID；`Auto` 显示为 `auto`，激活前要求完成真实连接测试。 | 减少手填信息，同时避免把显示名称误当成模型 ID。 |
-| 微信链路 | 覆盖 inbound → dispatcher → ACP session → runtime → reply → sender；加入 inbound 去重、typing、超时/取消和 transport lifecycle 处理。 | 针对重复发送、连接中断和超时增加防护与可观测性。 |
-| 主动监督 | system message queue、checkpoint、业务级 supervision key、同日任务合并，以及静默时段过期任务的归档/丢弃边界。 | 减少多个 overdue checkpoint 在一次回复后集中 flood；不把旧提醒当成新任务重复轰炸。 |
-| 安装与发布 | NSIS Setup、portable、`win-unpacked` 和开始菜单快捷方式同步脚本。 | Windows 用户可以使用安装包或便携版；源码用户仍可保留开发模式。 |
-| 可观测性 | inbound、dispatch、ACP 请求/SSE、runtime 结果、reply、sender enqueue/attempt/result 使用关联上下文串联；敏感值和消息正文不进入普通诊断。 | 出问题时能区分“没收到、没启动、没生成回复、没发出去”分别发生在哪一段。 |
+### 持续理解，而不只是回答一轮对话
 
-## 功能概览
+Aidy 可以把与你的项目、时间线和本地 diary 相关的持续信息带入后续工作。你可以绑定 workspace，让 Agent 围绕正在推进的事情继续协作，而不是每次都从一段孤立的聊天重新开始。
 
-来自上游并继续保留的核心能力包括：
+### 在微信里承接日常互动
 
-- 微信消息接入、回复、文件/媒体处理和本地账号状态；
-- 按时间记录活动、维护个人 timeline、写入本地 diary；
-- reminder、random check-in 和基于 checkpoint 的主动监督；
-- 绑定项目 workspace，让 Agent 在持续上下文中工作；
-- 项目原生工具与可选本地 MCP 服务；
-- 多运行时架构：Built-in API、OpenCode、Codex、Claude Code，以及本 fork 重点维护的 CodeBuddy/WorkBuddy。
+你无需额外打开一个聊天产品。Aidy 可以通过微信接收和回复消息，并处理文件或媒体；它把日常交流入口与本地 Agent 放在同一条使用路径上。
 
-本 fork 的桌面控制中心只允许经过验证的 profile 成为全局 active runtime。模型、provider 和 runtime 不会因为一个环境变量或兼容性提示就被静默切换。
+### 按时间和上下文主动跟进
+
+除响应消息外，Aidy 还支持 reminder、随机 check-in 和基于 checkpoint 的主动监督。它会结合任务的持续状态参与提醒与跟进，同时通过合并、静默时段和过期处理等边界，尽量避免重复或陈旧提醒打扰你。
+
+### 在授权范围内实际行动
+
+Aidy 可使用项目原生工具和可选的本地 MCP 服务。重点不只是给出下一步建议，而是在你授予的工具与工作区边界内，帮助查询信息、处理任务和推进工作。
+
+### 选择适合自己的 AI 能力来源
+
+WorkBuddy 是推荐的默认方案；Aidy 也可接入 Codex，以及其他兼容接口和自定义 API。控制中心会在将 profile 设为全局 active runtime 前完成连接验证，避免因为环境变量或兼容性提示而静默切换模型、provider 或 runtime。
+
+## Aidy 如何工作
+
+1. 在 Windows 桌面控制中心连接并验证 WorkBuddy、Codex 或自定义 API。
+2. 登录微信，并按需要为聊天绑定 workspace。
+3. 日常消息由微信送到 Aidy，再交给已验证的本地 runtime 处理；回复回到微信。
+4. Aidy 根据 reminder、check-in 和 checkpoint 的状态，在设定的边界内主动提醒或继续跟进。
+
+这样，模型连接、微信登录、服务启动、状态查看、配置与诊断都集中在一个桌面入口；你不需要先理解命令行或内部协议，才能开始使用。
 
 ## Windows 快速开始
 
@@ -145,7 +147,7 @@ WorkBuddy 的 ACP 参数不根据软件版本号推断。艾迪以运行时 capa
 
 ## 当前状态
 
-这是一个面向个人真实 Windows + 微信 + WorkBuddy 场景的二次开发版本。主要二开阶段已完成，当前重点是兼容性维护、发布验收和小幅体验改进；它不以“production ready”作为未经证明的承诺。
+目前，Aidy 聚焦于个人真实的 Windows + 微信 + WorkBuddy 使用场景，并持续维护兼容性、发布验收与小幅体验改进；它不以“production ready”作为未经证明的承诺。
 
 ## 文档
 
