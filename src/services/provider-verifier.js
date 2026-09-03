@@ -74,7 +74,7 @@ class ProviderVerifier {
 
       const streamDeltas = [];
       const streamResult = await client.streamTurn({
-        messages: [{ role: "user", content: [{ type: "text", text: "Reply with a short acknowledgement for a CyberBoss streaming capability test." }] }],
+        messages: [{ role: "user", content: [{ type: "text", text: "Reply with a short acknowledgement for an Aidy streaming capability test." }] }],
         tools: [],
         onDelta: (text) => streamDeltas.push(text),
       });
@@ -183,7 +183,7 @@ async function verifyCancellation(client, delayMs) {
   const timer = setTimeout(() => controller.abort(), delayMs);
   try {
     await client.streamTurn({
-      messages: [{ role: "user", content: [{ type: "text", text: "CyberBoss cancellation probe: provide a deliberately considered response." }] }],
+      messages: [{ role: "user", content: [{ type: "text", text: "Aidy cancellation probe: provide a deliberately considered response." }] }],
       tools: [],
       signal: controller.signal,
     });

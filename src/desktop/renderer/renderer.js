@@ -41,7 +41,7 @@ const RUNTIME_SETUP_GUIDES = Object.freeze({
   codebuddy: {
     title: "推荐：WorkBuddy",
     body: "已安装并登录 WorkBuddy 后，点击“刷新模型”并从下拉菜单选择当前可用模型，再保存并测试连接。",
-    notice: "WorkBuddy 登录属于当前 Windows 用户；所有 CyberBoss WorkBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\n连接能力可能随 WorkBuddy 版本变化；如果遇到连接问题，请先更新 WorkBuddy 后再次测试。",
+    notice: "WorkBuddy 登录属于当前 Windows 用户；所有艾迪 WorkBuddy 配置共享同一个账号。你在外部登录、退出或切换账号后，需要重新验证这些配置。\n\n连接能力可能随 WorkBuddy 版本变化；如果遇到连接问题，请先更新 WorkBuddy 后再次测试。",
   },
 });
 
@@ -141,7 +141,7 @@ function openStopModal() {
   $("#modal-description").textContent = activeReport
     ? `正在生成 ${activeReport} 的报表。默认会先完成当前报表，再停止微信、查岗和同步；也可以立即停止当前报表。`
     : "停止后，微信回复、查岗、同步、日记和报表都会暂停。桌面控制中心会继续留在托盘中。";
-  $("#modal-confirm").textContent = activeReport ? "完成当前工作后停止" : "停止 CyberBoss";
+  $("#modal-confirm").textContent = activeReport ? "完成当前工作后停止" : "停止艾迪";
   $("#modal-stop-now").classList.toggle("hidden", !activeReport);
   $("#modal").classList.remove("hidden");
 }
@@ -232,7 +232,7 @@ function renderOnboarding(currentSnapshot) {
   const secondary = $("#onboarding-secondary-action");
   primary.textContent = onboarding.step === "model" ? "开始设置模型"
     : onboarding.step === "wechat" ? "连接微信"
-      : "启动 CyberBoss";
+      : "启动艾迪";
   primary.classList.toggle("hidden", onboarding.complete);
   secondary.classList.toggle("hidden", onboarding.step !== "wechat" || onboarding.complete);
 }
@@ -1001,7 +1001,7 @@ async function runBackup(kind) {
 async function restoreBackup() {
   const result = await api.restoreBackup();
   if (!result || result.canceled) return;
-  showOperationResult(result.restored ? "恢复完成，CyberBoss 保持停止状态。" : result.error || "恢复失败。");
+  showOperationResult(result.restored ? "恢复完成，艾迪保持停止状态。" : result.error || "恢复失败。");
 }
 
 async function authorizeZhijiantime() {

@@ -3,7 +3,8 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const TASK_NAME = "\\CyberBoss\\CyberBoss 桌面控制中心";
+const TASK_NAME = "\\Aidy\\Aidy 桌面控制中心";
+const LEGACY_DESKTOP_TASK_NAME = "\\CyberBoss\\CyberBoss 桌面控制中心";
 const LEGACY_TASK_NAME = "\\CyberBoss\\CyberBoss 自动运行";
 
 class WindowsTaskService {
@@ -19,7 +20,7 @@ class WindowsTaskService {
   async install({ enabled = true } = {}) {
     if (process.platform !== "win32") return { supported: false };
     if (!fs.existsSync(this.executable)) {
-      throw Object.assign(new Error(`CyberBoss packaged executable does not exist: ${this.executable}`), { code: "WINDOWS_TASK_RUNTIME_MISSING" });
+      throw Object.assign(new Error(`Aidy packaged executable does not exist: ${this.executable}`), { code: "WINDOWS_TASK_RUNTIME_MISSING" });
     }
     const taskDir = path.join(this.stateDir, "tasks");
     fs.mkdirSync(taskDir, { recursive: true });
@@ -64,8 +65,9 @@ class WindowsTaskService {
     await runWindowsCommand("schtasks.exe", ["/End", "/TN", LEGACY_TASK_NAME]).catch(() => {});
     await stopOwnedProcess?.();
     await this.install({ enabled: true });
-    if (!(await this.exists(TASK_NAME))) throw Object.assign(new Error("New CyberBoss desktop task could not be validated."), { code: "WINDOWS_TASK_VALIDATION_FAILED" });
+    if (!(await this.exists(TASK_NAME))) throw Object.assign(new Error("New Aidy desktop task could not be validated."), { code: "WINDOWS_TASK_VALIDATION_FAILED" });
     await runWindowsCommand("schtasks.exe", ["/Delete", "/TN", LEGACY_TASK_NAME, "/F"]);
+    await runWindowsCommand("schtasks.exe", ["/Delete", "/TN", LEGACY_DESKTOP_TASK_NAME, "/F"]).catch(() => {});
     this.logger?.info("windows_task.legacy_migrated", {});
     return { legacyFound: true, installed: true, legacyRemoved: true };
   }
@@ -75,7 +77,7 @@ function buildTaskXml({ executable, args = [], workingDirectory, userId }) {
   const commandArgs = args.map(quoteWindowsArgument).join(" ");
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>CyberBoss desktop controller and crash watchdog</Description></RegistrationInfo>
+  <RegistrationInfo><Description>Aidy desktop controller and crash watchdog</Description></RegistrationInfo>
   <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${escapeXml(userId)}</UserId></LogonTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>${escapeXml(userId)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings>
@@ -126,4 +128,4 @@ function runWindowsCommand(command, args) {
   });
 }
 
-module.exports = { LEGACY_TASK_NAME, TASK_NAME, WindowsTaskService, buildTaskXml, escapeXml, quoteWindowsArgument };
+module.exports = { LEGACY_DESKTOP_TASK_NAME, LEGACY_TASK_NAME, TASK_NAME, WindowsTaskService, buildTaskXml, escapeXml, quoteWindowsArgument };

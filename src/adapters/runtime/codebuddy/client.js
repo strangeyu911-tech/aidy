@@ -68,7 +68,7 @@ class CodeBuddyClient {
   async initialize({ signal } = {}) {
     const response = await this.rpc("initialize", {
       protocolVersion: 1,
-      clientInfo: { name: "CyberBoss", version: "0.1.0" },
+      clientInfo: { name: "Aidy", version: "0.1.0" },
       clientCapabilities: {
         fs: { readTextFile: false, writeTextFile: false },
         terminal: false,

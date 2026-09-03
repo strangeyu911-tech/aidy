@@ -30,7 +30,7 @@ function createOpenCodeRuntimeAdapter({
   fetchImpl,
 } = {}) {
   const normalizedProfile = requireOpenCodeProfile(profile);
-  const stateDir = path.resolve(requireText(config.stateDir, "STATE_DIR_REQUIRED", "CyberBoss stateDir is required for OpenCode."));
+  const stateDir = path.resolve(requireText(config.stateDir, "STATE_DIR_REQUIRED", "Aidy stateDir is required for OpenCode."));
   const sessionStore = new SessionStore({
     filePath: normalizeText(config.sessionsFile) || path.join(stateDir, "opencode-sessions.json"),
     runtimeId: "opencode",
@@ -349,7 +349,7 @@ function createOpenCodeRuntimeAdapter({
       const directory = path.resolve(requireText(turnWorkspace, "INVALID_TURN", "A workspace root is required."));
       let threadId = sessionStore.getThreadIdForScope(binding, directory, runtimeScope());
       if (!threadId) {
-        const created = await getClient().createSession({ title: "CyberBoss" }, { directory });
+        const created = await getClient().createSession({ title: "Aidy" }, { directory });
         threadId = requireText(created?.id, "OPENCODE_INCOMPATIBLE", "OpenCode did not return a session identifier.");
         sessionStore.setThreadIdForScope(binding, directory, runtimeScope(), threadId, metadata);
         sessionStore.setThreadIdForWorkspace(binding, directory, threadId, metadata);
@@ -367,7 +367,7 @@ function createOpenCodeRuntimeAdapter({
           modelID: normalizedProfile.modelId,
         },
         ...(config.verificationMode === true ? {
-          system: "CyberBoss read-only capability verification. Use only the enabled glob tool. Do not attempt any write, command, network, or configuration operation.",
+          system: "Aidy read-only capability verification. Use only the enabled glob tool. Do not attempt any write, command, network, or configuration operation.",
           tools: { "*": false, glob: true },
         } : {}),
         parts,

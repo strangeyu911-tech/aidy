@@ -25,7 +25,7 @@ function knownDiagnostic(code, capability) {
     case "WECHAT_LOGIN_REQUIRED":
       return configuration("微信登录信息不可用。", "点击“连接微信”，重新扫码登录。", "wechat_login");
     case "WECHAT_ACCOUNT_SELECTION_REQUIRED":
-      return configuration("检测到多个微信账号，CyberBoss 无法确定要连接哪一个。", "设置默认微信账号后重试。", "inspect_logs");
+      return configuration("检测到多个微信账号，艾迪无法确定要连接哪一个。", "设置默认微信账号后重试。", "inspect_logs");
     case "WECHAT_SESSION_EXPIRED":
       return configuration("微信连接已过期。", "点击“连接微信”，重新扫码登录。", "wechat_login");
     case "WECHAT_CLIENT_NOT_RUNNING":
@@ -35,15 +35,15 @@ function knownDiagnostic(code, capability) {
     case "WECHAT_CONNECTION_UNAVAILABLE":
       return processDiagnostic("微信服务当前不可访问。", "请确认网络可用后点击“重试启动”；若微信登录已过期，请重新连接微信。", "retry");
     case "BRIDGE_RUNTIME_FILES_MISSING":
-      return processDiagnostic("CyberBoss 内部微信连接运行文件不可用。", "请完全退出 CyberBoss，然后从原便携版文件重新启动；若仍失败，请重新下载或安装 CyberBoss。", "restart_app");
+      return processDiagnostic("艾迪内部微信连接运行文件不可用。", "请完全退出艾迪，然后从原便携版文件重新启动；若仍失败，请重新下载或安装艾迪。", "restart_app");
     case "BRIDGE_NOT_READY":
-      return processDiagnostic("CyberBoss 内部微信连接服务未能完成启动。", "点击“重试启动”；若仍失败，请完全退出并重新启动 CyberBoss。", "retry");
+      return processDiagnostic("艾迪内部微信连接服务未能完成启动。", "点击“重试启动”；若仍失败，请完全退出并重新启动艾迪。", "retry");
     case "BRIDGE_CONTROL_UNAVAILABLE":
     case "BRIDGE_CONTROL_TIMEOUT":
-      return processDiagnostic("CyberBoss 无法完成微信连接服务的健康检查。", "点击“重试启动”；若仍失败，请完全退出并重新启动 CyberBoss。", "retry");
+      return processDiagnostic("艾迪无法完成微信连接服务的健康检查。", "点击“重试启动”；若仍失败，请完全退出并重新启动艾迪。", "retry");
     case "RESTART_CIRCUIT_OPEN":
       if (WECHAT_CAPABILITIES.has(capability)) {
-        return processDiagnostic("微信连接服务连续退出，CyberBoss 已暂停自动重试。", "请先查看最近日志中的诊断代码，再完全退出并重新启动 CyberBoss。", "inspect_logs");
+        return processDiagnostic("微信连接服务连续退出，艾迪已暂停自动重试。", "请先查看最近日志中的诊断代码，再完全退出并重新启动艾迪。", "inspect_logs");
       }
       return null;
     default:
@@ -65,7 +65,7 @@ function resolveWechatStatus(runtime = {}, account = {}) {
         ...account,
         state: "blocked",
         label: "等待后台服务",
-        detail: "微信登录状态正常，但 CyberBoss 尚未启动到微信连接阶段。",
+        detail: "微信登录状态正常，但艾迪尚未启动到微信连接阶段。",
         diagnostic: null,
       };
     }
@@ -78,7 +78,7 @@ function resolveWechatStatus(runtime = {}, account = {}) {
     };
   }
   if (!account.configured) return { ...account, diagnostic: null };
-  return { ...account, state: "ready", label: "已登录", detail: "启动 CyberBoss 后会连接微信。", diagnostic: null };
+  return { ...account, state: "ready", label: "已登录", detail: "启动艾迪后会连接微信。", diagnostic: null };
 }
 
 function configuration(summary, repairAction, nextAction) {

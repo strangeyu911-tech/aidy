@@ -2,7 +2,7 @@
 
 ## First start
 
-A clean state directory has no active engine. CyberBoss stays Stopped and disables Running and Quiet until a profile is live-tested and activated in **Control Center → Models and APIs**.
+A clean state directory has no active engine. Aidy stays Stopped and disables Running and Quiet until a profile is live-tested and activated in **Control Center → Models and APIs**.
 
 1. Choose Built-in API, OpenCode, Codex, or Claude Code.
 2. Choose a provider, enter its endpoint and credentials, then refresh or manually enter a model ID.
@@ -13,8 +13,8 @@ Built-in API supports OpenAI, OpenRouter, Anthropic, Gemini, Ollama, DeepSeek, K
 
 ## OpenCode and compatibility runtimes
 
-- **Managed local OpenCode** starts a CyberBoss-owned service with isolated config/data directories. Provider credentials may be injected from the CyberBoss vault.
-- **External OpenCode** uses provider credentials already owned by that service. CyberBoss stores only the endpoint and optional Basic Auth password, accepts loopback HTTP or HTTPS, and performs a live provider/model refresh on every activation.
+- **Managed local OpenCode** starts an Aidy-owned service with isolated config/data directories. Provider credentials may be injected from the Aidy vault.
+- **External OpenCode** uses provider credentials already owned by that service. Aidy stores only the endpoint and optional Basic Auth password, accepts loopback HTTP or HTTPS, and performs a live provider/model refresh on every activation.
 - **Codex** and **Claude Code** are explicit compatibility choices. They are never selected by default and require their local runtime to be available.
 
 `/model` is intentionally read-only: it shows the active global profile and directs changes to the control center.
@@ -40,7 +40,7 @@ Common recovery actions:
 - Model unavailable: refresh the live catalog or enter an accessible model ID.
 - Rate limit/quota: wait or repair provider billing; these transient errors do not silently select another runtime.
 - OpenCode missing/unhealthy: repair the selected executable/endpoint or explicitly activate another verified profile.
-- Failed runtime switch: CyberBoss restores and probes the previous runtime before dispatch resumes; use Retry if rollback also fails.
+- Failed runtime switch: Aidy restores and probes the previous runtime before dispatch resumes; use Retry if rollback also fails.
 
 ## Release verification
 

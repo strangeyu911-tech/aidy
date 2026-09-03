@@ -8,12 +8,12 @@ const { isPidAlive, readPidFile } = require("./shared-common");
 
 const rootDir = path.resolve(__dirname, "..");
 const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss");
-const packagedExecutable = path.join(rootDir, "dist", "win-unpacked", "CyberBoss.exe");
+const packagedExecutable = path.join(rootDir, "dist", "win-unpacked", "Aidy.exe");
 
 async function main() {
   const action = String(process.argv[2] || "status").toLowerCase();
   if (["install", "install-disabled", "enable", "migrate"].includes(action) && !fs.existsSync(packagedExecutable)) {
-    throw new Error(`CyberBoss packaged executable does not exist: ${packagedExecutable}`);
+    throw new Error(`Aidy packaged executable does not exist: ${packagedExecutable}`);
   }
   const service = new WindowsTaskService({
     rootDir,

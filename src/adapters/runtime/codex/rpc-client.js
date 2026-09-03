@@ -8,7 +8,7 @@ const DEFAULT_CODEX_COMMAND = "codex";
 const WINDOWS_EXECUTABLE_SUFFIX_RE = /\.(cmd|exe|bat)$/i;
 const CODEX_CLIENT_INFO = {
   name: "cyberboss_agent",
-  title: "Cyberboss Agent",
+  title: "Aidy Agent",
   version: "0.1.0",
 };
 

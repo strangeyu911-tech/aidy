@@ -41,14 +41,14 @@ const { WindowsTaskService } = require("./windows-task-service");
 const { resolveOnboardingStatus, resolveWeixinAccountStatus } = require("./onboarding-state");
 const { prepareElectronWorkingDirectory } = require("./electron-working-directory");
 const { resolveWechatStatus } = require("./connection-diagnostics");
+const { BRAND, configureElectronBranding } = require("./brand");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 loadEnvironment(rootDir);
 process.env.CYBERBOSS_HOME ||= rootDir;
 
 const config = readConfig();
-app.setName("CyberBoss");
-app.setAppUserModelId("CyberBoss.Desktop");
+configureElectronBranding(app, path, process.argv);
 const stateDir = config.stateDir || path.join(os.homedir(), ".cyberboss");
 prepareElectronWorkingDirectory(stateDir);
 const logDir = path.join(stateDir, "logs");
@@ -107,7 +107,7 @@ const zhijiantimeSync = new ZhijiantimeSyncService({
   logger: integrationLogger,
   onStatus: () => publishSnapshot(),
 });
-const desktopExecutable = app.isPackaged ? process.execPath : path.join(rootDir, "dist", "win-unpacked", "CyberBoss.exe");
+const desktopExecutable = app.isPackaged ? process.execPath : path.join(rootDir, "dist", "win-unpacked", BRAND.executableName);
 const windowsTaskService = new WindowsTaskService({
   rootDir,
   stateDir,
@@ -190,7 +190,7 @@ function createMainWindow() {
     minHeight: 640,
     show: false,
     backgroundColor: "#f5f2eb",
-    title: "CyberBoss 控制中心",
+    title: `${BRAND.chinese} 控制中心`,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -213,7 +213,7 @@ function createMainWindow() {
 
 function createTray() {
   tray = new Tray(createTrayIcon());
-  tray.setToolTip("CyberBoss 控制中心");
+  tray.setToolTip(`${BRAND.chinese} 控制中心`);
   tray.on("double-click", showMainWindow);
   updateTrayMenu();
 }
@@ -233,7 +233,7 @@ function updateTrayMenu() {
     trayStateItem("静默", "quiet", state),
     trayStateItem("停止", "stopped", state),
     { type: "separator" },
-    { label: "退出 CyberBoss", click: requestExit },
+    { label: `退出 ${BRAND.chinese}`, click: requestExit },
   ]));
 }
 
@@ -417,7 +417,7 @@ function startWeixinLogin() {
     return { started: false, alreadyRunning: true, message: "微信登录窗口已经打开。完成扫码后关闭窗口，再回到这里检查。" };
   }
   if (process.platform !== "win32") {
-    return { started: false, message: "请在 CyberBoss 项目目录运行 npm run login。" };
+    return { started: false, message: `请在 ${BRAND.chinese} 项目目录运行 npm run login。` };
   }
   const command = process.env.ComSpec || "cmd.exe";
   const packaged = app.isPackaged || /(?:^|[\\/])app\.asar(?:[\\/]|$)/i.test(rootDir);
@@ -603,7 +603,7 @@ function sanitizeLogOptions(options) {
 function openValidatedPath(targetPath) {
   const resolved = path.resolve(String(targetPath || ""));
   const relative = path.relative(stateDir, resolved);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("record path is outside CyberBoss data");
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`record path is outside ${BRAND.chinese} data`);
   if (!fs.existsSync(resolved)) throw new Error("record no longer exists");
   return shell.openPath(resolved);
 }
@@ -623,9 +623,9 @@ async function createBackupFromUi(kind) {
   const classes = selectedKind === "diary-export" ? ["diary"] : selectedKind === "reports-export" ? ["reports"] : ["settings", "diary", "reports"];
   const defaultName = `${selectedKind}-${new Date().toISOString().slice(0, 10)}.zip`;
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: selectedKind === "manual" ? "创建 CyberBoss 备份" : "导出 CyberBoss 数据",
+    title: selectedKind === "manual" ? `创建 ${BRAND.chinese} 备份` : `导出 ${BRAND.chinese} 数据`,
     defaultPath: path.join(stateDir, "backups", defaultName),
-    filters: [{ name: "CyberBoss 备份", extensions: ["zip"] }],
+    filters: [{ name: `${BRAND.chinese} 备份`, extensions: ["zip"] }],
   });
   if (result.canceled || !result.filePath) return { canceled: true };
   const created = await backupService.createBackup({ targetPath: result.filePath, classes, kind: selectedKind });
@@ -634,12 +634,12 @@ async function createBackupFromUi(kind) {
 
 async function restoreBackupFromUi() {
   if (stateStore.get().desiredState !== "stopped" || supervisor.phase !== "stopped") {
-    return { restored: false, error: "请先把 CyberBoss 切换为“停止”，再恢复备份。" };
+    return { restored: false, error: `请先把 ${BRAND.chinese} 切换为“停止”，再恢复备份。` };
   }
   const picked = await dialog.showOpenDialog(mainWindow, {
-    title: "选择 CyberBoss 备份",
+    title: `选择 ${BRAND.chinese} 备份`,
     properties: ["openFile"],
-    filters: [{ name: "CyberBoss 备份", extensions: ["zip"] }],
+    filters: [{ name: `${BRAND.chinese} 备份`, extensions: ["zip"] }],
   });
   if (picked.canceled || !picked.filePaths[0]) return { canceled: true, restored: false };
   const confirmation = await dialog.showMessageBox(mainWindow, {

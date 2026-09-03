@@ -2,7 +2,7 @@
 
 ## What changes
 
-CyberBoss no longer treats Codex, OpenCode, Claude Code, or any subscription as the default. Existing runtime hints do not unlock Running or Quiet. After upgrading, create or review a profile in **Control Center → Models and APIs**, perform a live capability test, and explicitly activate it.
+Aidy no longer treats Codex, OpenCode, Claude Code, or any subscription as the default. Existing runtime hints do not unlock Running or Quiet. After upgrading, create or review a profile in **Control Center → Models and APIs**, perform a live capability test, and explicitly activate it.
 
 Legacy per-workspace model settings are migration hints only. The active runtime/provider/model is global and cannot be overridden by a workspace. `/model` reports the current profile but does not mutate it.
 

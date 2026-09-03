@@ -33,7 +33,7 @@ test("WeChat account status reads the selected account when configured", () => {
     state: "ready",
     configured: true,
     label: "已登录",
-    detail: "启动 CyberBoss 后会连接微信。",
+    detail: "启动艾迪后会连接微信。",
     accountId: "selected",
   });
 });

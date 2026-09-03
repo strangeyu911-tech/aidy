@@ -1,8 +1,8 @@
-# CyberBoss + WorkBuddy
+# Aidy（艾迪）
 
-基于 [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss) 的二次开发版本。
+Originally forked from [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss).
 
-CyberBoss 保留上游“在微信里主动监督 Agent”的核心思路；这个 fork 重点面向真实的 Windows + 微信 + WorkBuddy 使用场景，补齐 WorkBuddy runtime 接入、桌面化配置、模型选择、消息链路稳定性和普通用户的安装体验。
+Aidy（艾迪）保留上游“在微信里主动监督 Agent”的核心思路；这个 fork 经过较大幅度二次开发，以新的产品名继续维护，重点面向真实的 Windows + 微信 + WorkBuddy 使用场景。
 
 > 本项目是 upstream 的 fork / derivative work，不是完全原创项目。
 
@@ -15,13 +15,13 @@ CyberBoss 保留上游“在微信里主动监督 Agent”的核心思路；这�
 1. 打开 Windows 桌面控制中心。
 2. 选择并验证 WorkBuddy 模型。
 3. 扫码连接微信。
-4. 启动 CyberBoss，让普通微信消息和主动监督消息走同一套可观察链路。
+4. 启动艾迪，让普通微信消息和主动监督消息走同一套可观察链路。
 
 ## 相比上游的主要改进
 
 | 方向 | 本 fork 的改进 | 用户体验 |
 | --- | --- | --- |
-| WorkBuddy runtime | 将 WorkBuddy 作为实际可用的 CodeBuddy ACP runtime 接入；通过运行时能力、实际协议和连接测试确认兼容性，当前会话使用已验证的 `cwd` contract。 | 可以从 CyberBoss 内完成发现、检查和激活，不需要手工猜 ACP 参数。 |
+| WorkBuddy runtime | 将 WorkBuddy 作为实际可用的 CodeBuddy ACP runtime 接入；通过运行时能力、实际协议和连接测试确认兼容性，当前会话使用已验证的 `cwd` contract。 | 可以从艾迪内完成发现、检查和激活，不需要手工猜 ACP 参数。 |
 | Windows 桌面化 | Electron 控制中心、首次启动引导、模型设置、微信连接入口、运行状态和错误反馈。 | 新用户不必先配置整套命令行；开始菜单或桌面即可启动。 |
 | 模型配置 | WorkBuddy 模型动态发现/刷新，保留真实 model ID；`Auto` 显示为 `auto`，激活前要求完成真实连接测试。 | 减少手填信息，同时避免把显示名称误当成模型 ID。 |
 | 微信链路 | 覆盖 inbound → dispatcher → ACP session → runtime → reply → sender；加入 inbound 去重、typing、超时/取消和 transport lifecycle 处理。 | 针对重复发送、连接中断和超时增加防护与可观测性。 |
@@ -48,12 +48,12 @@ CyberBoss 保留上游“在微信里主动监督 Agent”的核心思路；这�
 
 安装包使用说明见 [INSTALL.md](./INSTALL.md)。简要流程是：
 
-1. 双击 `CyberBoss-Setup-v0.1.0.exe`，从开始菜单或桌面打开 CyberBoss。
-2. 在“AI 模型”中选择“WorkBuddy / CodeBuddy”，让 CyberBoss 检查可用状态、模型和账号登录，然后保存并激活。
+1. 双击 `Aidy-Setup-v0.1.0.exe`，从开始菜单或桌面打开艾迪。
+2. 在“AI 模型”中选择“WorkBuddy / CodeBuddy”，让艾迪检查可用状态、模型和账号登录，然后保存并激活。
 3. 在“微信”中打开登录窗口，用手机微信扫码并确认。
-4. 回到控制中心检查状态，点击“启动 CyberBoss”，再发送一条普通微信消息进行确认。
+4. 回到控制中心检查状态，点击“启动艾迪”，再发送一条普通微信消息进行确认。
 
-WorkBuddy 负责其模型账号和模型服务。CyberBoss 不复制或读取 WorkBuddy 的登录凭据；两者之间只使用本机控制链路。
+WorkBuddy 负责其模型账号和模型服务。艾迪不复制或读取 WorkBuddy 的登录凭据；两者之间只使用本机控制链路。
 
 本仓库不把“安装包可从 GitHub Releases 直接下载”作为前提。若你没有拿到构建产物，请按下面的源码方式构建；不要把 `dist/` 中的本地产物当成仓库内已发布的 Release。
 
@@ -62,8 +62,8 @@ WorkBuddy 负责其模型账号和模型服务。CyberBoss 不复制或读取 Wo
 需要 Windows 10/11 64 位和 Node.js `>=22`。如果使用 WorkBuddy，请先安装并登录它。
 
 ```bash
-git clone https://github.com/strangeyu911-tech/CyberBoss_plus_workbuddy.git
-cd CyberBoss_plus_workbuddy
+git clone https://github.com/strangeyu911-tech/aidy.git
+cd aidy
 npm install
 npm run desktop
 ```
@@ -123,7 +123,7 @@ npm run verify:artifacts
 - 运行连接测试，确认账号身份、模型和 ACP/streaming turn 均可用；
 - 只有验证通过后才能保存为 active profile。
 
-WorkBuddy 的 ACP 参数不根据软件版本号推断。CyberBoss 以运行时 capability、实际 protocol contract 和当前连接结果为准；`session/new` / `session/resume` 使用已验证的 `cwd` 工作目录形态。
+WorkBuddy 的 ACP 参数不根据软件版本号推断。艾迪以运行时 capability、实际 protocol contract 和当前连接结果为准；`session/new` / `session/resume` 使用已验证的 `cwd` 工作目录形态。
 
 ## 微信与主动监督的边界
 
@@ -136,7 +136,7 @@ WorkBuddy 的 ACP 参数不根据软件版本号推断。CyberBoss 以运行时 
 - Windows 上的本地凭据由 DPAPI-backed credential vault 保护；profile 快照和备份不应携带明文 secret。
 - ACP 连接、session、transport generation、请求和发送诊断使用脱敏标识；测试覆盖 token、密码、session ID 和消息正文不进入公开诊断记录。
 - WorkBuddy、微信和所选模型服务仍会处理完成任务所需的数据；“本地保存状态”不等于消息不会离开本机。
-- runtime/tool capability 和 approval 边界由 CyberBoss 控制；不要把本地配置文件、token、真实微信用户 ID 或服务凭据提交到仓库。
+- runtime/tool capability 和 approval 边界由艾迪控制；不要把本地配置文件、token、真实微信用户 ID 或服务凭据提交到仓库。
 
 ## 当前状态
 
@@ -145,6 +145,7 @@ WorkBuddy 的 ACP 参数不根据软件版本号推断。CyberBoss 以运行时 
 ## 文档
 
 - [安装说明](./INSTALL.md)
+- [Aidy 品牌与兼容迁移说明](./docs/aidy-rebrand-migration.md)
 - [API-first 操作说明](./docs/api-first-operations.zh-CN.md)
 - [API-first 迁移说明](./docs/api-first-migration.zh-CN.md)
 - [首次外部测试验收清单](./docs/release/FIRST-EXTERNAL-TESTER-CHECKLIST.md)
@@ -154,7 +155,7 @@ WorkBuddy 的 ACP 参数不根据软件版本号推断。CyberBoss 以运行时 
 
 - Original project: [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss)
 - 本项目是该项目的 fork / derivative work。
-- 感谢原作者提供 CyberBoss 的核心架构、微信 Agent bridge 和主动监督设计基础。
+- 感谢原作者提供上游项目的核心架构、微信 Agent bridge 和主动监督设计基础。
 - 本仓库保留原项目的 [LICENSE](./LICENSE)；请按许可证和 upstream attribution 使用、修改和再发布。
 
 ## License

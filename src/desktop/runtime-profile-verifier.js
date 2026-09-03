@@ -101,7 +101,7 @@ class RuntimeProfileVerifier {
       const cancellationTurn = await adapter.sendTurn({
         bindingKey: `runtime-verification-cancel:${id}`,
         workspaceRoot,
-        text: "CyberBoss cancellation verification: begin a deliberately long plain-text response and do not call tools.",
+        text: "Aidy cancellation verification: begin a deliberately long plain-text response and do not call tools.",
         metadata: { purpose: "runtime-cancellation-verification" },
         model: profile.modelId,
       });

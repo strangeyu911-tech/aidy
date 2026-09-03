@@ -7,13 +7,13 @@
 
   function stateDisplay(phase, desired, onboarding = null, error = null) {
     if (onboarding?.complete && ["running", "quiet"].includes(phase)) {
-      return { title: "CyberBoss 已配置完成并正在运行", short: "运行中", description: "AI 模型已连接，微信已连接。现在可以关闭控制中心，CyberBoss 会继续在托盘运行。" };
+      return { title: "艾迪已配置完成并正在运行", short: "运行中", description: "AI 模型已连接，微信已连接。现在可以关闭控制中心，艾迪会继续在托盘运行。" };
     }
     if (onboarding?.step === "wechat" && phase !== "starting") {
       return { title: "还差微信连接", short: "待连接", description: "模型已经准备好。连接微信后，才能接收和回复消息。" };
     }
     if (onboarding?.step === "start" && phase === "stopped") {
-      return { title: "准备启动", short: "待启动", description: "模型和微信都已准备好，启动 CyberBoss 后才会开始工作。" };
+      return { title: "准备启动", short: "待启动", description: "模型和微信都已准备好，启动艾迪后才会开始工作。" };
     }
     if (phase === "configuration_required") return { title: "需要设置模型", short: "未配置", description: "请先连接 AI 模型并完成测试。" };
     if (phase === "switching") return { title: "正在切换模型", short: "切换中", description: "正在等待当前回复与工具安全结束，然后切换模型服务。" };

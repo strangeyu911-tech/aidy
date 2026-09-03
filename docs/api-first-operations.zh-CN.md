@@ -2,7 +2,7 @@
 
 ## 首次启动
 
-全新的状态目录没有活动引擎。用户必须在**控制中心 → 模型与 API**中完成 profile 实时测试与激活；在此之前 CyberBoss 保持“停止”，“运行”和“静默”不可用。
+全新的状态目录没有活动引擎。用户必须在**控制中心 → 模型与 API**中完成 profile 实时测试与激活；在此之前艾迪保持“停止”，“运行”和“静默”不可用。
 
 1. 选择 Built-in API、OpenCode、Codex 或 Claude Code。
 2. 选择 provider，填写端点和凭据，刷新目录或手动输入 model ID。
@@ -13,8 +13,8 @@ Built-in API 支持 OpenAI、OpenRouter、Anthropic、Gemini、Ollama、DeepSeek
 
 ## OpenCode 与兼容运行时
 
-- **Managed local OpenCode**：启动 CyberBoss 自有服务，并使用隔离的 config/data 目录；provider 凭据可以从 CyberBoss 保险库注入。
-- **External OpenCode**：只使用外部服务已有的 provider 凭据。CyberBoss 仅保存端点和可选 Basic Auth 密码，只接受回环 HTTP 或 HTTPS，并在每次激活时强制实时刷新 provider/model。
+- **Managed local OpenCode**：启动艾迪自有服务，并使用隔离的 config/data 目录；provider 凭据可以从艾迪保险库注入。
+- **External OpenCode**：只使用外部服务已有的 provider 凭据。艾迪仅保存端点和可选 Basic Auth 密码，只接受回环 HTTP 或 HTTPS，并在每次激活时强制实时刷新 provider/model。
 - **Codex / Claude Code**：仅为显式兼容选项，永远不会被选作默认引擎；本地对应运行时必须可用。
 
 `/model` 是只读命令：它只显示当前全局 profile，切换必须回到控制中心。
@@ -40,7 +40,7 @@ API key、OpenCode 服务密码和敏感自定义 header 保存在 `credential-v
 - 模型不可用：刷新实时目录，或填写当前账户可访问的 model ID。
 - 限流/额度不足：等待或修复 provider 账户；系统不会因此静默切到别的 runtime。
 - OpenCode 缺失/不健康：修复选定的 executable/endpoint，或显式激活另一个已验证 profile。
-- 运行时切换失败：CyberBoss 会先恢复并探测旧运行时，成功后才恢复派发；回滚也失败时使用 Retry。
+- 运行时切换失败：艾迪会先恢复并探测旧运行时，成功后才恢复派发；回滚也失败时使用 Retry。
 
 ## 发布验证
 

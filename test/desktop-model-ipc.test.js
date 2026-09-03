@@ -99,7 +99,7 @@ test("renderer maps CodeBuddy to the existing compatibility profile form", () =>
   assert.doesNotMatch(html, /WorkBuddy\s*\/\s*CodeBuddy/);
   assert.equal([...html.matchAll(/CodeBuddy/g)].length, 0);
   assert.doesNotMatch(renderer, /WorkBuddy\s*\/\s*CodeBuddy/);
-  assert.match(html, /id="exit-app" class="danger-link"[^>]*>彻底退出 CyberBoss/);
+  assert.match(html, /id="exit-app" class="danger-link"[^>]*>彻底退出艾迪/);
   assert.match(styles, /\.danger-link\s*\{[^}]*border:\s*1px solid var\(--danger\)[^}]*border-radius:\s*10px[^}]*padding:\s*9px 14px/s);
   assert.match(styles, /\.danger-link:hover\s*\{/);
   assert.match(styles, /\.danger-link:focus-visible\s*\{/);

@@ -8,7 +8,7 @@ function prepareElectronWorkingDirectory(stateDir, { platform = process.platform
 
   const resolvedStateDir = path.resolve(String(stateDir || ""));
   if (!resolvedStateDir || resolvedStateDir === path.parse(resolvedStateDir).root) {
-    throw new Error("A non-root CyberBoss state directory is required for Electron runtime isolation.");
+    throw new Error("A non-root Aidy state directory is required for Electron runtime isolation.");
   }
 
   const workingDirectory = path.join(resolvedStateDir, ELECTRON_WORKING_DIRECTORY_NAME);

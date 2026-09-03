@@ -2,7 +2,7 @@
 
 ## 升级后的变化
 
-CyberBoss 不再把 Codex、OpenCode、Claude Code 或任何订阅视为默认引擎。旧 runtime 提示不能解锁“运行”或“静默”。升级后需要在**控制中心 → 模型与 API**中创建或检查 profile，完成实时能力测试，再明确激活。
+艾迪不再把 Codex、OpenCode、Claude Code 或任何订阅视为默认引擎。旧 runtime 提示不能解锁“运行”或“静默”。升级后需要在**控制中心 → 模型与 API**中创建或检查 profile，完成实时能力测试，再明确激活。
 
 旧的 workspace 模型设置只作为迁移提示；活动 runtime/provider/model 是全局的，workspace 不能覆盖它。`/model` 只显示当前 profile，不再直接修改模型。
 

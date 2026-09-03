@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:">
-  <title>CyberBoss 控制中心</title>
+  <title>艾迪 控制中心</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
     <header class="topbar">
       <div class="brand-mark" aria-hidden="true">CB</div>
       <div>
-        <h1>CyberBoss</h1>
+        <h1>Aidy <small>艾迪</small></h1>
         <p>你的日常监管控制中心</p>
       </div>
       <div class="topbar-spacer"></div>
@@ -24,7 +24,7 @@
         <div id="error-card" class="error-card hidden"></div>
         <section id="first-run-setup" class="setup-panel hidden" aria-labelledby="first-run-title">
           <span id="onboarding-eyebrow" class="eyebrow">首次设置 · 共 3 步</span>
-          <h2 id="first-run-title">让 CyberBoss 开始工作</h2>
+          <h2 id="first-run-title">让艾迪开始工作</h2>
           <p id="onboarding-description">先连接一个你能使用的模型。</p>
           <ol id="onboarding-progress" class="onboarding-progress" aria-label="首次设置进度">
             <li data-onboarding-step="model"><strong>AI 模型</strong><small>连接并激活</small></li>
@@ -128,7 +128,7 @@
                   <label id="profile-service-password-row" class="hidden"><span id="profile-service-password-label">OpenCode 服务密码</span><input id="profile-service-password" type="password" autocomplete="off" maxlength="8192" placeholder="可选的 Basic Auth 密码"></label>
                 </div>
                 <label id="profile-sensitive-headers-row" class="wide-field">敏感自定义 headers（每行 name: value）<textarea id="profile-sensitive-headers" rows="3" maxlength="16384" autocomplete="off" placeholder="x-custom-key: value"></textarea></label>
-                <p id="external-opencode-notice" class="notice hidden">外部 OpenCode 的 provider 凭据必须在外部实例中配置；CyberBoss 不接受 provider key，只保存服务地址和可选的服务密码。</p>
+                <p id="external-opencode-notice" class="notice hidden">外部 OpenCode 的 provider 凭据必须在外部实例中配置；艾迪不接受 provider key，只保存服务地址和可选的服务密码。</p>
               </li>
               <li>
                 <strong>选择模型</strong>
@@ -150,7 +150,7 @@
               </li>
               <li>
                 <strong>激活配置</strong>
-                <p>测试通过后激活，才会成为 CyberBoss 当前使用的 AI 配置。</p>
+                <p>测试通过后激活，才会成为艾迪当前使用的 AI 配置。</p>
                 <div class="editor-actions"><button id="cancel-model-profile" type="button">取消</button><button id="save-model-profile" type="submit">保存草稿</button><button id="activate-model-profile" class="primary-action" type="button" disabled>激活</button></div>
               </li>
             </ol>
@@ -169,7 +169,7 @@
               <li><span class="guide-step-index">3</span><div><strong>选择运行方式</strong><p>运行引擎选择“WorkBuddy（推荐）”。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="runtime"><figcaption>截图 B：运行引擎选择</figcaption></figure></div></li>
               <li><span class="guide-step-index">4</span><div><strong>选择模型</strong><p>点击“刷新模型”获取当前账号可用模型。下拉菜单显示模型名称，但保存和测试使用对应的真实模型 ID；<code>Auto</code> 会映射为 <code>auto</code>。只有在目录没有返回时，才在高级设置中自定义模型 ID。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="model-id"><figcaption>截图 C：模型下拉选择</figcaption></figure></div></li>
               <li><span class="guide-step-index">5</span><div><strong>保存并测试连接</strong><p>点击“保存并测试连接”，确认当前模型和本机连接确实可用。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="test"><figcaption>截图 D：保存并测试连接</figcaption></figure></div></li>
-              <li><span class="guide-step-index">6</span><div><strong>测试通过后激活</strong><p>只有通过测试的配置才能激活。激活后，它才会成为 CyberBoss 当前使用的 AI 配置。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="activate"><figcaption>截图 E：激活配置</figcaption></figure></div></li>
+              <li><span class="guide-step-index">6</span><div><strong>测试通过后激活</strong><p>只有通过测试的配置才能激活。激活后，它才会成为艾迪当前使用的 AI 配置。</p><figure class="guide-screenshot-slot hidden" data-guide-screenshot="activate"><figcaption>截图 E：激活配置</figcaption></figure></div></li>
             </ol>
             <details class="model-guide-alternatives"><summary>我使用 API Key 或其他兼容引擎</summary><p>已有 API Key 时可选择“内置 API”；Codex、Claude Code 与 OpenCode 面向已经熟悉这些工具的用户，其中 OpenCode 仍属于高级实验选项。ChatGPT 等产品订阅不等于 API Key。</p></details>
             <p class="model-guide-note">查看或关闭本指南不会创建、修改、测试或激活任何配置。</p>
@@ -182,7 +182,7 @@
           <label class="setting-row"><span><strong>吃饭后查岗</strong><small>没有明确时间时使用</small></span><span class="number-field"><input id="meal-duration" type="number" min="1" max="1440"><em>分钟</em></span></label>
           <label class="setting-row"><span><strong>洗澡后查岗</strong><small>没有明确时间时使用</small></span><span class="number-field"><input id="shower-duration" type="number" min="1" max="1440"><em>分钟</em></span></label>
           <div class="setting-row"><span><strong>指尖时光</strong><small id="zhijian-detail">正在读取连接状态</small></span><span class="integration-control"><b id="zhijian-state">—</b><button id="sync-zhijian" type="button">立即同步</button></span></div>
-          <div id="zhijian-auth-row" class="credential-row hidden"><p>重新授权只会把 token 交给你本机的指尖时光 MCP，并用当前 Windows 用户的 DPAPI 加密保存。不会写入 CyberBoss 日志或备份。</p><div><input id="zhijian-token" type="password" autocomplete="off" placeholder="粘贴指尖时光 token"><button id="authorize-zhijian" type="button">重新授权</button></div><small id="zhijian-auth-result"></small></div>
+          <div id="zhijian-auth-row" class="credential-row hidden"><p>重新授权只会把 token 交给你本机的指尖时光 MCP，并用当前 Windows 用户的 DPAPI 加密保存。不会写入艾迪日志或备份。</p><div><input id="zhijian-token" type="password" autocomplete="off" placeholder="粘贴指尖时光 token"><button id="authorize-zhijian" type="button">重新授权</button></div><small id="zhijian-auth-result"></small></div>
           </section>
           <section class="panel action-panel">
           <div><h3>本地数据</h3><p id="data-dir">—</p></div>
@@ -210,7 +210,7 @@
           <p id="diagnostic-capture-result" class="operation-result hidden"></p>
           </section>
           <div id="log-list" class="log-list hidden"></div>
-          <button id="exit-app" class="danger-link" type="button">彻底退出 CyberBoss</button>
+          <button id="exit-app" class="danger-link" type="button">彻底退出艾迪</button>
         </details>
       </section>
     </main>
@@ -230,7 +230,7 @@
   </aside>
 
   <div id="modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <div class="modal"><h3 id="modal-title">确认停止？</h3><p id="modal-description">停止后，微信回复、查岗、同步、日记和报表都会暂停。桌面控制中心会继续留在托盘中。</p><div class="modal-actions"><button id="modal-cancel" type="button">取消</button><button id="modal-stop-now" class="hidden" type="button">立即停止当前工作</button><button id="modal-confirm" class="danger" type="button">停止 CyberBoss</button></div></div>
+    <div class="modal"><h3 id="modal-title">确认停止？</h3><p id="modal-description">停止后，微信回复、查岗、同步、日记和报表都会暂停。桌面控制中心会继续留在托盘中。</p><div class="modal-actions"><button id="modal-cancel" type="button">取消</button><button id="modal-stop-now" class="hidden" type="button">立即停止当前工作</button><button id="modal-confirm" class="danger" type="button">停止艾迪</button></div></div>
   </div>
   <div id="toast" class="toast hidden"><span id="toast-text"></span><button id="toast-undo" type="button">撤销</button></div>
   <script src="./profile-editor-state.js"></script>

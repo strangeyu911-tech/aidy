@@ -75,7 +75,7 @@ async function main() {
   assert.equal(archiveText.includes(vaultText.match(/"ciphertext"\s*:\s*"([^"]+)"/)?.[1] || secret), false);
   assert.equal(archiveText.includes("artifact-private-response"), false);
 
-  const packagedExe = path.join(artifactDistDir, "win-unpacked", "CyberBoss.exe");
+  const packagedExe = path.join(artifactDistDir, "win-unpacked", "Aidy.exe");
   assertExistingNonEmpty(packagedExe);
   const resourcesDir = path.join(artifactDistDir, "win-unpacked", "resources");
   const resourceEntries = inspectPackagedResources(resourcesDir);
@@ -122,11 +122,11 @@ function inspectPackagedResources(resourcesDir) {
 
 function findPortableArtifact(distDir) {
   const candidates = fs.readdirSync(distDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /^CyberBoss-(?!Setup-).*\.exe$/i.test(entry.name))
+    .filter((entry) => entry.isFile() && /^Aidy-(?!Setup-).*\.exe$/i.test(entry.name))
     .map((entry) => path.join(distDir, entry.name))
     .filter((filePath) => fs.statSync(filePath).size > 0)
     .sort();
-  assert.ok(candidates.length > 0, "No portable CyberBoss artifact was generated.");
+  assert.ok(candidates.length > 0, "No portable Aidy artifact was generated.");
   return candidates[0];
 }
 
@@ -147,13 +147,13 @@ function launchPackaged(executable, packagedStateDir) {
     let stderr = "";
     const timeout = setTimeout(() => {
       child.kill();
-      reject(new Error("Packaged CyberBoss did not exit after the artifact smoke timeout."));
+      reject(new Error("Packaged Aidy did not exit after the artifact smoke timeout."));
     }, 30_000);
     child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
     child.once("error", (error) => { clearTimeout(timeout); reject(error); });
     child.once("exit", (code) => {
       clearTimeout(timeout);
-      if (code !== 0) reject(new Error(stderr.trim() || `Packaged CyberBoss exited with ${code}`));
+      if (code !== 0) reject(new Error(stderr.trim() || `Packaged Aidy exited with ${code}`));
       else resolve(code);
     });
   });

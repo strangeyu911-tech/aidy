@@ -41,8 +41,8 @@ const ERROR_GUIDANCE = Object.freeze({
   TIMEOUT: guidance("network", "连接测试超时。", "检查网络与服务状态，然后再次测试。"),
   CANCELLED: guidance("cancelled", "连接测试已取消。", "需要时重新开始连接测试。"),
   INCOMPATIBLE_PROTOCOL: guidance("protocol", "服务响应与所选协议不兼容。", "确认供应商、Base URL 和协议类型是否匹配。"),
-  STREAMING_UNSUPPORTED: guidance("capability", "所选模型不支持 CyberBoss 所需的流式回复。", "更换支持流式回复的模型。"),
-  TOOL_CALLING_UNSUPPORTED: guidance("capability", "所选模型不支持 CyberBoss 所需的工具调用。", "更换支持原生工具调用的模型。"),
+  STREAMING_UNSUPPORTED: guidance("capability", "所选模型不支持艾迪所需的流式回复。", "更换支持流式回复的模型。"),
+  TOOL_CALLING_UNSUPPORTED: guidance("capability", "所选模型不支持艾迪所需的工具调用。", "更换支持原生工具调用的模型。"),
   TOOL_CALL_MALFORMED: guidance("capability", "模型返回了无法使用的工具参数。", "更换模型，或检查兼容服务的工具调用实现。"),
   TOOL_RESULT_UNAVAILABLE: guidance("capability", "运行时未确认工具执行结果。", "检查运行时版本和工具支持后再次测试。"),
   TOOL_CONTINUATION_UNSUPPORTED: guidance("capability", "模型无法在工具执行后继续回复。", "更换支持完整工具调用流程的模型。"),
@@ -56,9 +56,9 @@ const ERROR_GUIDANCE = Object.freeze({
   OPENCODE_INCOMPATIBLE: guidance("opencode", "OpenCode 版本或响应不兼容。", "升级 OpenCode，或检查外部服务地址。"),
   OPENCODE_SPAWN_FAILED: guidance("opencode", "无法启动托管 OpenCode。", "确认已安装兼容的 OpenCode，并检查可执行文件设置。"),
   RUNTIME_VERIFIER_UNAVAILABLE: guidance("runtime", "当前兼容运行时还不能完成安全验证。", "检查本机运行时安装；也可以先选择内置 API 或 OpenCode。"),
-  CODEBUDDY_BINARY_NOT_FOUND: guidance("setup", "没有找到 WorkBuddy。", "安装并登录 WorkBuddy 后重新打开 CyberBoss。"),
+  CODEBUDDY_BINARY_NOT_FOUND: guidance("setup", "没有找到 WorkBuddy。", "安装并登录 WorkBuddy 后重新打开艾迪。"),
   CODEBUDDY_LOGIN_REQUIRED: guidance("login", "还没有检测到可用的 WorkBuddy 登录。", "先在 WorkBuddy 中登录，然后回到这里再次测试。"),
-  CODEBUDDY_AUTH_FAILED: guidance("connection", "无法建立本机模型连接。", "重新测试；CyberBoss 会自动管理本机连接所需的安全凭据。"),
+  CODEBUDDY_AUTH_FAILED: guidance("connection", "无法建立本机模型连接。", "重新测试；艾迪会自动管理本机连接所需的安全凭据。"),
   CODEBUDDY_API_INCOMPATIBLE: guidance("compatibility", "当前 WorkBuddy 版本暂时不兼容。", "升级或更换兼容版本后，再次测试连接。"),
   CODEBUDDY_MODEL_UNAVAILABLE: guidance("model", "WorkBuddy 当前无法使用这个模型。", "刷新模型目录并选择当前可用的模型；显示名称不一定是模型 ID。"),
   CODEBUDDY_SESSION_FAILED: guidance("connection", "WorkBuddy 无法创建模型会话。", "确认 WorkBuddy 已登录且网络正常，然后再次测试。"),
@@ -93,11 +93,11 @@ class ModelSettingsService {
         ...(definition.id === "codebuddy" ? {
           isRecommended: true,
           productLabel: "WorkBuddy",
-          setupHint: "适合刚开始使用 CyberBoss 的用户：安装并登录 WorkBuddy 后返回这里即可。",
+          setupHint: "适合刚开始使用艾迪的用户：安装并登录 WorkBuddy 后返回这里即可。",
         } : { isRecommended: false }),
         ...(definition.id === "opencode" ? {
           ownershipModes: ["managed-local", "external"],
-          externalCredentialNotice: "外部实例的 provider 凭据由外部实例配置；CyberBoss 不接收 provider key，只可保存可选的服务密码。",
+          externalCredentialNotice: "外部实例的 provider 凭据由外部实例配置；艾迪不接收 provider key，只可保存可选的服务密码。",
         } : {}),
       })),
       providers: Object.values(PROVIDER_PRESETS).map((preset) => ({ ...preset })),
@@ -231,7 +231,7 @@ class ModelSettingsService {
     requireProfile(this.profileStore, id);
     const activeId = this.profileStore.getActive?.()?.id || "";
     if (activeId === id && (this.supervisor?.desiredState !== "stopped" || this.supervisor?.phase !== "stopped")) {
-      throw serviceError("ACTIVE_PROFILE_DELETE_BLOCKED", "Stop CyberBoss or activate another verified profile before deleting the active profile.");
+      throw serviceError("ACTIVE_PROFILE_DELETE_BLOCKED", "Stop Aidy or activate another verified profile before deleting the active profile.");
     }
     const vaultResult = typeof this.credentialVault.delete === "function" ? await this.credentialVault.delete(id) : null;
     const deleted = this.profileStore.delete(id);
@@ -289,13 +289,13 @@ function registerModelSettingsIpc({ ipcMain, service, getMainWindow, rendererUrl
 
 function assertTrustedIpcEvent(event, { mainWindow, rendererUrl } = {}) {
   if (!mainWindow?.webContents || event?.sender !== mainWindow.webContents) {
-    throw serviceError("IPC_SENDER_REJECTED", "IPC sender is not the CyberBoss window.");
+    throw serviceError("IPC_SENDER_REJECTED", "IPC sender is not the Aidy window.");
   }
   if (!event.senderFrame || event.senderFrame.top !== event.senderFrame) {
     throw serviceError("IPC_FRAME_REJECTED", "IPC calls are allowed only from the top-level frame.");
   }
   if (!rendererUrl || event.senderFrame.url !== rendererUrl) {
-    throw serviceError("IPC_ORIGIN_REJECTED", "IPC origin is not the CyberBoss renderer.");
+    throw serviceError("IPC_ORIGIN_REJECTED", "IPC origin is not the Aidy renderer.");
   }
 }
 

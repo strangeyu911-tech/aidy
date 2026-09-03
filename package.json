@@ -41,9 +41,9 @@
   },
   "build": {
     "appId": "com.cyberboss.desktop",
-    "productName": "CyberBoss",
+    "productName": "Aidy",
     "electronDist": "node_modules/electron/dist",
-    "artifactName": "CyberBoss-${version}-${arch}.${ext}",
+    "artifactName": "Aidy-${version}-${arch}.${ext}",
     "directories": {
       "output": "dist"
     },
@@ -58,6 +58,7 @@
       "package.json"
     ],
     "win": {
+      "executableName": "Aidy",
       "target": [
         "nsis",
         "portable"
@@ -67,13 +68,13 @@
       "unpackDirName": false
     },
     "nsis": {
-      "artifactName": "CyberBoss-Setup-v${version}.${ext}",
+      "artifactName": "Aidy-Setup-v${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CyberBoss"
+      "shortcutName": "Aidy"
     }
   },
   "dependencies": {
