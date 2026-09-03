@@ -1,521 +1,162 @@
-<div align="center">
+# CyberBoss + WorkBuddy
 
-[中文](./README.zh-CN.md) · English
+基于 [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss) 的二次开发版本。
 
-# The Overbearing Boss Fell for My ADHD
-## Cyberboss: an API-first, multi-runtime WeChat agent bridge
+CyberBoss 保留上游“在微信里主动监督 Agent”的核心思路；这个 fork 重点面向真实的 Windows + 微信 + WorkBuddy 使用场景，补齐 WorkBuddy runtime 接入、桌面化配置、模型选择、消息链路稳定性和普通用户的安装体验。
 
-> "Keep escaping into dopamine if you want. I'll still catch you at the next timestamp."
+> 本项目是 upstream 的 fork / derivative work，不是完全原创项目。
 
-[![Node >=22](https://img.shields.io/badge/Node-22%2B-3C873A)](./package.json)
-[![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-b31b1b)](./LICENSE)
-[![Runtime-API%20%7C%20OpenCode%20%7C%20Codex%20%7C%20Claude](https://img.shields.io/badge/Runtime-API%20%7C%20OpenCode%20%7C%20Codex%20%7C%20Claude-111827)](#technical-stack)
-[![Bridge-Weixin](https://img.shields.io/badge/Bridge-Weixin-07C160)](#technical-stack)
-[![Timeline-Enabled](https://img.shields.io/badge/Timeline-Enabled-8b5cf6)](#core-features)
+## 为什么做这个版本
 
-<p>
-  <a href="#user-guide">User Guide</a> ·
-  <a href="#agent-guide">Agent Guide</a> ·
-  <a href="#data-dir">Local Data</a> ·
-  <a href="#faq">FAQ</a>
-</p>
+上游项目已经提供了很好的时间感知、上下文持久化和主动监督基础。本 fork 主要解决使用过程中的实际摩擦：用户不应该为了连接模型、登录微信或启动监督服务而先理解一整套命令行和内部协议。
 
-</div>
+因此，当前版本优先把这些事情做成一条更容易完成的路径：
 
-<p align="center">
-  <img src="./docs/images/IMG_0241.PNG" alt="Cyberboss English demo 1" width="31%" />
-  <img src="./docs/images/IMG_0244.PNG" alt="Cyberboss English demo 2" width="31%" />
-  <img src="./docs/images/IMG_0245.PNG" alt="Cyberboss English demo 3" width="31%" />
-</p>
+1. 打开 Windows 桌面控制中心。
+2. 选择并验证 WorkBuddy 模型。
+3. 扫码连接微信。
+4. 启动 CyberBoss，让普通微信消息和主动监督消息走同一套可观察链路。
 
-Cyberboss is not another polite productivity timer. It is not a to-do list with better branding either.
+## 相比上游的主要改进
 
-It is an agent bridge that connects a verified model profile directly to WeChat and turns it into a time-aware, context-persistent accountability companion. The built-in API runtime works without OpenCode, while OpenCode, Codex, and Claude Code remain explicit optional choices. It does not wait for you to "start a session". It watches the flow of your day, notices when you disappear, and decides when to show up again.
+| 方向 | 本 fork 的改进 | 用户体验 |
+| --- | --- | --- |
+| WorkBuddy runtime | 将 WorkBuddy 作为实际可用的 CodeBuddy ACP runtime 接入；通过运行时能力、实际协议和连接测试确认兼容性，当前会话使用已验证的 `cwd` contract。 | 可以从 CyberBoss 内完成发现、检查和激活，不需要手工猜 ACP 参数。 |
+| Windows 桌面化 | Electron 控制中心、首次启动引导、模型设置、微信连接入口、运行状态和错误反馈。 | 新用户不必先配置整套命令行；开始菜单或桌面即可启动。 |
+| 模型配置 | WorkBuddy 模型动态发现/刷新，保留真实 model ID；`Auto` 显示为 `auto`，激活前要求完成真实连接测试。 | 减少手填信息，同时避免把显示名称误当成模型 ID。 |
+| 微信链路 | 覆盖 inbound → dispatcher → ACP session → runtime → reply → sender；加入 inbound 去重、typing、超时/取消和 transport lifecycle 处理。 | 针对重复发送、连接中断和超时增加防护与可观测性。 |
+| 主动监督 | system message queue、checkpoint、业务级 supervision key、同日任务合并，以及静默时段过期任务的归档/丢弃边界。 | 减少多个 overdue checkpoint 在一次回复后集中 flood；不把旧提醒当成新任务重复轰炸。 |
+| 安装与发布 | NSIS Setup、portable、`win-unpacked` 和开始菜单快捷方式同步脚本。 | Windows 用户可以使用安装包或便携版；源码用户仍可保留开发模式。 |
+| 可观测性 | inbound、dispatch、ACP 请求/SSE、runtime 结果、reply、sender enqueue/attempt/result 使用关联上下文串联；敏感值和消息正文不进入普通诊断。 | 出问题时能区分“没收到、没启动、没生成回复、没发出去”分别发生在哪一段。 |
 
-### API-first release behavior
+## 功能概览
 
-- A clean installation has **no default engine**. Running and Quiet stay disabled until a model profile passes a live connection/capability test and is activated.
-- Built-in API profiles support OpenAI, OpenRouter, Anthropic Claude, Google Gemini, Ollama, DeepSeek, Kimi, GLM, MiniMax, Tencent Hunyuan, Xiaomi MiMo, Qwen, and custom OpenAI-compatible endpoints.
-- OpenRouter includes live catalog refresh and searchable model selection. External OpenCode also refreshes its live provider/model catalog on every activation.
-- OpenCode is optional: Managed local uses an isolated Cyberboss-owned service and vault credentials; External service uses credentials already owned by that service and accepts only loopback HTTP or HTTPS.
-- Codex and Claude Code remain compatibility profiles and are never silently selected.
-- API keys, service passwords, and sensitive headers are encrypted with Windows DPAPI for the current Windows user. They are not exposed to the renderer, normal logs, backups, or exports.
-- Model choice is global. `/model` only reports the active profile; changes must be verified and activated in **Control Center → Models and APIs**.
-- Existing Codex/Claude sessions migrate conservatively. Unprovable legacy sessions stay read-only, and restored profiles return as drafts without credentials.
-- Night-care behavior is intentionally deferred to the separate follow-up plan and is not part of this API-first release.
+来自上游并继续保留的核心能力包括：
 
-See [API-first operations](./docs/api-first-operations.md) and [API-first migration](./docs/api-first-migration.md) for setup, recovery, backup, and upgrade details.
+- 微信消息接入、回复、文件/媒体处理和本地账号状态；
+- 按时间记录活动、维护个人 timeline、写入本地 diary；
+- reminder、random check-in 和基于 checkpoint 的主动监督；
+- 绑定项目 workspace，让 Agent 在持续上下文中工作；
+- 项目原生工具与可选本地 MCP 服务；
+- 多运行时架构：Built-in API、OpenCode、Codex、Claude Code，以及本 fork 重点维护的 CodeBuddy/WorkBuddy。
 
-## Why Cyberboss?
+本 fork 的桌面控制中心只允许经过验证的 profile 成为全局 active runtime。模型、provider 和 runtime 不会因为一个环境变量或兼容性提示就被静默切换。
 
-For people with ADHD, or anyone who needs strong external accountability, most productivity tools fail for the same reason: they assume you still have enough executive function to remember to use them.
+## Windows 快速开始
 
-Cyberboss starts from a transfer of control.
+### 已拿到安装包
 
-- No manual start button
-  It lives inside the chat interface you actually open every day.
-- Inescapable sense of time
-  It sees when you replied, when you vanished, and how long a promise stayed unresolved.
-- Real external feedback
-  If self-discipline is unreliable, hand the supervision layer to an agent that stays online, keeps memory, and can act across time.
+安装包使用说明见 [INSTALL.md](./INSTALL.md)。简要流程是：
 
-<a id="core-features"></a>
-## Core Features: fully automated accountability
+1. 双击 `CyberBoss-Setup-v0.1.0.exe`，从开始菜单或桌面打开 CyberBoss。
+2. 在“AI 模型”中选择“WorkBuddy / CodeBuddy”，让 CyberBoss 检查可用状态、模型和账号登录，然后保存并激活。
+3. 在“微信”中打开登录窗口，用手机微信扫码并确认。
+4. 回到控制中心检查状态，点击“启动 CyberBoss”，再发送一条普通微信消息进行确认。
 
-1. Omniscient Time
-Every inbound WeChat message is stamped with local time before it reaches the runtime. The model is not just reading text. It is reading your day as it unfolds.
+WorkBuddy 负责其模型账号和模型服务。CyberBoss 不复制或读取 WorkBuddy 的登录凭据；两者之间只使用本机控制链路。
 
-2. The Ledger of Life
-Using those timestamps, Cyberboss reconstructs when events start, when they end, and how long they last, then turns fragmented chat into a structured personal timeline.
+本仓库不把“安装包可从 GitHub Releases 直接下载”作为前提。若你没有拿到构建产物，请按下面的源码方式构建；不要把 `dist/` 中的本地产物当成仓库内已发布的 Release。
 
-3. Stochastic Pulse
-At random intervals, the system wakes the agent up and lets it decide what to do next: send a message, stay silent, write in the diary, update the timeline, or use tools.
+### 从源码运行
 
-4. Local Reminder Queue
-Reminders are not primarily a user-facing alarm clock. They are how the model leaves instructions for its future self and wakes itself up later.
-
-5. Zero-Token Diary
-Daily traces can be written to local files without depending on a cloud note service or burning extra model context every time.
-
-## Timeline also works on its own
-
-If the most interesting part of Cyberboss is the "ledger of life" layer, you can use that separately:
-
-- Project: [WenXiaoWendy/timeline-for-agent](https://github.com/WenXiaoWendy/timeline-for-agent)
-- It is an independent project and does not require the WeChat bridge
-- You can plug it into your own agent, bot, or automation stack even if you do not use Codex
-
-Cyberboss builds on top of `timeline-for-agent`, then adds WeChat, reminders, diary writing, and random check-ins around it.
-
-<a id="technical-stack"></a>
-## Technical Stack
-
-- **Core**
-  A strict runtime registry for Built-in API, optional OpenCode, Codex compatibility, and Claude Code compatibility, with one verified global profile.
-- **Bridge**
-  A WeChat HTTP bridge with long-poll synchronization for inbound messages, outbound replies, files, and status transitions.
-- **Task System**
-  Local queues for reminders, system triggers, and timeline screenshot jobs.
-- **Capability Layer**
-  Timeline, diary, random check-ins, file delivery, and related runtime actions.
-- **Optional Tooling**
-  MCP or other local hardware / software integrations can be added, but they are optional.
-
-## Why It Exists
-
-Cyberboss is built against the myth that productivity begins with self-control.
-
-- Pomodoro assumes you can start on command.
-- To-do apps assume you can keep returning.
-- Reminder apps assume you will still respect them when they fire.
-
-Cyberboss assumes none of that. It treats the user as someone who may drift, disappear, procrastinate, or lose momentum, then moves the regulatory layer outside the user and into an always-on local agent.
-
-<a id="user-guide"></a>
-## User Guide
-
-### Requirements
-
-- Node.js `>= 22`
-- Windows for DPAPI-backed API credentials
-- A provider API endpoint/key, local Ollama, an explicit OpenCode service/executable, or an installed Codex/Claude Code compatibility runtime
-- Chrome / Chromium / Edge if you want screenshot features
-
-### Get the source and install dependencies
-
-This project is not published as an npm package. Clone the repo and install inside the project directory:
+需要 Windows 10/11 64 位和 Node.js `>=22`。如果使用 WorkBuddy，请先安装并登录它。
 
 ```bash
-git clone https://github.com/WenXiaoWendy/cyberboss.git
-cd cyberboss
+git clone https://github.com/strangeyu911-tech/CyberBoss_plus_workbuddy.git
+cd CyberBoss_plus_workbuddy
 npm install
+npm run desktop
 ```
 
-### Configure channel/workspace variables, then choose a model in the control center
-
-`Cyberboss` reads environment variables from:
-
-- `.env` in the current project directory
-- `${HOME}/.cyberboss/.env`
-- the current shell environment
-
-Before running the first command, set at least:
-
-```dotenv
-CYBERBOSS_USER_NAME=YourName
-CYBERBOSS_USER_GENDER=female
-CYBERBOSS_ALLOWED_USER_IDS=your_wechat_user_id
-CYBERBOSS_WORKSPACE_ROOT=/absolute/path/to/your/project
-```
-
-Common optional variables:
-
-```dotenv
-CYBERBOSS_RUNTIME=
-CYBERBOSS_CODEX_ENDPOINT=ws://127.0.0.1:8765
-CYBERBOSS_CODEX_COMMAND=
-CYBERBOSS_CODEX_MODEL=
-CYBERBOSS_CODEX_MODEL_PROVIDER=
-CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT=
-CYBERBOSS_CLAUDE_COMMAND=claude
-CYBERBOSS_CLAUDE_MODEL=
-CYBERBOSS_CLAUDE_CONTEXT_WINDOW=
-CYBERBOSS_CLAUDE_PERMISSION_MODE=default
-CYBERBOSS_CLAUDE_DISABLE_VERBOSE=false
-CYBERBOSS_CLAUDE_EXTRA_ARGS=
-CLAUDE_CODE_MAX_OUTPUT_TOKENS=
-CYBERBOSS_VISION_MODE=auto
-CYBERBOSS_VISION_PROVIDER=openai-compatible
-CYBERBOSS_VISION_API_BASE_URL=
-CYBERBOSS_VISION_API_KEY=
-CYBERBOSS_VISION_MODEL=
-CYBERBOSS_VISION_TIMEOUT_MS=30000
-CYBERBOSS_ACCOUNT_ID=
-CYBERBOSS_WEIXIN_MIN_CHUNK_CHARS=20
-CYBERBOSS_WEIXIN_BASE_URL=https://ilinkai.weixin.qq.com
-CYBERBOSS_WEIXIN_CDN_BASE_URL=https://novac2c.cdn.weixin.qq.com/c2c
-CYBERBOSS_WEIXIN_QR_BOT_TYPE=3
-CYBERBOSS_ENABLE_LOCATION_SERVER=false
-CYBERBOSS_LOCATION_HOST=0.0.0.0
-CYBERBOSS_LOCATION_PORT=4318
-CYBERBOSS_LOCATION_TOKEN=
-CYBERBOSS_LOCATION_HOME_CENTER=
-CYBERBOSS_LOCATION_WORK_CENTER=
-CYBERBOSS_LOCATION_KNOWN_PLACES=
-CYBERBOSS_LOCATION_PLACE_RADIUS_METERS=150
-CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT=100
-```
-
-What these do:
-
-- `CYBERBOSS_RUNTIME`
-  Legacy compatibility hint only. It never activates an engine or overrides the global verified profile.
-- `CYBERBOSS_CODEX_ENDPOINT`
-  Reuse an existing shared Codex app-server instead of spawning a private runtime.
-- `CYBERBOSS_CODEX_COMMAND`
-  Override the Codex launcher when `codex` is not directly on your `PATH`.
-- `CYBERBOSS_CODEX_MODEL`
-  Force Codex turns to use a specific model. Leave empty to use Codex's default model selection.
-- `CYBERBOSS_CODEX_MODEL_PROVIDER`
-  Compatibility-profile hint for Codex, such as `ollama` for local models. It does not select a default provider.
-- `CYBERBOSS_CODEX_NATIVE_IMAGE_INPUT`
-  Optional override for direct image input through the Codex app-server path. Leave empty to infer from model metadata; set `true` to test a local multimodal model directly, or `false` to force caption fallback.
-- `CYBERBOSS_CLAUDE_COMMAND`
-  Override the Claude launcher. Default is `claude`.
-- `CYBERBOSS_CLAUDE_MODEL`
-  Set the default Claude model.
-- `CYBERBOSS_CLAUDE_CONTEXT_WINDOW`
-  Set Claude's effective context window so `/status` can show an approximate context usage line.
-- `CYBERBOSS_CLAUDE_PERMISSION_MODE`
-  Set Claude's permission mode before the bridge starts.
-- `CYBERBOSS_CLAUDE_DISABLE_VERBOSE`
-  Disable verbose Claude terminal output.
-- `CYBERBOSS_CLAUDE_EXTRA_ARGS`
-  Append extra Claude CLI arguments as a comma-separated list.
-- `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
-  Reserve output tokens for Claude replies. `/status` subtracts this reserve from the configured Claude context window.
-- `CYBERBOSS_VISION_MODE`
-  Choose how inbound images are handled: `auto`, `caption`, `native`, or `off`. `auto` uses native image input when a runtime supports it, otherwise falls back to captions.
-- `CYBERBOSS_VISION_PROVIDER`, `CYBERBOSS_VISION_API_BASE_URL`, `CYBERBOSS_VISION_API_KEY`, `CYBERBOSS_VISION_MODEL`
-  Configure the optional OpenAI-compatible vision caption API used for text-only models. For Qwen/DashScope, start from [templates/vision-openai-compatible.env](./templates/vision-openai-compatible.env).
-- `CYBERBOSS_VISION_TIMEOUT_MS`
-  Timeout for each image caption request.
-- `CYBERBOSS_WEIXIN_MIN_CHUNK_CHARS`
-  Set the default minimum merge size for short WeChat reply chunks.
-- `CYBERBOSS_WEIXIN_BASE_URL`, `CYBERBOSS_WEIXIN_CDN_BASE_URL`, `CYBERBOSS_WEIXIN_QR_BOT_TYPE`
-  Override the WeChat bridge endpoints and QR bot type when your deployment needs it.
-- `CYBERBOSS_ENABLE_LOCATION_SERVER`
-  Enable the built-in whereabouts HTTP ingest server.
-- `CYBERBOSS_LOCATION_HOST`
-  Host for the built-in whereabouts HTTP server. Default is `0.0.0.0`.
-- `CYBERBOSS_LOCATION_PORT`
-  Port for the built-in whereabouts HTTP server. Default is `4318`.
-- `CYBERBOSS_LOCATION_TOKEN`
-  Bearer token used to upload location data.
-- `CYBERBOSS_LOCATION_HOME_CENTER`, `CYBERBOSS_LOCATION_WORK_CENTER`
-  Home and work center coordinates in `lat,lng` format.
-- `CYBERBOSS_LOCATION_KNOWN_PLACES`
-  Extra named places as a JSON array.
-- `CYBERBOSS_LOCATION_PLACE_RADIUS_METERS`
-  Radius for place-tag matching. Default is `150`.
-- `CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT`
-  Number of battery observations to retain. Default is `100`.
-
-Why this matters:
-
-- the first `cyberboss` command auto-generates `~/.cyberboss/weixin-instructions.md`
-- if `CYBERBOSS_USER_NAME` and `CYBERBOSS_USER_GENDER` are missing, that generated persona file may start from the wrong assumptions
-
-If you want the strongest "push" effect, do not immediately rewrite the persona template by hand. Let the agent develop its rhythm through real conversation first, then edit only the parts that are clearly wrong.
-
-If you plan to use shared mode, set `CYBERBOSS_WORKSPACE_ROOT` before the first start so `shared:open` resolves the right thread for the right project.
-
-#### Optional local MCP servers
-
-Cyberboss can attach additional local STDIO MCP servers without changing its built-in tools. Leave this unset to keep the default behavior. To enable one or more external servers, point `CYBERBOSS_MCP_SERVERS_FILE` at a local JSON file:
-
-```dotenv
-CYBERBOSS_MCP_SERVERS_FILE=D:\\CyberBoss\\mcp-servers.local.json
-```
-
-Start from [templates/mcp-servers.example.json](./templates/mcp-servers.example.json). Each server needs a unique `name`, an executable `command`, and optional `args`. External MCP tools remain approval-gated unless their exact names appear in `autoApproveTools`; use that only for safe read-only tools. `required`, `startupTimeoutSec`, and `toolTimeoutSec` make startup failures explicit and tune slow local servers. Keep credentials and machine-specific paths out of Git, and keep the local configuration file private.
-
-This makes integrations such as a private local task MCP optional. A useful boundary is: the task MCP owns planned work, while Cyberboss owns observed activity, reminders, and review.
-
-If you use a local Codex provider such as Ollama, prefer a small wrapper script instead of putting provider flags directly into `CYBERBOSS_CODEX_COMMAND`. Copy [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) to `${HOME}/.cyberboss/codex-local`, make it executable, and point Cyberboss at it:
+在桌面控制中心完成模型验证、激活和微信扫码。需要使用终端共享桥时，可以运行：
 
 ```bash
-cp ./templates/codex-local-provider.sh "${HOME}/.cyberboss/codex-local"
-chmod +x "${HOME}/.cyberboss/codex-local"
-```
-
-```dotenv
-CYBERBOSS_CODEX_COMMAND=/absolute/path/to/.cyberboss/codex-local
-CYBERBOSS_CODEX_MODEL_PROVIDER=ollama
-CYBERBOSS_CODEX_MODEL=gemma4:26b-32k
-```
-
-The template keeps cloud and local startup behavior in one command. When you switch back to the cloud provider, clear `CYBERBOSS_CODEX_MODEL_PROVIDER` and `CYBERBOSS_CODEX_MODEL`, then restart the shared bridge so the Codex app-server is launched with the new command environment.
-
-Local Codex models also need model metadata. If `CYBERBOSS_CODEX_MODEL` points at a model that is not in Codex's built-in catalog, add a model catalog file in your Codex home and reference it from `~/.codex/config.toml`:
-
-```toml
-model_catalog_json = "/absolute/path/to/.codex/local-models.json"
-```
-
-Build that file from your existing Codex model catalog and add entries for your local model slugs, including the correct `context_window`, `max_context_window`, `input_modalities`, and truncation policy. Keep the cloud model entries in the catalog. Verify with `codex debug models`; Codex should list the local model and should not warn that it is using fallback metadata.
-
-When an activated Claude Code compatibility profile is used, Cyberboss also upserts a workspace-local `.mcp.json` entry for `cyberboss_tools` before starting Claude and launches Claude with that MCP config explicitly attached. That is how Claude discovers the Cyberboss project tools without any global registration.
-
-### Terminal commands for end users
-
-- `npm run login`
-  Log into WeChat and save the bot account locally
-- `npm run accounts`
-  List saved local accounts
-- `npm run shared:start`
-  Default startup path. Starts the shared runtime bridge and the shared WeChat bridge
-- `npm run shared:open`
-  Default attach path. Opens the bound shared thread in your terminal
-- `npm run shared:status`
-  Check the shared runtime process, shared bridge, and `readyz`
-- `npm run doctor`
-  Inspect current config, channel/runtime boundaries, and thread status
-- `npm run codex:auth-repair`
-  Windows-first Codex authentication repair. It checks the dedicated `CODEX_HOME`, can run device-code login, only restarts an identity-verified App Server, and requires a real model reply. See the [Chinese repair guide](./docs/codex-auth-repair.zh-CN.md)
-- `npm run help`
-  Show stable command entrypoints
-
-Here, `checkin` means the random wake-up mechanism, not a fixed periodic reminder.
-
-Switch runtimes by verifying and activating a profile in **Control Center → Models and APIs**. You do not need a different command set for Claude Code.
-
-`npm run start` and `npm run start:checkin` are still useful for minimal local debugging, but they are not the recommended way to observe or debug the real shared bridge workflow.
-
-### WeChat commands for end users
-
-- `/bind /absolute/path`
-  Bind the current chat to a project workspace
-- `/status`
-  Show current workspace, thread, model, and context state
-- `/new`
-  Move to a new thread draft
-- `/reread`
-  Reload the latest persona template and operations template into the current thread
-- `/compact`
-  Ask the current thread to compact its context. The bridge sends a start message and a completion message back to WeChat.
-- `/switch <threadId>`
-  Switch to a specific thread
-- `/stop`
-  Stop the current running turn
-- `/checkin <min>-<max>`
-  Update the proactive random check-in range for the current project
-- `/chunk <number>`
-  Adjust the minimum merge size for short WeChat reply chunks
-- `/yes`
-  Allow the current approval once
-- `/always`
-  Keep allowing the same kind of command inside the current project
-- `/no`
-  Reject the current approval
-- `/model`
-  Show the current global profile/runtime/provider/model
-- `/model <id>`
-  Read-only compatibility form: reports that the requested value was not applied and directs you to the control center
-- `/star`
-  Show the GitHub star guide inside WeChat
-- `/help`
-  Show WeChat command help
-
-Plain text messages go directly to the bound thread. If nothing is bound yet, bind a workspace first:
-
-```text
-/bind /absolute/path
-```
-
-### Observe the same thread from WeChat and terminal
-
-If you want WeChat and your local terminal to stay attached to the same shared thread, use shared mode:
-
-Terminal 1:
-
-```bash
+npm run login
 npm run shared:start
 ```
 
-Keep it running in the foreground.
+常用命令：
 
-Terminal 2:
+| 命令 | 用途 |
+| --- | --- |
+| `npm run desktop` | 启动 Electron 控制中心 |
+| `npm run login` | 通过二维码登录微信并保存本地账号 |
+| `npm run accounts` | 查看已保存的本地微信账号 |
+| `npm run shared:start` | 启动共享 runtime bridge 和微信 bridge |
+| `npm run shared:open` | 在终端打开当前绑定的共享线程 |
+| `npm run shared:status` | 查看共享进程与 `readyz` 状态 |
+| `npm run doctor` | 检查配置、channel/runtime 边界和线程状态 |
+| `npm run help` | 查看稳定的命令入口 |
+
+微信中常用的控制命令：
+
+- `/bind <项目目录>`：绑定当前聊天使用的 workspace；
+- `/status`：查看当前 workspace、线程、runtime 和模型；
+- `/new`：创建新的线程草稿；
+- `/stop`：停止当前 turn；
+- `/checkin <最小分钟>-<最大分钟>`：调整随机主动检查区间；
+- `/help`：查看完整的微信命令帮助。
+
+### 构建 Windows 产物
 
 ```bash
-npm run shared:open
+npm install
+npm run desktop:package
+npm run desktop:package:portable
 ```
 
-Useful diagnostics:
+这些命令分别覆盖安装器/解包目录和 portable 构建路径；`desktop:package` 还会同步开始菜单快捷方式。构建后可运行：
 
-- `npm run shared:status`
-
-Notes:
-
-- Shared mode is the default mode in this README
-- The same WeChat commands and day-to-day behavior apply under both Codex and Claude Code
-- If `CYBERBOSS_RUNTIME=claudecode`, the local Claude window works best as a listener for the shared thread
-- Do not let WeChat attach to a private spawned runtime if you expect terminal and WeChat to watch the same thread
-- Do not keep multiple `cyberboss` bridge processes alive at the same time
-- Do not put `npm run shared:start` in the background; it is the main shared bridge process
-
-<a id="data-dir"></a>
-## Local Data
-
-The default state directory is:
-
-```text
-${HOME}/.cyberboss
+```bash
+npm run verify:artifacts
 ```
 
-Common contents:
+发布验收应同时检查源码测试、构建产物内容、实际启动的 executable 路径和真实用户链路；仅仅通过源码测试不等于安装包已经可用。
 
-- `accounts/`
-  WeChat bot account data
-- `sessions.json`
-  workspace, thread, model, and approval state
-- `weixin-config.json`
-  WeChat reply chunk configuration
-- `sync-buffers/`
-  WeChat long-poll synchronization buffers
-- `inbox/`
-  saved incoming WeChat images and attachments
-- `stickers/`
-  sticker assets, including:
-  - `assets/`
-    saved sticker media, currently normalized to GIF
-  - `index.json`
-    sticker index mapping `stickerId -> { tags, desc }`
-  - `tags.json`
-    sticker tag catalog, editable by both the AI and the user
-- `weixin-instructions.md`
-  local persona file generated on first run
-- `reminder-queue.json`
-  reminder queue
-- `system-message-queue.json`
-  system / check-in queue
-- `deferred-system-replies.json`
-  replies waiting for the next usable WeChat context token
-- `checkin-config.json`
-  saved proactive check-in range
-- `timeline-screenshot-queue.json`
-  screenshot job queue
-- `diary/`
-  local diary files
-- `timeline/`
-  timeline data, site, and screenshots
-- `logs/`
-  shared bridge and shared runtime logs
+## WorkBuddy 配置说明
 
-This is the runtime state directory, not your project workspace. The WeChat thread and the terminal thread should still be opened against your actual project directory.
+在控制中心的模型设置中：
 
-### Whereabouts Notes
+- 选择 `WorkBuddy`（内部兼容 runtime ID 为 `codebuddy`）；
+- 刷新模型列表，优先选择当前 runtime 返回的真实 model ID；
+- 没有完整目录时可以使用 `Auto`，其实际 model ID 为 `auto`，或按界面提示填写可用 ID；
+- 运行连接测试，确认账号身份、模型和 ACP/streaming turn 均可用；
+- 只有验证通过后才能保存为 active profile。
 
-- Cyberboss already bundles `whereabouts-mcp` and can ingest phone location, battery, and trigger context directly.
-- To enable the built-in whereabouts server, configure at least:
-  - `CYBERBOSS_ENABLE_LOCATION_SERVER=true`
-  - `CYBERBOSS_LOCATION_TOKEN=<your_token>`
-  - `CYBERBOSS_LOCATION_HOME_CENTER=lat,lng`
-- Common optional variables:
-  - `CYBERBOSS_LOCATION_HOST`
-  - `CYBERBOSS_LOCATION_WORK_CENTER`
-  - `CYBERBOSS_LOCATION_KNOWN_PLACES`
-  - `CYBERBOSS_LOCATION_PLACE_RADIUS_METERS`
-  - `CYBERBOSS_LOCATION_BATTERY_HISTORY_LIMIT`
-- The built-in server listens on `http://0.0.0.0:4318` by default. The ingest endpoint is `POST /location/ingest`, and health checks use `GET /healthz`.
-- Whereabouts data is stored in `${HOME}/.cyberboss/locations.json`, not in your project directory.
+WorkBuddy 的 ACP 参数不根据软件版本号推断。CyberBoss 以运行时 capability、实际 protocol contract 和当前连接结果为准；`session/new` / `session/resume` 使用已验证的 `cwd` 工作目录形态。
 
-### Sticker Notes
+## 微信与主动监督的边界
 
-- On the current WeChat bridge path, do not rely on animated playback for inbound or outbound stickers. A GIF may still show up as a static image in chat.
-- Because of that, saved stickers are currently normalized to GIF at intake so the asset format is already aligned if WeChat later opens a fuller sticker capability.
-- The tag catalog lives at `${HOME}/.cyberboss/stickers/tags.json`. The AI reads from it, and users can edit it directly.
-- For now, sticker retrieval is tag-filtered only. There is no vector-database recall layer.
+普通 inbound 消息会先经过消息类型、发送者和重复消息过滤，再进入绑定的 workspace/runtime。回复通过统一的 outbound boundary 发回微信；runtime 失败时不会把内部错误当作用户回复发送。
 
-<a id="agent-guide"></a>
-## Agent Guide
+主动监督消息经过本地队列和 checkpoint 状态机。相同业务身份的任务可以合并，重试保留任务身份；静默时段内的随机提醒会被抑制，时间敏感的计划任务在过期后会按策略归档或丢弃。这里的目标是降低重复和过期消息风险，不承诺严格 exactly-once 或“永不丢消息”。
 
-Agent-facing Cyberboss capabilities are project-native structured tools.
+## 隐私与安全边界
 
-### Common project tools
+- Windows 上的本地凭据由 DPAPI-backed credential vault 保护；profile 快照和备份不应携带明文 secret。
+- ACP 连接、session、transport generation、请求和发送诊断使用脱敏标识；测试覆盖 token、密码、session ID 和消息正文不进入公开诊断记录。
+- WorkBuddy、微信和所选模型服务仍会处理完成任务所需的数据；“本地保存状态”不等于消息不会离开本机。
+- runtime/tool capability 和 approval 边界由 CyberBoss 控制；不要把本地配置文件、token、真实微信用户 ID 或服务凭据提交到仓库。
 
-- `cyberboss_reminder_create`
-- `cyberboss_diary_append`
-- `cyberboss_timeline_write`
-- `cyberboss_timeline_build`
-- `cyberboss_timeline_serve`
-- `cyberboss_timeline_dev`
-- `cyberboss_timeline_screenshot`
-- `cyberboss_channel_send_file`
-- `whereabouts_current_stay`
-- `whereabouts_recent_stays`
-- `whereabouts_recent_moves`
-- `whereabouts_snapshot`
-- `whereabouts_summary`
-- `cyberboss_sticker_tags`
-- `cyberboss_sticker_pick`
-- `cyberboss_sticker_send`
-- `cyberboss_sticker_delete`
-- `cyberboss_sticker_save_from_inbox`
-- `cyberboss_sticker_update`
-- `cyberboss_system_send`
+## 当前状态
 
-### Agent conventions
+这是一个面向个人真实 Windows + 微信 + WorkBuddy 场景的二次开发版本。主要二开阶段已完成，当前重点是兼容性维护、发布验收和小幅体验改进；它不以“production ready”作为未经证明的承诺。
 
-- Use Cyberboss project tools for diary, reminder, timeline, screenshot, and file-send operations
-- Prefer documented lifecycle entrypoints from this README, `--help`, and [docs/commands.md](./docs/commands.md) for human terminal usage
-- On first failure, report the concrete error before reading source code
+## 文档
 
-## Docs
+- [安装说明](./INSTALL.md)
+- [API-first 操作说明](./docs/api-first-operations.zh-CN.md)
+- [API-first 迁移说明](./docs/api-first-migration.zh-CN.md)
+- [首次外部测试验收清单](./docs/release/FIRST-EXTERNAL-TESTER-CHECKLIST.md)
+- [英文 README](./README.en.md)
 
-- [docs/commands.md](./docs/commands.md)
+## Upstream & Credits
 
-<a id="faq"></a>
-## FAQ
-
-### Why not `npm install cyberboss`?
-
-Because the project is not published as an npm package yet. Clone the repo and run `npm install` inside it.
-
-### What exactly is `checkin`?
-
-`checkin` is the random wake-up mechanism. The system wakes the model at a random time and lets it decide whether to show up, stay silent, write data, or act.
-
-### Why set user name and gender before the first run?
-
-Because the first `cyberboss` command auto-generates `~/.cyberboss/weixin-instructions.md`. Setting `CYBERBOSS_USER_NAME` and `CYBERBOSS_USER_GENDER` first avoids obviously wrong persona assumptions in that file.
-
-### Why not rewrite instructions aggressively from day one?
-
-If you want the strongest "cyberboss" effect, let the agent grow its pacing through real interaction first. If you over-script it too early, it starts sounding like a workflow script instead of an active companion.
+- Original project: [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss)
+- 本项目是该项目的 fork / derivative work。
+- 感谢原作者提供 CyberBoss 的核心架构、微信 Agent bridge 和主动监督设计基础。
+- 本仓库保留原项目的 [LICENSE](./LICENSE)；请按许可证和 upstream attribution 使用、修改和再发布。
 
 ## License
 
-This project is built for local-first personal deployment. It continuously processes private chat content, reminders, life traces, and other highly sensitive personal context. I do not want that workflow to be repackaged into a closed cloud service that hides both the code path and the data path from the user.
-
-Because of that, this project is released under `AGPL-3.0-only`. If you modify it, extend it, and offer it to users over a network, you must provide the full corresponding source code under the AGPL terms.
+本项目沿用仓库中的 [AGPLv3 License](./LICENSE)。
