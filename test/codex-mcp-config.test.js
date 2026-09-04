@@ -23,6 +23,11 @@ test("external MCP servers are optional and remain approval-gated", () => {
     'mcp_servers.zhijiantime.args=["dist/src/index.js"]',
   ]);
   assert.equal(args.some((value) => value.includes("approval_mode")), false);
+  if (process.platform === "win32") {
+    const envArg = args.find((value) => value.startsWith("mcp_servers.zhijiantime.env="));
+    assert.match(envArg || "", /PSModulePath/);
+    assert.doesNotMatch(envArg || "", /codex-runtimes/i);
+  }
 });
 
 test("additional MCP server config loads from a local JSON file", () => {

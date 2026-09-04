@@ -85,6 +85,39 @@ test("tampered ciphertext fails closed instead of becoming an empty credential",
   await assert.rejects(vault.read("p1"), (error) => error.code === "CREDENTIAL_DECRYPT_FAILED");
 });
 
+test("one transient decrypt failure is retried from fresh vault metadata without logging secrets", async () => {
+  const stateDir = makeStateDir();
+  const records = [];
+  let attempts = 0;
+  let failNextRead = false;
+  const protector = {
+    ...makeProtector(),
+    async unprotectText(ciphertext) {
+      attempts += 1;
+      if (failNextRead) {
+        failNextRead = false;
+        throw Object.assign(new Error("transient DPAPI failure synthetic-secret"), { code: "DPAPI_OPERATION_FAILED" });
+      }
+      return makeProtector().unprotectText(ciphertext);
+    },
+  };
+  const vault = new CredentialVault({
+    stateDir,
+    protector,
+    logger: { warn(event, data) { records.push({ event, data }); } },
+    readRetryDelayMs: 0,
+  });
+  await vault.write("retry-profile", { apiKey: "synthetic-secret" });
+  attempts = 0;
+  failNextRead = true;
+  assert.deepEqual(await vault.read("retry-profile"), { apiKey: "synthetic-secret" });
+  assert.equal(attempts, 2);
+  assert.equal(records.length, 1);
+  assert.equal(JSON.stringify(records).includes("synthetic-secret"), false);
+  assert.match(records[0].data.ciphertextSha256, /^[a-f0-9]{64}$/);
+  assert.equal(records[0].data.maxAttempts, 2);
+});
+
 test("corrupt vault JSON blocks writes so generations cannot silently reset", async () => {
   const stateDir = makeStateDir();
   const filePath = path.join(stateDir, "credential-vault.json");

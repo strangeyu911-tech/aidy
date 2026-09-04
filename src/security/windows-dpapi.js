@@ -86,7 +86,10 @@ function createWindowsDpapi({
       child.once("error", (error) => finish(wrapError(error, operation)));
       child.once("close", (code) => {
         if (code !== 0) {
-          finish(makeError(`DPAPI ${operation} failed${stderr.trim() ? `: ${stderr.trim()}` : "."}`, "DPAPI_OPERATION_FAILED"));
+          const failure = makeError(`DPAPI ${operation} failed${stderr.trim() ? `: ${stderr.trim()}` : "."}`, "DPAPI_OPERATION_FAILED");
+          Object.assign(failure, parseWindowsErrorDetails(stderr));
+          failure.processId = Number.isSafeInteger(child?.pid) ? child.pid : null;
+          finish(failure);
           return;
         }
         finish(null, operation === "protect" ? stdout.trim() : stdout);
@@ -114,6 +117,14 @@ function wrapError(error, operation) {
   const wrapped = makeError(`DPAPI ${operation} failed.`, "DPAPI_OPERATION_FAILED");
   wrapped.cause = error;
   return wrapped;
+}
+
+function parseWindowsErrorDetails(stderr) {
+  const text = String(stderr || "");
+  const nativeErrorCode = text.match(/\b0x[0-9a-f]{8}\b/i)?.[0]?.toUpperCase() || null;
+  const exceptionType = text.match(/\b[A-Za-z][A-Za-z0-9.]*Exception\b/)?.[0] || null;
+  const fullyQualifiedErrorId = text.match(/FullyQualifiedErrorId\s*:\s*([A-Za-z0-9_.-]{1,96})/i)?.[1] || null;
+  return { nativeErrorCode, exceptionType, fullyQualifiedErrorId };
 }
 
 const defaultDpapi = createWindowsDpapi();

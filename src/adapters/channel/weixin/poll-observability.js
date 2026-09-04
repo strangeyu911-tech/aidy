@@ -65,6 +65,36 @@ function safeErrorCode(error = {}, meta = {}) {
   return /^[A-Za-z0-9_.-]{1,64}$/.test(normalized) ? normalized : null;
 }
 
+function safePollErrorDetail(error = {}) {
+  const cause = error?.cause && typeof error.cause === "object" ? error.cause : null;
+  return {
+    name: safeDiagnosticValue(error?.name),
+    code: safeErrorCode(error),
+    causeName: safeDiagnosticValue(cause?.name),
+    causeCode: safeErrorCode(cause),
+    syscall: safeDiagnosticValue(cause?.syscall),
+    errno: safeDiagnosticValue(cause?.errno),
+    address: safeDiagnosticValue(cause?.address),
+    port: safeCount(cause?.port),
+  };
+}
+
+function normalizeEndpointHost(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return "";
+  try { return new URL(text.includes("://") ? text : `https://${text}`).hostname; } catch { return "invalid"; }
+}
+
+function safeDiagnosticValue(value) {
+  const text = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+  return /^[A-Za-z0-9_.:-]{1,96}$/.test(text) ? text : null;
+}
+
+function safeCount(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 function attachPollMeta(target, meta) {
   if (!target || (typeof target !== "object" && typeof target !== "function")) {
     return target;
@@ -92,6 +122,8 @@ function buildPollResult({
   updates = [],
   parserAcceptedCount = 0,
   parserRejectedCount = 0,
+  endpointHost = "",
+  activePollCount = 0,
 } = {}) {
   const endedMonotonicMs = monotonicNowMs();
   const updateList = Array.isArray(updates) ? updates : [];
@@ -102,6 +134,8 @@ function buildPollResult({
     startedMonotonicMs,
     endedMonotonicMs,
     latencyMs: Math.max(0, Math.round(endedMonotonicMs - Number(startedMonotonicMs || endedMonotonicMs))),
+    endpointHost: normalizeEndpointHost(endpointHost),
+    activePollCount: safeCount(activePollCount),
     outcome: responseMeta.outcome || "success",
     httpStatus: Number.isFinite(Number(responseMeta.httpStatus)) ? Number(responseMeta.httpStatus) : null,
     rpcSuccess: responseMeta.rpcSuccess ?? null,
@@ -126,6 +160,10 @@ function buildPollError({
   cursorBefore,
   error,
   responseMeta = {},
+  endpointHost = "",
+  activePollCount = 0,
+  consecutiveFailures = 0,
+  retryDelayMs = 0,
 } = {}) {
   const endedMonotonicMs = monotonicNowMs();
   const errorClass = classifyPollError(error, responseMeta);
@@ -136,8 +174,13 @@ function buildPollError({
     startedMonotonicMs,
     endedMonotonicMs,
     latencyMs: Math.max(0, Math.round(endedMonotonicMs - Number(startedMonotonicMs || endedMonotonicMs))),
+    endpointHost: normalizeEndpointHost(endpointHost),
+    activePollCount: safeCount(activePollCount),
+    consecutiveFailures: safeCount(consecutiveFailures),
+    retryDelayMs: safeCount(retryDelayMs),
     errorClass,
-    errorCode: safeErrorCode(error, responseMeta),
+    errorCode: safeErrorCode(error, responseMeta) || safeErrorCode(error?.cause),
+    errorDetail: safePollErrorDetail(error),
     httpStatus: Number.isFinite(Number(responseMeta.httpStatus ?? error?.httpStatus))
       ? Number(responseMeta.httpStatus ?? error.httpStatus)
       : null,

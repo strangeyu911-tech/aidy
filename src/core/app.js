@@ -91,12 +91,12 @@ class CyberbossApp {
     this.projectToolHost = projectTooling.toolHost;
     this.runtimeContextStore = projectTooling.runtimeContextStore;
     this.profileStore = dependencies.profileStore || new ProviderProfileStore({ filePath: config.providerProfilesFile });
-    this.credentialVault = dependencies.vault || new CredentialVault({ filePath: config.credentialVaultFile });
-    this.diagnosticCapture = dependencies.capture || new DiagnosticCapture({ filePath: config.diagnosticCaptureFile });
     this.logger = dependencies.logger || new ComponentLogger({
       logDir: path.join(config.stateDir, "logs"),
       component: "bridge",
     });
+    this.credentialVault = dependencies.vault || new CredentialVault({ filePath: config.credentialVaultFile, logger: this.logger });
+    this.diagnosticCapture = dependencies.capture || new DiagnosticCapture({ filePath: config.diagnosticCaptureFile });
     this.runtimeAdapterFactory = dependencies.runtimeAdapterFactory || createRuntimeAdapter;
     this.runtimeAdapter = null;
     this.activeProfile = null;
@@ -110,12 +110,14 @@ class CyberbossApp {
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.desktopStateStore = new DesktopStateStore({ stateDir: config.stateDir });
+    this.zhijiantimeClient = new ZhijiantimeClient({
+      rootDir: process.env.CYBERBOSS_HOME || path.resolve(__dirname, "..", ".."),
+      mcpServersFile: config.codexMcpServersFile,
+      logger: this.logger,
+    });
     this.zhijiantimeDailySupervisor = new ZhijiantimeDailySupervisor({
       stateDir: config.stateDir,
-      client: new ZhijiantimeClient({
-        rootDir: process.env.CYBERBOSS_HOME || path.resolve(__dirname, "..", ".."),
-        mcpServersFile: config.codexMcpServersFile,
-      }),
+      client: this.zhijiantimeClient,
       planStore: this.supervisionPlanStore,
     });
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
@@ -263,6 +265,7 @@ class CyberbossApp {
     try {
       let consecutiveFailures = 0;
       let pollSequence = 0;
+      let activePollCount = 0;
       while (!shutdown.stopped) {
         const pollSequenceId = `poll-${++pollSequence}`;
         let pollCursorBefore = "";
@@ -278,16 +281,24 @@ class CyberbossApp {
           pollCursorBefore = this.channelAdapter.loadSyncBuffer();
           pollStartedAt = new Date().toISOString();
           pollStartedMonotonicMs = monotonicNowMs();
+          activePollCount += 1;
           this.logRuntimeDiagnostic?.("poll.started", {
             pollSequenceId,
             startedAt: pollStartedAt,
             startedMonotonicMs: pollStartedMonotonicMs,
             cursorBefore: safePollCursor(pollCursorBefore),
+            endpointHost: safeEndpointHost(account.baseUrl),
+            activePollCount,
           });
-          const response = await this.channelAdapter.getUpdates({
-            syncBuffer: pollCursorBefore,
-            timeoutMs: this.resolveLongPollTimeoutMs(),
-          });
+          let response;
+          try {
+            response = await this.channelAdapter.getUpdates({
+              syncBuffer: pollCursorBefore,
+              timeoutMs: this.resolveLongPollTimeoutMs(),
+            });
+          } finally {
+            activePollCount = Math.max(0, activePollCount - 1);
+          }
           pollMeta = this.channelAdapter.consumeLastPollMeta?.() || {};
           assertWeixinUpdateResponse(response);
           consecutiveFailures = 0;
@@ -325,6 +336,8 @@ class CyberbossApp {
               updates: Array.isArray(response?.msgs) ? response.msgs : [],
               parserAcceptedCount,
               parserRejectedCount,
+              endpointHost: account.baseUrl,
+              activePollCount,
             }));
           }
           await Promise.all([
@@ -339,6 +352,8 @@ class CyberbossApp {
           }
 
           pollMeta = this.channelAdapter.consumeLastPollMeta?.() || pollMeta;
+          consecutiveFailures += 1;
+          const retryDelayMs = consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS;
           if (pollStartedAt) {
             this.logRuntimeDiagnostic?.("poll.error", buildPollError({
               pollSequenceId,
@@ -347,15 +362,18 @@ class CyberbossApp {
               cursorBefore: pollCursorBefore,
               error,
               responseMeta: pollMeta,
+              endpointHost: account.baseUrl,
+              activePollCount,
+              consecutiveFailures,
+              retryDelayMs,
             }));
           }
           if (isSessionExpiredError(error)) {
             throw new Error("The WeChat session has expired. Run `npm run login` again.");
           }
 
-          consecutiveFailures += 1;
           console.error(`[cyberboss] poll failed: ${formatErrorMessage(error)}`);
-          await sleep(consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS);
+          await sleep(retryDelayMs);
         }
       }
     } finally {
@@ -583,6 +601,7 @@ class CyberbossApp {
     }
 
     normalized = CyberbossApp.prototype.captureSupervisionArrangement.call(this, normalized);
+    normalized = await CyberbossApp.prototype.enrichIncomingMessageWithZhijiantimeFreshRead.call(this, normalized);
 
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
     const prepared = await this.prepareIncomingMessageForRuntime(normalized, workspaceRoot);
@@ -611,6 +630,31 @@ class CyberbossApp {
     }
 
     await this.routePreparedInbound({ bindingKey, workspaceRoot, prepared });
+  }
+
+  async enrichIncomingMessageWithZhijiantimeFreshRead(normalized) {
+    if (!normalized || normalized.provider === "system" || !normalizeText(normalized.text)) {
+      return normalized;
+    }
+    const result = await this.zhijiantimeDailySupervisor?.readFreshForUserTurn?.(normalized.text);
+    if (!result?.required) {
+      return normalized;
+    }
+    this.logRuntimeDiagnostic?.("zhijiantime.fresh_read", {
+      turnCorrelation: normalizeText(normalized.turnCorrelation),
+      reason: normalizeText(result.reason),
+      ok: result.ok === true,
+      errorCode: normalizeText(result.error?.code) || null,
+      itemCount: Number.isSafeInteger(Number(result.daily?.total)) ? Number(result.daily.total) : null,
+      readAt: normalizeText(result.daily?.readAt) || null,
+    });
+    if (!normalizeText(result.context)) {
+      return normalized;
+    }
+    return {
+      ...normalized,
+      text: `${normalizeText(normalized.text)}\n\n${result.context}`.trim(),
+    };
   }
 
   captureSupervisionArrangement(normalized) {
@@ -2448,6 +2492,12 @@ function sleep(ms) {
 
 function safePollCursor(value) {
   return fingerprint(value);
+}
+
+function safeEndpointHost(value) {
+  const text = normalizeText(value);
+  if (!text) return "";
+  try { return new URL(text).hostname; } catch { return "invalid"; }
 }
 
 module.exports = { CyberbossApp };

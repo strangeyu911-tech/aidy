@@ -97,7 +97,7 @@ const dispatcher = new SupervisionDispatcher({ config, desktopStateStore: stateS
 const reportLogger = new ComponentLogger({ logDir, component: "reports" });
 const backupService = new BackupService({ stateDir, logger });
 const integrationLogger = new ComponentLogger({ logDir, component: "integrations" });
-const zhijiantimeClient = new ZhijiantimeClient({ rootDir });
+const zhijiantimeClient = new ZhijiantimeClient({ rootDir, logger: integrationLogger });
 const zhijiantimeSync = new ZhijiantimeSyncService({
   stateDir,
   client: zhijiantimeClient,

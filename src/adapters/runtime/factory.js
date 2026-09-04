@@ -49,7 +49,7 @@ function createRuntimeAdapterForProfile({
   try {
     pendingSecrets = vault.read(selected.id);
   } catch (error) {
-    invalidateProfile(store, selected.id, "credential_unavailable");
+    if (shouldInvalidateCredentialRead(error)) invalidateProfile(store, selected.id, "credential_unavailable");
     throw error;
   }
 
@@ -74,9 +74,13 @@ function createRuntimeAdapterForProfile({
 
   if (!isThenable(pendingSecrets)) return construct(pendingSecrets);
   return Promise.resolve(pendingSecrets).then(construct, (error) => {
-    invalidateProfile(store, selected.id, "credential_unavailable");
+    if (shouldInvalidateCredentialRead(error)) invalidateProfile(store, selected.id, "credential_unavailable");
     throw error;
   });
+}
+
+function shouldInvalidateCredentialRead(error) {
+  return normalizeText(error?.code) !== "CREDENTIAL_DECRYPT_FAILED";
 }
 
 function withProfile(config, profile) {

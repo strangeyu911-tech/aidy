@@ -10,6 +10,7 @@ const {
   buildDailySnapshot,
   classifySystemMessage,
 } = require("../src/integrations/zhijiantime/daily-supervisor");
+const { decideZhijiantimeFreshness } = require("../src/integrations/zhijiantime/freshness");
 
 function createFixture(initialItems = []) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-zhijian-daily-"));
@@ -18,14 +19,17 @@ function createFixture(initialItems = []) {
     now: new Date("2026-08-23T12:00:00.000Z"),
     items: initialItems,
     error: null,
+    readCount: 0,
   };
   const client = {
     isConfigured: () => true,
     listSchedules: async () => {
+      state.readCount += 1;
       if (state.error) throw state.error;
       return { items: state.items.filter((item) => item.kind === "schedule") };
     },
     listTodos: async () => {
+      state.readCount += 1;
       if (state.error) throw state.error;
       return { items: state.items.filter((item) => item.kind === "todo") };
     },
@@ -161,6 +165,45 @@ test("read failures do not claim an empty day or mutate planning state", async (
   assert.equal(service.snapshot().state, "unseen");
   assert.match(result.message.text, /read failed/);
   assert.match(result.message.text, /Do not infer that today's plan is empty/);
+});
+
+test("ordinary user turns do not trigger a Zhijiantime read", async () => {
+  const { service, state } = createFixture([{ id: "todo-1", kind: "todo", title: "旧数据", allDay: true }]);
+  const result = await service.readFreshForUserTurn("今天心情不错");
+  assert.equal(result.required, false);
+  assert.equal(state.readCount, 0);
+});
+
+test("mutation and explicit refresh language trigger a fresh read", () => {
+  for (const text of [
+    "我刚刚新建了一个待办",
+    "我把日常修改了",
+    "我刚刚打卡了",
+    "刷新一下指尖时光",
+  ]) {
+    assert.equal(decideZhijiantimeFreshness(text).required, true, text);
+  }
+  assert.equal(decideZhijiantimeFreshness("我刚刚喝了水").required, false);
+});
+
+test("fresh read uses the current external data instead of a prior snapshot", async () => {
+  const { service, state } = createFixture([{ id: "todo-old", kind: "todo", title: "旧缓存", allDay: true }]);
+  state.items = [{ id: "todo-new", kind: "todo", title: "刚刚新建", allDay: true }];
+  const result = await service.readFreshForUserTurn("我刚刚新建了一个待办");
+  assert.equal(result.ok, true);
+  assert.match(result.context, /刚刚新建/);
+  assert.doesNotMatch(result.context, /旧缓存/);
+  assert.equal(state.readCount, 2);
+});
+
+test("failed fresh read cannot be represented as an empty or latest cached result", async () => {
+  const { service, state } = createFixture([{ id: "todo-old", kind: "todo", title: "旧缓存", allDay: true }]);
+  state.error = Object.assign(new Error("temporary DPAPI read failure"), { code: "ZHIJIANTIME_TOOL_FAILED" });
+  const result = await service.readFreshForUserTurn("刷新一下指尖时光");
+  assert.equal(result.ok, false);
+  assert.match(result.context, /fresh 指尖时光 read failed/);
+  assert.doesNotMatch(result.context, /旧缓存/);
+  assert.match(result.context, /Do not use cached data as the latest result/);
 });
 
 test("same-day reschedule supersedes the old planning checkpoint", async () => {

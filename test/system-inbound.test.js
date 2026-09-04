@@ -22,6 +22,39 @@ test("system messages bypass normal inbound wrapping", async () => {
   });
 });
 
+test("inbound preparation appends verified fresh Zhijiantime data only for a semantic refresh", async () => {
+  const diagnostics = [];
+  let reads = 0;
+  const normalized = {
+    provider: "weixin",
+    text: "我刚刚新建了一个待办",
+    turnCorrelation: "turn-fresh-1",
+  };
+  const result = await CyberbossApp.prototype.enrichIncomingMessageWithZhijiantimeFreshRead.call({
+    zhijiantimeDailySupervisor: {
+      async readFreshForUserTurn(text) {
+        reads += 1;
+        assert.equal(text, normalized.text);
+        return { required: true, ok: true, reason: "mutation_acknowledgement", daily: { total: 1, readAt: "2026-09-04T12:00:00.000Z" }, context: "[fresh data]\n新建待办" };
+      },
+    },
+    logRuntimeDiagnostic(event, data) { diagnostics.push({ event, data }); },
+  }, normalized);
+  assert.equal(reads, 1);
+  assert.match(result.text, /新建待办/);
+  assert.deepEqual(diagnostics, [{
+    event: "zhijiantime.fresh_read",
+    data: {
+      turnCorrelation: "turn-fresh-1",
+      reason: "mutation_acknowledgement",
+      ok: true,
+      errorCode: null,
+      itemCount: 1,
+      readAt: "2026-09-04T12:00:00.000Z",
+    },
+  }]);
+});
+
 test("image attachments stay as inbound drafts before runtime turn assembly", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-inbound-test-"));
   const originalFetch = global.fetch;

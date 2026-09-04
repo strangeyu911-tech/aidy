@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { listProjectToolNames } = require("../../../tools/tool-host");
+const { resolveZhijiantimePowerShellModulePath } = require("../../../integrations/zhijiantime/client");
 
 function resolveCodexProjectToolMcpServerConfig({ cyberbossHome = "" } = {}) {
   const home = normalizeNonEmptyString(cyberbossHome)
@@ -83,16 +84,18 @@ function buildCodexMcpConfigArgs(mcpServerConfig) {
         `mcp_servers.${name}.tool_timeout_sec=${config.toolTimeoutSec}`,
       );
     }
-    if (config.env && typeof config.env === "object" && !Array.isArray(config.env)) {
-      const env = Object.fromEntries(Object.entries(config.env)
+    const suppliedEnv = isRecord(config.env) ? config.env : {};
+    const env = Object.fromEntries(Object.entries(suppliedEnv)
         .map(([key, value]) => [normalizeMcpEnvName(key), normalizeNonEmptyString(value)])
         .filter(([key, value]) => key && value));
-      if (Object.keys(env).length) {
-        output.push(
-          "-c",
-          `mcp_servers.${name}.env=${formatTomlInlineTable(env)}`,
-        );
-      }
+    if (/zhijian|指尖/i.test(name) && process.platform === "win32") {
+      env.PSModulePath = resolveZhijiantimePowerShellModulePath(process.env, process.platform);
+    }
+    if (Object.keys(env).length) {
+      output.push(
+        "-c",
+        `mcp_servers.${name}.env=${formatTomlInlineTable(env)}`,
+      );
     }
     const autoApproveTools = Array.isArray(config.autoApproveTools)
       ? config.autoApproveTools
@@ -188,6 +191,10 @@ function normalizeMcpEnvName(value) {
 
 function normalizeNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 module.exports = {

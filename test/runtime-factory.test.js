@@ -97,7 +97,7 @@ test("factory exhaustively constructs all registered runtimes with the exact act
   assert.equal(calls[3].options.config.claudeModel, "synthetic-model");
 });
 
-test("factory invalidates generation drift and vault failures without constructing a runtime", async () => {
+test("factory invalidates generation drift but preserves verified state across transient vault failures", async () => {
   const active = profile("builtin-api");
   const generationStore = makeStore(active);
   await assert.rejects(
@@ -119,7 +119,7 @@ test("factory invalidates generation drift and vault failures without constructi
     })),
     (error) => error.code === "CREDENTIAL_DECRYPT_FAILED",
   );
-  assert.deepEqual(vaultStore.markUnverifiedCalls, [{ id: active.id, reason: "credential_unavailable" }]);
+  assert.deepEqual(vaultStore.markUnverifiedCalls, []);
 });
 
 test("factory reopens persisted profile and vault files before constructing the real built-in adapter", async () => {

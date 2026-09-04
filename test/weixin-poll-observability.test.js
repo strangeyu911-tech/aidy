@@ -159,6 +159,43 @@ test("poll HTTP, network, RPC, and response parse failures are classified withou
   });
 });
 
+test("poll errors retain bounded transport cause and retry state without sensitive details", () => {
+  const error = new TypeError("fetch failed with private-token");
+  error.cause = Object.assign(new Error("socket private-token failure"), {
+    code: "ECONNRESET",
+    syscall: "read",
+    address: "43.163.165.187",
+    port: 443,
+  });
+  const result = buildPollError({
+    pollSequenceId: "poll-network",
+    startedAt: "2026-09-02T09:00:00.000Z",
+    startedMonotonicMs: 10,
+    cursorBefore: "cursor",
+    error,
+    endpointHost: "https://ilinkai.weixin.qq.com/",
+    activePollCount: 0,
+    consecutiveFailures: 3,
+    retryDelayMs: 30_000,
+  });
+  assert.equal(result.endpointHost, "ilinkai.weixin.qq.com");
+  assert.equal(result.activePollCount, 0);
+  assert.equal(result.consecutiveFailures, 3);
+  assert.equal(result.retryDelayMs, 30_000);
+  assert.equal(result.errorCode, "ECONNRESET");
+  assert.deepEqual(result.errorDetail, {
+    name: "TypeError",
+    code: null,
+    causeName: "Error",
+    causeCode: "ECONNRESET",
+    syscall: "read",
+    errno: null,
+    address: "43.163.165.187",
+    port: 443,
+  });
+  assert.equal(JSON.stringify(result).includes("private-token"), false);
+});
+
 test("inbound filter detailed result preserves normalize semantics and explains filtered updates", () => {
   const filter = createInboundFilter();
   const config = { workspaceId: "workspace" };
