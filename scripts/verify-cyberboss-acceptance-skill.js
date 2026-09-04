@@ -21,6 +21,12 @@ function assertIncludes(text, needle, label) {
   }
 }
 
+function assertPattern(text, pattern, label) {
+  if (!pattern.test(text)) {
+    throw new Error(`missing ${label}: ${pattern}`);
+  }
+}
+
 const skill = read(skillPath);
 const agents = read(agentsPath);
 const packageJson = JSON.parse(read(packagePath));
@@ -31,6 +37,10 @@ for (const heading of [
   '## Evidence-first debugging',
   '## Observability',
   '## Source vs actual runtime',
+  '## Incident Scene Preservation',
+  '### Phase A — Live Incident RCA',
+  '### Phase B — Future Observability Hardening',
+  '## Destructive Diagnostic Gate',
   '## Windows packaged build',
   '## Launch surface',
   '## Real WeChat acceptance',
@@ -62,6 +72,32 @@ for (const phrase of [
   'automated tests pass, real-chain unverified',
 ]) {
   assertIncludes(skill, phrase, `required rule ${phrase}`);
+}
+
+for (const [pattern, label] of [
+  [/Incident Scene Preservation|live incident/i, 'live incident preservation'],
+  [/destructive diagnostic action/i, 'destructive diagnostic action'],
+  [/A\s+restarted\s+or\s+replaced\s+instance\s+cannot\s+prove\s+the\s+root\s+cause\s+of\s+the\s+previous\s+live\s+incident/i,
+    'restart does not prove the previous root cause'],
+  [/Phase A[\s\S]*?Live Incident RCA/i, 'Live Incident RCA phase'],
+  [/Phase B[\s\S]*?Future Observability Hardening/i, 'future observability-hardening phase'],
+  [/Live Incident\s+Evidence Snapshot[\s\S]*?Before any destructive diagnostic action/i,
+    'evidence snapshot before destructive action'],
+  [/RECOVERED_BUT_ROOT_CAUSE_NOT_PROVEN/i, 'recovery-without-proof verdict'],
+  [/availability-first[\s\S]*?exception|Exception[\s\S]*?availability-first/i,
+    'availability-first exception'],
+]) {
+  assertPattern(skill, pattern, label);
+}
+
+for (const [pattern, label] of [
+  [/Has\s+enough\s+evidence/i, 'Has enough evidence'],
+  [/destroy\s+or\s+change\s+the\s+failure\s+state/i, 'destroy or change the failure state'],
+  [/non-destructive/i, 'non-destructive'],
+  [/old\s+root\s+cause[\s\S]*?proven/i, 'old root cause still be proven'],
+  [/RECOVERED_BUT_ROOT_CAUSE_NOT_PROVEN/i, 'RECOVERED_BUT_ROOT_CAUSE_NOT_PROVEN'],
+]) {
+  assertPattern(skill, pattern, `destructive diagnostic gate question ${label}`);
 }
 
 assertIncludes(agents, 'docs/skills/cyberboss-debug-release-acceptance/SKILL.md', 'AGENTS.md skill entry point');

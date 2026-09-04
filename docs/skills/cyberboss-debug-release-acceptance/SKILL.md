@@ -34,6 +34,73 @@ Use this order for a production-behavior change:
 Do not skip a gate because a symptom looks familiar. If the evidence gate is
 not met, stop at the lower confidence label.
 
+## Incident Scene Preservation
+
+When the currently running CyberBoss / Aidy instance is still failing and the
+root cause has not been proven, preserve that live incident before changing
+the instance. Stopping Aidy, its managed bridge/runtime, poller, WorkBuddy, or
+WeChat; switching to a new `dist`; overwriting the running artifact; rebuilding
+`app.asar`; restarting for new instrumentation; clearing cursor, queue, or
+session state; rebuilding the runtime; and re-login are all potentially
+state-changing diagnostic actions. Treat each as a **destructive diagnostic
+action** until its effect on the incident is understood.
+
+### Phase A — Live Incident RCA
+
+The goal of Phase A is to explain why this particular live instance failed.
+Keep it alive, maximize read-only evidence, save a sanitized **Live Incident
+Evidence Snapshot**, run only controlled non-destructive experiments, and
+identify the last successful node, first failed node, and causal chain as far
+as the evidence allows. Insufficient observability is not a reason to restart
+immediately. If the available evidence cannot prove the cause, end the phase
+as `INCIDENT_UNRESOLVED`; do not reconstruct the old cause from a later
+recovery.
+
+Before any destructive diagnostic action, save the fields that are available
+and relevant to the incident: timestamp; branch / HEAD; actual running
+artifact and hashes or `app.asar` provenance; process tree, PIDs, and
+parent/child ownership; Start Menu target; runtime, bridge, and transport
+state; active requests and correlation IDs; last successful and first failed
+operations; safe cursor / sync-token summary; queue lengths; pending turn;
+session ID; retry, timeout, and abort-controller state; the last relevant log
+events; relevant network/socket errors; and the exact failure reproduction
+timestamp. Never save credential, token, cookie, message-body, or other
+private payloads in the snapshot.
+
+### Phase B — Future Observability Hardening
+
+Only after Phase A has captured the available evidence, or after the user has
+explicitly accepted that the old incident cannot be proved further, may the
+investigation move to Phase B. This phase may add instrumentation, traces,
+log fields, error causes, cursor/session summaries, or a new package and
+instance. Its purpose is to make the next recurrence easier to prove. A
+restarted or replaced instance cannot prove the root cause of the previous
+live incident. Therefore, recovery after instrumentation or restart is not
+historical RCA evidence.
+
+## Destructive Diagnostic Gate
+
+When the incident is still `ROOT_CAUSE_NOT_YET_PROVEN` or
+`INCIDENT_UNRESOLVED` and the failing instance still exists, do not restart,
+rebuild, reset, clear state, switch artifacts, or otherwise mutate it until
+the operator records answers to all of these questions:
+
+1. Has enough evidence from the current live incident been saved?
+2. Will this action destroy or change the failure state?
+3. Is there a non-destructive way to collect the missing evidence?
+4. If the action makes the failure disappear, can the old root cause still be
+   proven independently?
+5. Has it been explicitly accepted that the result may only be
+   `RECOVERED_BUT_ROOT_CAUSE_NOT_PROVEN`?
+
+If any answer is missing, the default is to preserve the instance and continue
+read-only investigation. A restart or replacement is allowed when data
+corruption, flood / spam, credential or security risk, material side effects,
+or an explicit availability-first user choice makes recovery urgent. Even in
+that exception, first capture the maximum available snapshot, record the
+destructive action and the RCA evidence boundary, and never present
+post-restart recovery as proof of the old root cause.
+
 ## ACP / WorkBuddy protocol
 
 Never infer an ACP contract from a WorkBuddy software version number. Resolve
@@ -227,6 +294,15 @@ evidence column is a gate: without it, retain a hypothesis-only diagnosis.
     behavior → source-mode success is insufficient → report
     `automated tests pass, real-chain unverified` or `packaged build pending`
     until the actual packaged path is exercised.
+11. **`getupdates → inbound.received` stops producing inbound correlation** →
+    preserve the live instance, snapshot polling / bridge / cursor / queue /
+    process evidence, and perform only non-destructive experiments before
+    changing the package → if the cause remains unproven, record
+    `INCIDENT_UNRESOLVED` → only then add instrumentation and restart for the
+    next recurrence. If the changed instance recovers, record
+    `RECOVERED_BUT_ROOT_CAUSE_NOT_PROVEN`; it does not distinguish a half-dead
+    poller, stale cursor, stale bridge session, transient network, state
+    recovery defect, or another cause without independent pre-restart proof.
 
 ## Safety boundaries
 
