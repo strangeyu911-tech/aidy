@@ -355,7 +355,7 @@ test("ACP incremental stream enforces the total response byte limit", async () =
         async read() {
           if (sent) return { done: true };
           sent = true;
-          return { done: false, value: encoder.encode(`data: ${"x".repeat(257 * 1024)}\n\n`) };
+          return { done: false, value: encoder.encode(`data: ${"x".repeat(2 * 1024 * 1024 + 1)}\n\n`) };
         },
         async cancel() {},
         releaseLock() {},

@@ -15,6 +15,7 @@ const {
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_SSE_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 class CodeBuddyClient {
   constructor({
@@ -414,7 +415,7 @@ class CodeBuddyClient {
       timeoutMs,
       headers: { Accept: "application/json, text/event-stream", ...headers },
       onResponse,
-      readResponse: (response) => readSseMessages(response, 256 * 1024, onMessage, trace, this.logDiagnostic.bind(this)),
+      readResponse: (response) => readSseMessages(response, MAX_SSE_RESPONSE_BYTES, onMessage, trace, this.logDiagnostic.bind(this)),
       trace,
     });
   }
@@ -584,13 +585,38 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
     },
   });
   let totalBytes = 0;
+  let protocolFailure = "";
   const append = (text, bytes = Buffer.byteLength(text, "utf8")) => {
     totalBytes += bytes;
+    if (trace) trace.sseBytesReceived = totalBytes;
     if (totalBytes > maxBytes) {
+      protocolFailure = "sse_response_limit";
+      if (trace) trace.protocolFailure = protocolFailure;
       throw protocolError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy ACP response exceeds the compatibility limit.");
     }
-    parser.push(text);
+    try {
+      parser.push(text);
+    } catch (error) {
+      protocolFailure = "malformed_sse_json";
+      if (trace) trace.protocolFailure = protocolFailure;
+      throw error;
+    }
   };
+  const finish = () => {
+    try {
+      return parser.finish();
+    } catch (error) {
+      protocolFailure = "malformed_sse_json";
+      if (trace) trace.protocolFailure = protocolFailure;
+      throw error;
+    }
+  };
+  const attachProtocolDiagnostic = (error) => attachDiagnostic(error, {
+    ...(protocolFailure ? { protocolFailure } : {}),
+    sseBytesReceived: totalBytes,
+    sseEventCount: nonNegativeInteger(trace?.sseEventCount),
+    lastEventType: normalizeText(trace?.lastEventType),
+  });
 
   if (response.body && typeof response.body.getReader === "function") {
     const reader = response.body.getReader();
@@ -615,7 +641,7 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
         }
       }
       append(decoder.decode(), 0);
-      const messages = parser.finish();
+      const messages = finish();
       completed = true;
       if (terminalDrainRequested) {
         await Promise.resolve(reader.cancel?.()).catch(() => {});
@@ -632,7 +658,7 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
       return messages;
     } catch (error) {
       await Promise.resolve(reader.cancel?.()).catch(() => {});
-      throw error;
+      throw attachProtocolDiagnostic(error);
     } finally {
       if (trace) {
         trace.streamClosed = trace.streamClosed || (completed && !terminalDrainRequested);
@@ -657,7 +683,7 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
   try {
     const text = await response.text();
     append(text);
-    const messages = parser.finish();
+    const messages = finish();
     completed = true;
     if (trace) {
       trace.stage = trace.terminalEventSeen ? "terminal_received" : "parse";
@@ -665,6 +691,8 @@ async function readSseMessages(response, maxBytes, onMessage, trace, logDiagnost
       trace.streamClosed = true;
     }
     return messages;
+  } catch (error) {
+    throw attachProtocolDiagnostic(error);
   } finally {
     if (trace) {
       trace.streamClosed = trace.streamClosed || completed;
@@ -690,6 +718,7 @@ function createAcpTrace(context, timeoutMs) {
     contentType: "",
     sseOpened: false,
     sseEventCount: 0,
+    sseBytesReceived: 0,
     sseEventTypeCounts: Object.create(null),
     firstSseEventReceived: false,
     lastEventAt: 0,
@@ -702,6 +731,7 @@ function createAcpTrace(context, timeoutMs) {
     streamClosed: false,
     streamEndReason: "",
     readerCancelled: false,
+    protocolFailure: "",
     abortSource: "",
     timeoutKind: context.method === "session/prompt" ? "overall_turn" : "overall_request",
     lastEventType: "",
@@ -772,6 +802,7 @@ function traceSummary(trace) {
     contentType: trace.contentType || "",
     firstSseEventReceived: trace.firstSseEventReceived,
     sseEventCount: trace.sseEventCount,
+    sseBytesReceived: trace.sseBytesReceived,
     sseEventTypeCounts: { ...trace.sseEventTypeCounts },
     lastEventTimestamp: trace.lastEventTimestamp,
     terminalEventSeen: trace.terminalEventSeen,
@@ -787,6 +818,7 @@ function traceSummary(trace) {
     lastEventHasId: trace.lastEventHasId,
     lastEventMatchesRequest: trace.lastEventMatchesRequest,
     ...(trace.jsonRpcErrorSeen ? { jsonRpcErrorCode: trace.jsonRpcErrorCode } : {}),
+    ...(trace.protocolFailure ? { protocolFailure: trace.protocolFailure } : {}),
   };
 }
 
@@ -880,8 +912,10 @@ function summarizeDiagnosticError(error) {
     ...(diagnostic.timeoutKind ? { timeoutKind: normalizeText(diagnostic.timeoutKind) } : {}),
     ...(diagnostic.abortSource ? { abortSource: normalizeText(diagnostic.abortSource) } : {}),
     ...(Number.isSafeInteger(diagnostic.sseEventCount) ? { sseEventCount: diagnostic.sseEventCount } : {}),
+    ...(Number.isSafeInteger(diagnostic.sseBytesReceived) ? { sseBytesReceived: diagnostic.sseBytesReceived } : {}),
     ...(typeof diagnostic.terminalEventSeen === "boolean" ? { terminalEventSeen: diagnostic.terminalEventSeen } : {}),
     ...(diagnostic.lastEventType ? { lastEventType: normalizeText(diagnostic.lastEventType) } : {}),
+    ...(diagnostic.protocolFailure ? { protocolFailure: normalizeText(diagnostic.protocolFailure) } : {}),
   };
 }
 
@@ -903,12 +937,14 @@ function traceTimeoutDiagnostic(trace) {
     abortSource: normalizeText(trace.abortSource),
     stage: normalizeText(trace.stage),
     sseEventCount: trace.sseEventCount,
+    sseBytesReceived: trace.sseBytesReceived,
     terminalEventSeen: trace.terminalEventSeen,
     lastEventType: normalizeText(trace.lastEventType),
     lastEventMethod: normalizeText(trace.lastEventMethod),
     lastSessionUpdate: normalizeText(trace.lastSessionUpdate),
     lastEventHasId: trace.lastEventHasId,
     lastEventMatchesRequest: trace.lastEventMatchesRequest,
+    ...(trace.protocolFailure ? { protocolFailure: normalizeText(trace.protocolFailure) } : {}),
   };
 }
 function sanitizeDiagnosticText(value) {
@@ -916,5 +952,6 @@ function sanitizeDiagnosticText(value) {
 }
 function cryptoRandomUUID() { return crypto.randomUUID(); }
 function positiveInteger(value, fallback) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback; }
+function nonNegativeInteger(value) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0; }
 
 module.exports = { CodeBuddyClient };
