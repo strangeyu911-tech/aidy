@@ -9,6 +9,10 @@ const path = require("node:path");
 
 const { CodeBuddyClient } = require("../src/adapters/runtime/codebuddy/client");
 const { CodeBuddyProcessHost } = require("../src/adapters/runtime/codebuddy/process-host");
+const {
+  buildCodeBuddyProjectMcpServerConfig,
+  SUPERVISOR_PROJECT_TOOL_ALLOWLIST,
+} = require("../src/adapters/runtime/codebuddy/project-settings");
 
 class FakeChild extends EventEmitter {
   constructor(pid = 4401) {
@@ -105,6 +109,51 @@ test("managed serve uses loopback, a protected file overlay, and no command-line
   assert.equal(fs.existsSync(overlayPath), true);
   await host.stop();
   assert.equal(fs.existsSync(path.dirname(overlayPath)), false);
+});
+
+test("managed serve writes the merged Project Tools MCP server and explicit safe allowlist", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-project-overlay-"));
+  const child = new FakeChild(4402);
+  const spawns = [];
+  const host = new CodeBuddyProcessHost({
+    stateDir,
+    reservePort: async () => 44128,
+    protectDirectory: async () => {},
+    spawnImpl: (command, args) => { spawns.push({ command, args }); return child; },
+    healthProbe: async () => ({ ok: true, status: "ok" }),
+  });
+  const projectServer = buildCodeBuddyProjectMcpServerConfig({
+    workspaceRoot: stateDir,
+    stateDir,
+    cyberbossHome: path.resolve(__dirname, ".."),
+  });
+
+  const started = await host.start({
+    distribution: distribution(),
+    workspaceRoot: stateDir,
+    servicePassword: "temporary-secret",
+    mcpServers: {
+      user_tools: { command: "user-mcp.exe", args: ["serve"] },
+      cyberboss_tools: projectServer,
+    },
+    allowedTools: SUPERVISOR_PROJECT_TOOL_ALLOWLIST,
+  });
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(started.mcpConfigPath, "utf8")), {
+    mcpServers: {
+      user_tools: { type: "stdio", command: "user-mcp.exe", args: ["serve"] },
+      cyberboss_tools: {
+        type: "stdio",
+        command: process.execPath,
+        args: projectServer.args,
+        env: projectServer.env,
+      },
+    },
+  });
+  assert.deepEqual(spawns[0].args.slice(-SUPERVISOR_PROJECT_TOOL_ALLOWLIST.length - 1), [
+    "--allowedTools", ...SUPERVISOR_PROJECT_TOOL_ALLOWLIST,
+  ]);
+  await host.stop();
 });
 
 test("managed serve maps startup timeout and cleans the plaintext overlay", async () => {

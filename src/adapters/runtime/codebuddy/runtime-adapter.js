@@ -13,6 +13,10 @@ const {
   mapCodeBuddyNotification,
   normalizeCodeBuddyUsage,
 } = require("./events");
+const {
+  mergeCodeBuddyMcpServers,
+  SUPERVISOR_PROJECT_TOOL_ALLOWLIST,
+} = require("./project-settings");
 
 function createCodeBuddyRuntimeAdapter({
   config = {},
@@ -22,6 +26,7 @@ function createCodeBuddyRuntimeAdapter({
   locateDistribution = locateCodeBuddyDistribution,
   processHostFactory = (options) => new CodeBuddyProcessHost(options),
   clientFactory = (options) => new CodeBuddyClient(options),
+  projectToolHost = null,
 } = {}) {
   const normalizedProfile = requireCodeBuddyProfile(profile);
   const stateDir = path.resolve(requireText(config.stateDir, "INVALID_PROFILE", "CodeBuddy requires a state directory."));
@@ -46,7 +51,7 @@ function createCodeBuddyRuntimeAdapter({
   const logger = config.logger;
   const capabilityMode = normalizeCapabilityMode(config.codebuddyCapabilityMode);
   const supervisorAllowedTools = capabilityMode === "supervisor"
-    ? normalizeSupervisorAllowedTools(config.codebuddyAllowedTools)
+    ? normalizeSupervisorAllowedTools(config.codebuddyAllowedTools, { projectToolsAvailable: Boolean(projectToolHost) })
     : null;
 
   let distribution = null;
@@ -154,12 +159,19 @@ function createCodeBuddyRuntimeAdapter({
         explicitExecutablePath: normalizeText(normalizedProfile.options.executablePath),
       });
       host = processHostFactory({ stateDir, onLifecycle: handleLifecycle });
+      const mcpServers = mergeCodeBuddyMcpServers({
+        existingServers: isRecord(config.codebuddyMcpServers) ? config.codebuddyMcpServers : {},
+        projectToolHost,
+        workspaceRoot: defaultWorkspaceRoot,
+        stateDir,
+        cyberbossHome: config.cyberbossHome,
+      });
       const started = await host.start({
         distribution,
         workspaceRoot: defaultWorkspaceRoot,
         servicePassword,
         ...(discoveryOnly ? {} : { model: normalizedProfile.modelId }),
-        mcpServers: isRecord(config.codebuddyMcpServers) ? config.codebuddyMcpServers : {},
+        mcpServers,
         allowedTools: capabilityMode === "developer"
           ? (Array.isArray(config.codebuddyAllowedTools) ? config.codebuddyAllowedTools : null)
           : supervisorAllowedTools,
@@ -779,12 +791,19 @@ function sanitizeDiagnosticText(value) {
 function normalizeCapabilityMode(value) {
   return normalizeText(value).toLowerCase() === "developer" ? "developer" : "supervisor";
 }
-function normalizeSupervisorAllowedTools(value) {
+function normalizeSupervisorAllowedTools(value, { projectToolsAvailable = false } = {}) {
+  if (value === undefined) {
+    return projectToolsAvailable ? [...SUPERVISOR_PROJECT_TOOL_ALLOWLIST] : ["mcp__cyberboss_supervisor__disabled"];
+  }
   const tools = Array.isArray(value) ? value.map(normalizeText).filter(Boolean) : [];
   if (tools.some((tool) => !/^mcp__[a-zA-Z0-9_-]+__[a-zA-Z0-9_.:-]+$/.test(tool))) {
     throw runtimeError("CODEBUDDY_CAPABILITY_POLICY_INVALID", "Supervisor CodeBuddy tools must be explicit MCP tool names.");
   }
-  return tools.length ? tools : ["mcp__cyberboss_supervisor__disabled"];
+  if (!tools.length) return ["mcp__cyberboss_supervisor__disabled"];
+  if (projectToolsAvailable && tools.some((tool) => !SUPERVISOR_PROJECT_TOOL_ALLOWLIST.includes(tool))) {
+    throw runtimeError("CODEBUDDY_CAPABILITY_POLICY_INVALID", "Supervisor CodeBuddy tools must use the approved project-tool allowlist.");
+  }
+  return [...new Set(tools)];
 }
 function requireText(value, code, message) { const text = normalizeText(value); if (!text) throw runtimeError(code, message); return text; }
 function nonNegativeInteger(value) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0; }

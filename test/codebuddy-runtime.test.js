@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { createCodeBuddyRuntimeAdapter } = require("../src/adapters/runtime/codebuddy");
+const { SUPERVISOR_PROJECT_TOOL_ALLOWLIST } = require("../src/adapters/runtime/codebuddy/project-settings");
 const { StreamDelivery } = require("../src/core/stream-delivery");
 
 const IDENTITY = "a".repeat(64);
@@ -23,7 +24,7 @@ function profile(overrides = {}) {
   };
 }
 
-function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY, configOverrides = {}, profileOverrides = {} } = {}) {
+function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY, configOverrides = {}, profileOverrides = {}, projectToolHost = null } = {}) {
   const calls = [];
   const host = {
     async start(input) {
@@ -66,6 +67,7 @@ function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY
     },
     profile: profile(profileOverrides),
     secrets: { servicePassword: "gateway-secret" },
+    projectToolHost,
     locateDistribution: async () => ({
       source: "workbuddy-bundled",
       version: "2.115.0",
@@ -77,6 +79,42 @@ function createHarness({ sessionsFile, clientOverrides = {}, identity = IDENTITY
   });
   return { adapter, calls, client };
 }
+
+test("CodeBuddy managed runtime registers merged Project Tools and the supervisor-safe allowlist", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-project-tools-"));
+  const { adapter, calls } = createHarness({
+    sessionsFile: path.join(root, "sessions.json"),
+    projectToolHost: { listTools: () => [], invokeTool: async () => null },
+    configOverrides: {
+      codebuddyMcpServers: {
+        user_tools: { command: "user-mcp.exe", args: ["serve"], env: { USER_SETTING: "kept" } },
+      },
+    },
+  });
+
+  await adapter.initialize();
+
+  const start = calls.find(([name]) => name === "host.start")[1];
+  assert.deepEqual(Object.keys(start.mcpServers), ["user_tools", "cyberboss_tools"]);
+  assert.deepEqual(start.mcpServers.user_tools, {
+    command: "user-mcp.exe",
+    args: ["serve"],
+    env: { USER_SETTING: "kept" },
+  });
+  assert.equal(start.mcpServers.cyberboss_tools.command, process.execPath);
+  assert.deepEqual(start.mcpServers.cyberboss_tools.args.slice(1), [
+    "tool-mcp-server",
+    "--runtime-id", "codebuddy",
+    "--workspace-root", "D:\\CyberBoss",
+  ]);
+  assert.equal(start.mcpServers.cyberboss_tools.env.CYBERBOSS_STATE_DIR, root);
+  assert.deepEqual(start.allowedTools, SUPERVISOR_PROJECT_TOOL_ALLOWLIST);
+  assert.equal(start.allowedTools.includes("mcp__cyberboss_tools__cyberboss_channel_send_file"), false);
+  assert.equal(start.allowedTools.includes("mcp__cyberboss_tools__cyberboss_sticker_send"), false);
+  assert.equal(start.allowedTools.some((tool) => tool.startsWith("mcp__cyberboss_supervisor__")), false);
+
+  await adapter.close();
+});
 
 test("production adapter initializes, streams a turn, and persists the shared session binding", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-runtime-"));
