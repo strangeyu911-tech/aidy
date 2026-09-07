@@ -1,5 +1,12 @@
 const crypto = require("node:crypto");
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
+const {
+  createActionEvidenceLedger,
+  enforceActionClaimReply,
+  normalizeActionRequest,
+  recordRuntimeToolEvent,
+  finalizeActionEvidence,
+} = require("../adapters/runtime/shared/action-evidence");
 const { OutboundMessageBoundary } = require("./outbound-message-boundary");
 
 class StreamDelivery {
@@ -116,8 +123,16 @@ class StreamDelivery {
         const state = this.ensureRunState(threadId, turnId);
         state.turnId = turnId || state.turnId;
         this.captureTurnCorrelation(state, event.payload);
+        state.actionRequest = normalizeActionRequest(event.payload?.actionRequest);
+        state.actionEvidenceLedger = createActionEvidenceLedger(state.actionRequest);
         state.startedAt = state.startedAt || Date.now();
         this.attachReplyTarget(state);
+        return;
+      }
+      case "runtime.tool.started":
+      case "runtime.tool.completed": {
+        const state = this.ensureRunState(threadId, turnId);
+        recordRuntimeToolEvent(state.actionEvidenceLedger, event);
         return;
       }
       case "runtime.reply.delta": {
@@ -138,13 +153,16 @@ class StreamDelivery {
           text: normalizeLineEndings(event.payload.text),
           completed: true,
         });
-        await this.flush(state, { force: false });
+        if (!state.actionRequest.requiresEvidence) {
+          await this.flush(state, { force: false });
+        }
         return;
       }
       case "runtime.turn.completed": {
         const state = this.ensureRunState(threadId, turnId);
         state.turnId = turnId || state.turnId;
         this.captureTurnCorrelation(state, event.payload);
+        state.actionEvidence = event.payload?.actionEvidence || finalizeActionEvidence(state.actionEvidenceLedger, state.actionRequest);
         this.captureTurnCompletionText(state, event.payload.text);
         await this.flush(state, { force: true });
         this.disposeRunState(state.runKey);
@@ -175,6 +193,9 @@ class StreamDelivery {
       bindingKey: "",
       replyTarget: null,
       deferredReplyPrefix: "",
+      actionRequest: normalizeActionRequest(null),
+      actionEvidenceLedger: createActionEvidenceLedger(),
+      actionEvidence: null,
       turnId: normalizeText(turnId),
       turnCorrelation: "",
       startedAt: Date.now(),
@@ -374,12 +395,16 @@ class StreamDelivery {
       this.logReplySkipped(state, normalizeSuppressionReason(resolved.reason), "system_reply");
       return;
     }
+    const guardedMessage = enforceActionClaimReply(resolved.message, {
+      actionRequest: state.actionRequest,
+      actionEvidence: state.actionEvidence || finalizeActionEvidence(state.actionEvidenceLedger, state.actionRequest),
+    });
 
     this.logDiagnostic("reply.prepared", {
       ...this.stateDiagnosticContext(state),
       replyPresent: true,
-      charLength: resolved.message.length,
-      byteLength: Buffer.byteLength(resolved.message, "utf8"),
+      charLength: guardedMessage.length,
+      byteLength: Buffer.byteLength(guardedMessage, "utf8"),
       channel: normalizeText(state.replyTarget.provider) || "unknown",
       targetFingerprint: fingerprintIdentifier(state.replyTarget.userId),
       messageCount: 1,
@@ -392,7 +417,7 @@ class StreamDelivery {
     });
 
     state.sendChain = state.sendChain.then(async () => {
-      await this.sendSystemReply(state, resolved.message);
+      await this.sendSystemReply(state, guardedMessage);
       this.markAllItemsSent(state);
     }).catch((error) => {
       console.error(`[cyberboss] failed to deliver system reply thread=${state.threadId}: ${error.message}`);
@@ -697,7 +722,10 @@ function collectPendingReplyDeliveries(state, { force }) {
     if (!item) {
       continue;
     }
-    const sourceText = resolvePlainReplySourceText(item, force);
+    const sourceText = enforceActionClaimReply(resolvePlainReplySourceText(item, force), {
+      actionRequest: state.actionRequest,
+      actionEvidence: state.actionEvidence || finalizeActionEvidence(state.actionEvidenceLedger, state.actionRequest),
+    });
     if (!sourceText) {
       continue;
     }

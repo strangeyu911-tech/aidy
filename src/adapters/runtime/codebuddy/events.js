@@ -48,6 +48,7 @@ function mapCodeBuddyNotification(notification, context = {}) {
           turnId,
           toolCallId,
           toolName: normalizeText(update.title || update.name),
+          status: "started",
         },
       }];
     }
@@ -62,6 +63,8 @@ function mapCodeBuddyNotification(notification, context = {}) {
           turnId,
           toolCallId,
           toolName: normalizeText(update.title || update.name),
+          status,
+          resultPresent: hasToolResultEvidence(update),
           isError: new Set(["failed", "error", "cancelled"]).has(status),
         },
       }];
@@ -283,5 +286,13 @@ function truncateText(value) { return normalizeText(value).slice(0, MAX_APPROVAL
 function nonNegativeInteger(value) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0; }
 function normalizeText(value) { return typeof value === "string" ? value.trim() : ""; }
 function isRecord(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
+
+function hasToolResultEvidence(update) {
+  return Object.prototype.hasOwnProperty.call(update || {}, "result")
+    || Object.prototype.hasOwnProperty.call(update || {}, "output")
+    || Object.prototype.hasOwnProperty.call(update || {}, "rawOutput")
+    || Object.prototype.hasOwnProperty.call(update || {}, "content")
+    || update?.isError === true;
+}
 
 module.exports = { mapCodeBuddyNotification, mapCodeBuddyFailure, normalizeCodeBuddyUsage };

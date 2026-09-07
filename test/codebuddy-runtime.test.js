@@ -149,6 +149,69 @@ test("production adapter initializes, streams a turn, and persists the shared se
   assert.deepEqual(calls.slice(-2).map(([name]) => name), ["disconnect", "host.stop"]);
 });
 
+test("CodeBuddy completion carries write evidence from the actual tool result updates", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-action-evidence-"));
+  const { adapter } = createHarness({
+    sessionsFile: path.join(root, "sessions.json"),
+    clientOverrides: {
+      async prompt(input) {
+        input.onNotification({
+          method: "session/update",
+          params: {
+            sessionId: input.sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: "write-1",
+              title: "mcp__zhijiantime__update_todo",
+              rawInput: { title: "CyberBoss bug A" },
+            },
+          },
+        });
+        input.onNotification({
+          method: "session/update",
+          params: {
+            sessionId: input.sessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: "write-1",
+              title: "mcp__zhijiantime__update_todo",
+              status: "completed",
+              result: { ok: true },
+            },
+          },
+        });
+        input.onNotification({
+          method: "session/update",
+          params: {
+            sessionId: input.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "已清掉 CyberBoss bug A" } },
+          },
+        });
+        return { text: "已清掉 CyberBoss bug A", stopReason: "end_turn" };
+      },
+    },
+  });
+  const events = [];
+  adapter.onEvent((event) => events.push(event));
+  await adapter.sendTurn({
+    bindingKey: "binding",
+    workspaceRoot: "D:\\CyberBoss",
+    text: "do it",
+    metadata: { actionRequestText: "清掉：\n1. CyberBoss bug A" },
+  });
+  await waitFor(() => events.some((event) => event.type === "runtime.turn.completed"));
+
+  const started = events.find((event) => event.type === "runtime.turn.started");
+  const completed = events.find((event) => event.type === "runtime.turn.completed");
+  assert.deepEqual(started.payload.actionRequest, {
+    requiresEvidence: true,
+    requestedTargets: ["CyberBoss bug A"],
+  });
+  assert.equal(completed.payload.actionEvidence.status, "all_success");
+  assert.deepEqual(completed.payload.actionEvidence.targetResults, [{ target: "CyberBoss bug A", status: "success" }]);
+  await adapter.close();
+});
+
 test("managed CodeBuddy ignores stale profile endpoints and reports the discovered host endpoint", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-endpoint-"));
   const { adapter } = createHarness({

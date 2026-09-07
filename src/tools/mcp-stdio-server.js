@@ -105,6 +105,11 @@ function runToolMcpServer({ toolHost, runtimeId = "", workspaceRoot = "" }) {
               text: formatToolResult(result),
             },
           ],
+          structuredContent: {
+            actionEvidence: { status: "success", toolName },
+            result: isRecord(result) ? result : { value: result },
+          },
+          isError: false,
         }, reader.getMode());
         return;
       }
@@ -118,6 +123,13 @@ function runToolMcpServer({ toolHost, runtimeId = "", workspaceRoot = "" }) {
             text: error instanceof Error ? error.message : String(error || "unknown error"),
           },
         ],
+        structuredContent: {
+          actionEvidence: {
+            status: "failed",
+            toolName,
+            ...(error?.code ? { code: String(error.code).slice(0, 80) } : {}),
+          },
+        },
         isError: true,
       }, reader.getMode());
     }
@@ -135,6 +147,10 @@ function formatToolResult(result) {
     return String(result.text);
   }
   return JSON.stringify(result, null, 2);
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function buildToolResources(toolCatalog) {

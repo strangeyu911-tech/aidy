@@ -17,6 +17,13 @@ const {
   mergeCodeBuddyMcpServers,
   SUPERVISOR_PROJECT_TOOL_ALLOWLIST,
 } = require("./project-settings");
+const {
+  buildActionRequest,
+  createActionEvidenceLedger,
+  finalizeActionEvidence,
+  normalizeActionRequest,
+  recordCodeBuddyNotification,
+} = require("../shared/action-evidence");
 
 function createCodeBuddyRuntimeAdapter({
   config = {},
@@ -418,9 +425,10 @@ function createCodeBuddyRuntimeAdapter({
     return true;
   }
 
-  async function runTurn({ bindingKey, threadId, turnId, workspaceRoot, text, controller, turnCorrelation = "" }) {
+  async function runTurn({ bindingKey, threadId, turnId, workspaceRoot, text, controller, turnCorrelation = "", actionRequest = {} }) {
     const startedAt = Date.now();
     const correlation = normalizeText(turnCorrelation);
+    const actionEvidenceLedger = createActionEvidenceLedger(actionRequest);
     try {
       let streamedReply = false;
       const reply = await client.prompt({
@@ -429,6 +437,7 @@ function createCodeBuddyRuntimeAdapter({
         signal: controller.signal,
         observability: diagnosticContext(correlation, { phase: "prompt" }),
         onNotification: (message) => {
+          recordCodeBuddyNotification(actionEvidenceLedger, message);
           const events = forwardNotification(message, { threadId, turnId, workspaceRoot, turnCorrelation: correlation });
           if (events.some((event) => event?.type === "runtime.reply.delta")) {
             streamedReply = true;
@@ -443,6 +452,7 @@ function createCodeBuddyRuntimeAdapter({
         workspaceRoot,
         turnCorrelation: correlation,
         text: reply.text,
+        actionEvidence: finalizeActionEvidence(actionEvidenceLedger),
         ...(normalizedUsage.usage ? { usage: normalizedUsage.usage } : {}),
         ...(normalizedUsage.vendorUsage ? { vendorUsage: normalizedUsage.vendorUsage } : {}),
       };
@@ -603,8 +613,24 @@ function createCodeBuddyRuntimeAdapter({
           threadId,
           turnId,
         }));
-        emit({ type: "runtime.turn.started", payload: runtimePayload({ threadId, turnId, workspaceRoot: directory, turnCorrelation: correlation }) });
-        const pending = runTurn({ bindingKey: binding, threadId, turnId, workspaceRoot: directory, text: promptText, controller, turnCorrelation: correlation })
+        const actionRequest = normalizeActionRequest(metadata?.actionRequest || buildActionRequest(metadata?.actionRequestText || promptText));
+        emit({ type: "runtime.turn.started", payload: runtimePayload({
+          threadId,
+          turnId,
+          workspaceRoot: directory,
+          turnCorrelation: correlation,
+          actionRequest,
+        }) });
+        const pending = runTurn({
+          bindingKey: binding,
+          threadId,
+          turnId,
+          workspaceRoot: directory,
+          text: promptText,
+          controller,
+          turnCorrelation: correlation,
+          actionRequest,
+        })
           .finally(() => {
             signal?.removeEventListener?.("abort", abortFromParent);
             activeTurns.delete(turnId);

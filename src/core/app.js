@@ -784,6 +784,7 @@ class CyberbossApp {
           accountId: prepared.accountId,
           senderId: prepared.senderId,
           activeProfileId: activeProfile.id,
+          actionRequestText: prepared.originalText || prepared.text || "",
           visionUsage: runtimeTurn.usageAttributions,
         },
         turnCorrelation,
