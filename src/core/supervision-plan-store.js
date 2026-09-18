@@ -68,7 +68,43 @@ class SupervisionPlanStore {
   due(now = new Date()) {
     const timestamp = now instanceof Date ? now.getTime() : new Date(now).getTime();
     if (!Number.isFinite(timestamp)) return [];
+    // list() -> store.read() is served from the AtomicJsonStore read cache when the
+    // file is unchanged, so repeated per-second due() polling does not re-parse the
+    // whole plan. The remaining in-memory filter over pending checkpoints is O(n)
+    // but cheap and acceptable; we deliberately keep it rather than maintain a
+    // separate pending-only index.
     return this.list({ state: "pending" }).filter((item) => Date.parse(item.dueAt) <= timestamp);
+  }
+
+  // Remove finished (non-pending) checkpoints whose updatedAt/createdAt is older than
+  // now - keepDays. Pending checkpoints are never touched when keepPending is true
+  // (the default); when keepPending is false, even pending ones may be pruned if stale.
+  // Returns the number of checkpoints removed.
+  prune({ keepDays = 30, keepPending = true, now = new Date() } = {}) {
+    const timestamp = now instanceof Date ? now.getTime() : new Date(now).getTime();
+    if (!Number.isFinite(timestamp)) throw new Error("prune requires a valid now");
+    const cutoff = timestamp - keepDays * 24 * 60 * 60 * 1000;
+    let removed = 0;
+    this.store.update((plan) => {
+      const kept = [];
+      for (const checkpoint of plan.checkpoints) {
+        const isPending = checkpoint.state === "pending";
+        // With keepPending, never touch pending checkpoints regardless of age.
+        if (keepPending && isPending) {
+          kept.push(checkpoint);
+          continue;
+        }
+        const ts = Date.parse(checkpoint.updatedAt) || Date.parse(checkpoint.createdAt);
+        const expired = Number.isFinite(ts) && ts < cutoff;
+        if (!expired) {
+          kept.push(checkpoint);
+          continue;
+        }
+        removed += 1;
+      }
+      return { ...plan, checkpoints: kept };
+    });
+    return removed;
   }
 }
 
@@ -96,6 +132,10 @@ function normalizeCheckpoint(value) {
     timezone: normalizeText(value.timezone) || "Asia/Shanghai",
     state,
     outcome: normalizeText(value.outcome),
+    // Must survive a round-trip: an explicit request ("明天23:30提醒我") is
+    // honoured even inside quiet hours, and the dispatcher reads this flag back
+    // from disk long after the in-memory arrangement is gone.
+    exemptQuietHours: value.exemptQuietHours === true,
     announcedAt: normalizeIso(value.announcedAt),
     link: normalizeText(value.link),
     mutationFingerprint: normalizeText(value.mutationFingerprint),

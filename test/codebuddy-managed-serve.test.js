@@ -42,7 +42,18 @@ function distribution() {
   };
 }
 
-test("managed serve uses loopback, a protected file overlay, and no command-line password", async () => {
+test("managed serve uses loopback, a protected file overlay, and no command-line password", async (t) => {
+  // The child inherits the parent environment, and a shell that is itself hosted
+  // by CodeBuddy/WorkBuddy already exports CODEBUDDY_GATEWAY_PASSWORD. Clear it so
+  // this assertion checks what the host puts in the child env, not what our own
+  // shell happens to carry (src never references this variable).
+  const ambientPassword = process.env.CODEBUDDY_GATEWAY_PASSWORD;
+  delete process.env.CODEBUDDY_GATEWAY_PASSWORD;
+  t.after(() => {
+    if (ambientPassword === undefined) delete process.env.CODEBUDDY_GATEWAY_PASSWORD;
+    else process.env.CODEBUDDY_GATEWAY_PASSWORD = ambientPassword;
+  });
+
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-host-"));
   const spawns = [];
   const protectedDirectories = [];

@@ -324,7 +324,10 @@ function createChildAbort(parentSignal, timeoutMs) {
     reason = "timeout";
     controller.abort();
   }, timeoutMs);
-  timer.unref?.();
+  // Deliberately not unref'd: this is a *hard* timeout, and an unref'd timer
+  // cannot fire when it is the only thing left on the event loop. In that case
+  // the operation hangs forever (and every test awaiting it gets torn down by
+  // the runner). cleanup() always clearTimeout()s it in a finally block.
   return {
     controller,
     get reason() { return reason; },

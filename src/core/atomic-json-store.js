@@ -8,15 +8,36 @@ class AtomicJsonStore {
     this.normalize = normalize;
     this.onCorrupt = onCorrupt;
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    // Read cache keyed on mtime + size. Returns deep clones of `_cache.parsed`,
+    // so callers may mutate freely without corrupting the shared cached object.
+    this._cache = null;
+  }
+
+  _statSafe(filePath) {
+    try {
+      return fs.statSync(filePath);
+    } catch {
+      return null;
+    }
   }
 
   read() {
     if (!fs.existsSync(this.filePath)) {
+      this._cache = null;
       return clone(this.defaultValue);
+    }
+    const stat = this._statSafe(this.filePath);
+    // Cache hit: the file is unchanged since the last read (same mtime and size),
+    // so we skip readFileSync + JSON.parse entirely. This is how we keep the
+    // per-second due() polling cheap even when the plan grows to thousands of entries.
+    if (stat && this._cache && stat.mtimeMs === this._cache.mtimeMs && stat.size === this._cache.size) {
+      return clone(this._cache.parsed);
     }
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
-      return this.normalize(parsed);
+      const normalized = this.normalize(parsed);
+      if (stat) this._cache = { mtimeMs: stat.mtimeMs, size: stat.size, parsed: normalized };
+      return clone(normalized);
     } catch (error) {
       const backupPath = `${this.filePath}.corrupt-${Date.now()}`;
       try {
@@ -25,6 +46,7 @@ class AtomicJsonStore {
         // Preserve the original in place even if a diagnostic copy cannot be made.
       }
       this.onCorrupt?.({ error, filePath: this.filePath, backupPath });
+      this._cache = null;
       return clone(this.defaultValue);
     }
   }
@@ -43,7 +65,12 @@ class AtomicJsonStore {
       }
       throw error;
     }
+    this._invalidateCache();
     return clone(normalized);
+  }
+
+  _invalidateCache() {
+    this._cache = null;
   }
 
   update(mutator) {

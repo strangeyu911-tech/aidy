@@ -5,7 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { BackupService, validateArchiveEntries } = require("../src/services/backup-service");
+const { BackupService, probeTarCapability, resolveTarExecutable, validateArchiveEntries } = require("../src/services/backup-service");
 
 function makeStateDir() {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-backup-test-"));
@@ -17,10 +17,11 @@ function makeStateDir() {
 }
 
 function reopenArchive(archivePath) {
+  const tar = resolveTarExecutable();
   const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-backup-open-"));
-  const listed = spawnSync("tar.exe", ["-t", "-f", archivePath], { encoding: "utf8", windowsHide: true });
+  const listed = spawnSync(tar, ["-t", "-f", archivePath], { encoding: "utf8", windowsHide: true });
   assert.equal(listed.status, 0, listed.stderr);
-  const extracted = spawnSync("tar.exe", ["-x", "-f", archivePath, "-C", extractDir], { encoding: "utf8", windowsHide: true });
+  const extracted = spawnSync(tar, ["-x", "-f", archivePath, "-C", extractDir], { encoding: "utf8", windowsHide: true });
   assert.equal(extracted.status, 0, extracted.stderr);
   const entries = listed.stdout.split(/\r?\n/).map((value) => value.replace(/^\.\//, "").trim()).filter(Boolean);
   const texts = entries
@@ -139,4 +140,11 @@ test("validated restore replaces selected records and preserves credentials", as
   await targetService.restore({ archivePath, createPreRestoreBackup: false });
   assert.match(fs.readFileSync(path.join(targetDir, "diary", "2026-08-23.md"), "utf8"), /hello/);
   assert.equal(fs.readFileSync(path.join(targetDir, "credentials.json"), "utf8"), "keep-me");
+});
+
+test("probeTarCapability resolves without throwing and reports availability", async () => {
+  const result = await probeTarCapability();
+  assert.equal(typeof result.available, "boolean");
+  assert.ok(result.executable);
+  if (result.available) assert.ok(result.version);
 });

@@ -17,6 +17,45 @@ test("turn gate tracks pending scopes until the turn is released", () => {
   assert.equal(gate.isPending("binding-1", "/workspace"), false);
 });
 
+test("expireStale keeps scopes younger than the TTL and does not report timeouts", () => {
+  const gate = new TurnGateStore({ turnGateTtlMs: 10 * 60 * 1000 });
+  const scopeKey = gate.begin("binding-1", "/workspace");
+  const events = [];
+  const released = gate.expireStale({ now: Date.now() + 5 * 60 * 1000, onExpire: (event) => events.push(event) });
+  assert.deepEqual(released, []);
+  assert.deepEqual(events, []);
+  assert.equal(gate.isPending("binding-1", "/workspace"), true);
+});
+
+test("expireStale releases scopes older than the TTL and reports TURN_GATE_TIMEOUT", () => {
+  const gate = new TurnGateStore({ turnGateTtlMs: 10 * 60 * 1000 });
+  const scopeKey = gate.begin("binding-1", "/workspace");
+  gate.attachThread(scopeKey, "thread-1");
+  const now = 2_000_000_000_000;
+  gate.scopeStartedAt.set(scopeKey, now - 11 * 60 * 1000);
+  const events = [];
+  const released = gate.expireStale({ now, onExpire: (event) => events.push(event) });
+  assert.deepEqual(released, [scopeKey]);
+  assert.equal(gate.isPending("binding-1", "/workspace"), false);
+  assert.equal(gate.scopeByThreadId.has("thread-1"), false);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].code, "TURN_GATE_TIMEOUT");
+  assert.equal(events[0].scopeKey, scopeKey);
+  assert.equal(events[0].expiredAt - events[0].startedAt, 11 * 60 * 1000);
+});
+
+test("pendingDiagnostics reports pending count and longest wait", () => {
+  const gate = new TurnGateStore({ turnGateTtlMs: 10 * 60 * 1000 });
+  const now = 1_000_000_000_000;
+  const key1 = gate.begin("binding-1", "/workspace");
+  const key2 = gate.begin("binding-2", "/workspace");
+  gate.scopeStartedAt.set(key1, now - 2 * 60 * 1000);
+  gate.scopeStartedAt.set(key2, now - 8 * 60 * 1000);
+  const diagnostics = gate.pendingDiagnostics({ now });
+  assert.equal(diagnostics.pendingCount, 2);
+  assert.equal(diagnostics.longestWaitMs, 8 * 60 * 1000);
+});
+
 test("handlePreparedMessage queues a normal inbound message while the scope is busy", async () => {
   const queued = [];
   let dispatched = false;

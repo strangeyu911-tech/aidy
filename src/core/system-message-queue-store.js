@@ -44,7 +44,22 @@ class SystemMessageQueueStore {
   }
 
   save() {
-    fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2));
+    // Atomic write: serialize to a sibling temp file, then rename into place.
+    // `rename` is atomic on the target path, so a concurrent reader (e.g. the
+    // bridge subprocess draining the queue) never observes a half-written file,
+    // and a crash mid-write leaves the previous complete file intact.
+    const temporaryPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify(this.state, null, 2), "utf8");
+    try {
+      fs.renameSync(temporaryPath, this.filePath);
+    } catch (error) {
+      try {
+        fs.rmSync(temporaryPath, { force: true });
+      } catch {
+        // Ignore cleanup failure and preserve the original error.
+      }
+      throw error;
+    }
   }
 
   enqueue(message) {

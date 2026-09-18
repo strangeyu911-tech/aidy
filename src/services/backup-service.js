@@ -48,7 +48,7 @@ class BackupService {
       };
       fs.writeFileSync(path.join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
       fs.mkdirSync(path.dirname(resolvedTarget), { recursive: true });
-      await runHidden("tar.exe", ["-a", "-c", "-f", resolvedTarget, "."], { cwd: staging });
+      await runHidden(resolveTarExecutable(), ["-a", "-c", "-f", resolvedTarget, "."], { cwd: staging });
       this.logger?.info("backup.created", { kind, fileCount: files.length });
       return { filePath: resolvedTarget, manifest };
     } finally {
@@ -65,7 +65,7 @@ class BackupService {
     try {
       const entries = await listArchive(resolvedArchive);
       validateArchiveEntries(entries);
-      await runHidden("tar.exe", ["-x", "-f", resolvedArchive, "-C", staging]);
+      await runHidden(resolveTarExecutable(), ["-x", "-f", resolvedArchive, "-C", staging]);
       const manifestPath = path.join(staging, "manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
       validateManifest(manifest, staging);
@@ -164,7 +164,7 @@ function hashFile(filePath) {
 }
 
 async function listArchive(archivePath) {
-  const result = await runHidden("tar.exe", ["-t", "-f", archivePath]);
+  const result = await runHidden(resolveTarExecutable(), ["-t", "-f", archivePath]);
   return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
@@ -294,6 +294,41 @@ function runHidden(command, args, { cwd } = {}) {
   });
 }
 
+// Prefer the Windows-bundled tar.exe in System32 so that a Unix tar (e.g. GNU tar
+// shipped with Git for Windows) on the user's PATH cannot hijack the call and
+// misinterpret Windows-style archive paths as remote hosts ("Cannot connect to C:").
+function resolveTarExecutable() {
+  const candidate = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+  if (fs.existsSync(candidate)) return candidate;
+  return "tar.exe";
+}
+
+// Probe whether a usable tar is reachable. Safe to call anywhere: it never throws,
+// always resolves, and uses a short timeout so callers (including tests) cannot block.
+function probeTarCapability({ timeout = 5000 } = {}) {
+  const executable = resolveTarExecutable();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(executable, ["--version"], { windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* ignore */ }
+      finish({ available: false, executable, error: "timeout" });
+    }, timeout);
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.once("error", () => finish({ available: false, executable, error: "spawn-failed" }));
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      finish(code === 0
+        ? { available: true, executable, version: (stdout || stderr).trim() || "unknown" }
+        : { available: false, executable, error: (stderr || stdout).trim() || `exit ${code}` });
+    });
+  });
+}
+
 function timestampName() { return new Date().toISOString().replace(/[:.]/g, "-"); }
 function toPosix(value) { return value.replace(/\\/g, "/"); }
 function backupError(code, message) { const error = new Error(message); error.code = code; return error; }
@@ -305,6 +340,8 @@ module.exports = {
   assertChildPath,
   normalizeClasses,
   preparePortableProviderProfiles,
+  probeTarCapability,
+  resolveTarExecutable,
   validateArchiveEntries,
   validateManifest,
 };

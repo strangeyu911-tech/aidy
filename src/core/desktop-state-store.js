@@ -3,6 +3,11 @@ const path = require("path");
 const { AtomicJsonStore } = require("./atomic-json-store");
 
 const DESIRED_STATES = new Set(["running", "quiet", "stopped"]);
+const DEFAULT_QUIET_HOURS = Object.freeze({
+  enabled: true,
+  start: "23:00",
+  end: "07:00",
+});
 const DEFAULT_DESKTOP_STATE = Object.freeze({
   schemaVersion: 1,
   desiredState: "running",
@@ -12,6 +17,9 @@ const DEFAULT_DESKTOP_STATE = Object.freeze({
   reportEnabled: true,
   reportTime: "00:30",
   timezone: "Asia/Shanghai",
+  // Sleep window. Machine-initiated check-ins never fire inside it; a reminder
+  // the user asked for at that exact time is explicitly exempt.
+  quietHours: DEFAULT_QUIET_HOURS,
   contextDurations: { meal: 30, shower: 30 },
   backfillPaused: false,
   updatedAt: "",
@@ -72,12 +80,22 @@ function normalizeDesktopState(value) {
     reportEnabled: normalizeBoolean(input.reportEnabled, DEFAULT_DESKTOP_STATE.reportEnabled),
     reportTime: normalizeClockTime(input.reportTime),
     timezone: normalizeText(input.timezone) || DEFAULT_DESKTOP_STATE.timezone,
+    quietHours: normalizeQuietHours(input.quietHours),
     contextDurations: {
       meal: normalizeMinutes(contextDurations.meal, DEFAULT_DESKTOP_STATE.contextDurations.meal),
       shower: normalizeMinutes(contextDurations.shower, DEFAULT_DESKTOP_STATE.contextDurations.shower),
     },
     backfillPaused: normalizeBoolean(input.backfillPaused, false),
     updatedAt: normalizeIsoTime(input.updatedAt),
+  };
+}
+
+function normalizeQuietHours(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    enabled: normalizeBoolean(input.enabled, DEFAULT_QUIET_HOURS.enabled),
+    start: normalizeClockTime(input.start, DEFAULT_QUIET_HOURS.start),
+    end: normalizeClockTime(input.end, DEFAULT_QUIET_HOURS.end),
   };
 }
 
@@ -112,7 +130,9 @@ function normalizeText(value) {
 
 module.exports = {
   DEFAULT_DESKTOP_STATE,
+  DEFAULT_QUIET_HOURS,
   DESIRED_STATES,
   DesktopStateStore,
   normalizeDesktopState,
+  normalizeQuietHours,
 };

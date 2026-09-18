@@ -7,6 +7,51 @@ const MESSAGE_ITEM_FILE = 4;
 const MESSAGE_ITEM_VIDEO = 5;
 const DEDUP_TTL_MS = 5 * 60_000;
 
+// Core inbound normalization, shared by the per-filter dedup path and the
+// standalone `normalizeInboundMessage` entry point below. Returns the same
+// `{ normalized, rejectionReason }` shape; it does NOT perform dedup. Dedup is
+// filter-level state and is layered on top by `createInboundFilter`.
+function normalizeInboundMessageDetailed(message, config, accountId) {
+  if (!message || typeof message !== "object") {
+    return { normalized: null, rejectionReason: "invalid_update" };
+  }
+  const messageType = Number(message.message_type);
+  if (messageType === MESSAGE_TYPE_BOT) {
+    return { normalized: null, rejectionReason: "bot_message" };
+  }
+  if (messageType !== 0 && messageType !== MESSAGE_TYPE_USER) {
+    return { normalized: null, rejectionReason: "unsupported_message_type" };
+  }
+
+  const senderId = normalizeText(message.from_user_id);
+  if (!senderId) {
+    return { normalized: null, rejectionReason: "missing_sender" };
+  }
+
+  const createdAtMs = normalizeMessageTimestampMs(message);
+
+  const itemList = Array.isArray(message.item_list) ? message.item_list : [];
+  const text = bodyFromItemList(itemList);
+  const attachments = extractAttachmentItems(itemList);
+  if (!text && !attachments.length) {
+    return { normalized: null, rejectionReason: "empty_message" };
+  }
+
+  return { normalized: {
+    provider: "weixin",
+    accountId,
+    workspaceId: config ? config.workspaceId : undefined,
+    senderId,
+    chatId: senderId,
+    messageId: normalizeMessageId(message),
+    threadKey: normalizeText(message.session_id),
+    text,
+    attachments,
+    contextToken: normalizeText(message.context_token),
+    receivedAt: createdAtMs > 0 ? new Date(createdAtMs).toISOString() : new Date().toISOString(),
+  }, rejectionReason: null };
+}
+
 function createInboundFilter() {
   const seen = new Map();
 
@@ -15,25 +60,13 @@ function createInboundFilter() {
       return this.normalizeDetailed(message, config, accountId).normalized;
     },
     normalizeDetailed(message, config, accountId) {
-      if (!message || typeof message !== "object") {
-        return { normalized: null, rejectionReason: "invalid_update" };
-      }
-      const messageType = Number(message.message_type);
-      if (messageType === MESSAGE_TYPE_BOT) {
-        return { normalized: null, rejectionReason: "bot_message" };
-      }
-      if (messageType !== 0 && messageType !== MESSAGE_TYPE_USER) {
-        return { normalized: null, rejectionReason: "unsupported_message_type" };
-      }
-
-      const senderId = normalizeText(message.from_user_id);
-      if (!senderId) {
-        return { normalized: null, rejectionReason: "missing_sender" };
+      const result = normalizeInboundMessageDetailed(message, config, accountId);
+      if (!result.normalized) {
+        return result;
       }
 
       const createdAtMs = normalizeMessageTimestampMs(message);
-
-      const dedupKey = buildDedupKey(message, senderId, createdAtMs);
+      const dedupKey = buildDedupKey(message, result.normalized.senderId, createdAtMs);
       pruneSeen(seen);
       if (dedupKey && seen.has(dedupKey)) {
         return { normalized: null, rejectionReason: "duplicate" };
@@ -42,28 +75,93 @@ function createInboundFilter() {
         seen.set(dedupKey, Date.now());
       }
 
-      const itemList = Array.isArray(message.item_list) ? message.item_list : [];
-      const text = bodyFromItemList(itemList);
-      const attachments = extractAttachmentItems(itemList);
-      if (!text && !attachments.length) {
-        return { normalized: null, rejectionReason: "empty_message" };
-      }
-
-      return { normalized: {
-        provider: "weixin",
-        accountId,
-        workspaceId: config.workspaceId,
-        senderId,
-        chatId: senderId,
-        messageId: normalizeMessageId(message),
-        threadKey: normalizeText(message.session_id),
-        text,
-        attachments,
-        contextToken: normalizeText(message.context_token),
-        receivedAt: createdAtMs > 0 ? new Date(createdAtMs).toISOString() : new Date().toISOString(),
-      }, rejectionReason: null };
+      return { normalized: result.normalized, rejectionReason: null };
     },
   };
+}
+
+// Resolve which user id should be treated as the owner of this single-user
+// assistant. The product serves exactly one person, so ownership is derived
+// from the most specific configuration available:
+//   1. an explicit `config.ownerUserId`
+//   2. otherwise the first id in `allowedUserIds`
+//   3. otherwise an empty string (no ownership info configured yet)
+function resolveOwnerUserId({ config, allowedUserIds = [], accountId = "" } = {}) {
+  const configured = config && typeof config === "object" ? normalizeText(config.ownerUserId) : "";
+  if (configured) {
+    return configured;
+  }
+  const candidates = Array.isArray(allowedUserIds)
+    ? allowedUserIds.map((id) => normalizeText(id)).filter(Boolean)
+    : [];
+  if (candidates.length) {
+    return candidates[0];
+  }
+  return "";
+}
+
+// Classify whether an inbound message originates from the owner.
+// Returns `{ allowed, verified, reason }`.
+//   - `verified: false` means we had no ownership information to compare
+//     against (fail-open: allowed, but not verified).
+//   - `verified: true` means an ownership comparison was actually performed.
+// Sender ids and allowed ids are trimmed before comparison; empty allowed ids
+// are ignored. The returned `reason` never contains message content.
+function classifyInboundOwnership(message, { ownerId = "", allowedUserIds = [] } = {}) {
+  const senderId = normalizeText(message?.from_user_id) || normalizeText(message?.senderId);
+  if (!senderId) {
+    return { allowed: false, verified: false, reason: "missing_sender" };
+  }
+
+  const resolvedOwnerId = normalizeText(ownerId);
+  const allowedSet = (Array.isArray(allowedUserIds) ? allowedUserIds : [])
+    .map((id) => normalizeText(id))
+    .filter(Boolean);
+
+  const hasOwnershipInfo = Boolean(resolvedOwnerId) || allowedSet.length > 0;
+  if (!hasOwnershipInfo) {
+    // No ownership information configured: fail open but mark as unverified so
+    // the caller can decide whether to warn the operator.
+    return { allowed: true, verified: false, reason: "no_ownership_configured" };
+  }
+
+  const isAllowed = (resolvedOwnerId && senderId === resolvedOwnerId) || allowedSet.includes(senderId);
+  if (isAllowed) {
+    return { allowed: true, verified: true, reason: "sender_matches_owner" };
+  }
+  return { allowed: false, verified: true, reason: "sender_not_owner" };
+}
+
+// Convenience boolean wrapper around `classifyInboundOwnership`.
+function isOwnerInboundMessage(message, { ownerId = "", allowedUserIds = [] } = {}) {
+  return classifyInboundOwnership(message, { ownerId, allowedUserIds }).allowed;
+}
+
+// Standalone normalization entry point with an optional owner gate.
+// `owner`, when provided, is `{ ownerUserId, allowedUserIds, accountId }`.
+// When the gate is enabled and the message is not from the owner, this returns
+// `null` (the message is dropped). To avoid leaking private message bodies, no
+// message content is included in the return value or any diagnostic field.
+function normalizeInboundMessage(message, { config = null, accountId = "", owner = null } = {}) {
+  const { normalized } = normalizeInboundMessageDetailed(message, config, accountId);
+  if (!normalized) {
+    return null;
+  }
+  if (owner) {
+    const resolvedOwnerId = resolveOwnerUserId({
+      config: { ownerUserId: normalizeText(owner.ownerUserId) },
+      allowedUserIds: owner.allowedUserIds || [],
+      accountId: normalizeText(owner.accountId) || accountId,
+    });
+    const ownership = classifyInboundOwnership(message, {
+      ownerId: resolvedOwnerId,
+      allowedUserIds: owner.allowedUserIds || [],
+    });
+    if (!ownership.allowed) {
+      return null;
+    }
+  }
+  return normalized;
 }
 
 function bodyFromItemList(items) {
@@ -281,5 +379,10 @@ function normalizeText(value) {
 
 module.exports = {
   createInboundFilter,
+  normalizeInboundMessageDetailed,
+  normalizeInboundMessage,
+  resolveOwnerUserId,
+  classifyInboundOwnership,
+  isOwnerInboundMessage,
   bodyFromItemList,
 };

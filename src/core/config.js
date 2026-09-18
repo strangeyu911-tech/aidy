@@ -15,6 +15,7 @@ function readConfig() {
     userName: readTextEnv("CYBERBOSS_USER_NAME") || "User",
     userGender: readTextEnv("CYBERBOSS_USER_GENDER") || "female",
     allowedUserIds: readListEnv("CYBERBOSS_ALLOWED_USER_IDS"),
+    ownerUserId: readTextEnv("CYBERBOSS_OWNER_USER_ID"),
     channel: readTextEnv("CYBERBOSS_CHANNEL") || "weixin",
     runtime: readTextEnv("CYBERBOSS_RUNTIME") || "codex",
     timelineCommand: readTextEnv("CYBERBOSS_TIMELINE_COMMAND") || "timeline-for-agent",
