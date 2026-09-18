@@ -136,12 +136,19 @@ function launchPackaged(executable, packagedStateDir) {
   const electronUserDataDir = path.join(path.dirname(packagedStateDir), "electron-user-data");
   fs.mkdirSync(electronUserDataDir, { recursive: true });
   return new Promise((resolve, reject) => {
+    // A host that itself runs Electron sets ELECTRON_RUN_AS_NODE=1, which makes
+    // the packaged Aidy.exe behave as plain Node and crash on the first
+    // Chromium flag ("bad option: --disable-gpu", exit 9). Drop it (and
+    // ELECTRON_NO_ATTACH_CONSOLE) so the child actually starts Electron.
+    const env = {
+      ...process.env,
+      CYBERBOSS_STATE_DIR: packagedStateDir,
+      CYBERBOSS_ARTIFACT_SMOKE_EXIT_MS: "2500",
+    };
+    delete env.ELECTRON_RUN_AS_NODE;
+    delete env.ELECTRON_NO_ATTACH_CONSOLE;
     const child = spawn(executable, ["--disable-gpu", `--user-data-dir=${electronUserDataDir}`], {
-      env: {
-        ...process.env,
-        CYBERBOSS_STATE_DIR: packagedStateDir,
-        CYBERBOSS_ARTIFACT_SMOKE_EXIT_MS: "2500",
-      },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });

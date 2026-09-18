@@ -19,12 +19,27 @@ const rootDir = path.resolve(__dirname, "..");
 const pkg = require(path.join(rootDir, "package.json"));
 const build = pkg.build || {};
 const distDir = path.resolve(process.env.CYBERBOSS_ARTIFACT_DIST_DIR || path.join(rootDir, "dist"));
-const STALE_BRAND_PATTERN = /CyberBoss-(?:Setup-v[\d.]+|\d[\d.]*-x64)\.exe$/i;
+// Pre-rebrand "CyberBoss" executables must never ship. Match any .exe whose
+// basename begins with "CyberBoss" (the bare `CyberBoss.exe`, `CyberBoss-Setup-v…`,
+// `CyberBoss-…-x64.exe`, …), anchored to the basename so a path component that
+// merely contains "CyberBoss" cannot trip it. `dist-release-v0.1.0` is opted out
+// via the STALE_MARKER, not by this pattern.
+const STALE_BRAND_PATTERN = /(?:^|[/\\])CyberBoss[^/\\]*\.exe$/i;
 // A directory can opt out of the stale-brand scan by carrying this marker, which
 // is how the 2026-08-30 pre-rebrand build is kept for comparison without being
 // mistaken for a release. The marker has to be deliberate: an unmarked
 // directory containing the old brand still fails the check.
 const STALE_MARKER = "STALE-DO-NOT-SHIP.md";
+
+// Only source that `build.files` actually ships can make a released artifact
+// stale. Docs, READMEs, and audit notes are not packaged, so a docs-only commit
+// must not red-light the freshness gate. Kept as one predicate so the HEAD-date
+// query and the working-tree scan use the exact same list.
+const PACKAGED_PATHS = ["src", "bin", "templates", "native", "package.json"];
+function isPackagedPath(relPath) {
+  const normalized = relPath.replace(/\\/g, "/");
+  return PACKAGED_PATHS.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
+}
 
 function expand(pattern, values) {
   return String(pattern).replace(/\$\{(\w+)\}/g, (match, key) => (key in values ? values[key] : match));
@@ -91,7 +106,7 @@ function checkFreshness({ failures, notes }) {
 function computeReferenceMs(rootDir) {
   let headMs = null;
   try {
-    const out = spawnSync("git", ["log", "-1", "--format=%cI", "HEAD"], { cwd: rootDir, encoding: "utf8" });
+    const out = spawnSync("git", ["log", "-1", "--format=%cI", "HEAD", "--", ...PACKAGED_PATHS], { cwd: rootDir, encoding: "utf8" });
     if (out.status === 0 && out.stdout.trim()) {
       const parsed = Date.parse(out.stdout.trim());
       if (!Number.isNaN(parsed)) headMs = parsed;
@@ -112,6 +127,7 @@ function computeReferenceMs(rootDir) {
         const arrowIdx = line.indexOf(" -> ");
         const relPath = arrowIdx !== -1 ? line.slice(arrowIdx + 4).trim() : line.slice(3).trim();
         if (!relPath) continue;
+        if (!isPackagedPath(relPath)) continue; // only shipped source can make a build stale
         try {
           const mtimeMs = fs.statSync(path.join(rootDir, relPath)).mtimeMs;
           if (mtimeMs > maxMs) maxMs = mtimeMs;
@@ -155,7 +171,7 @@ function evaluateFreshness({ artifacts, referenceMs, toleranceMs }) {
 
 if (require.main === module) main();
 
-module.exports = { computeReferenceMs, evaluateFreshness };
+module.exports = { computeReferenceMs, evaluateFreshness, isPackagedPath, PACKAGED_PATHS, STALE_BRAND_PATTERN };
 
 function checkDistExists() {
   if (!fs.existsSync(distDir)) {
