@@ -8,7 +8,7 @@ const path = require("node:path");
 
 const { DesktopStateStore } = require("../src/core/desktop-state-store");
 const { ProviderProfileStore } = require("../src/core/provider-profile-store");
-const { BackupService } = require("../src/services/backup-service");
+const { BackupService, resolveTarExecutable } = require("../src/services/backup-service");
 const { CredentialVault } = require("../src/security/credential-vault");
 const { DiagnosticCapture } = require("../src/security/diagnostic-capture");
 
@@ -63,8 +63,9 @@ async function main() {
   await new BackupService({ stateDir }).createBackup({ targetPath: archivePath, classes: ["settings"] });
   assertExistingNonEmpty(archivePath);
   fs.mkdirSync(extractDir, { recursive: true });
-  run("tar.exe", ["-x", "-f", archivePath, "-C", extractDir]);
-  const archiveEntries = run("tar.exe", ["-t", "-f", archivePath]).stdout
+  const tar = resolveTarExecutable();
+  run(tar, ["-x", "-f", archivePath, "-C", extractDir]);
+  const archiveEntries = run(tar, ["-t", "-f", archivePath]).stdout
     .split(/\r?\n/).map((entry) => entry.replace(/^\.\//, "").trim()).filter(Boolean);
   const manifest = JSON.parse(fs.readFileSync(path.join(extractDir, "manifest.json"), "utf8"));
   assert.equal(manifest.format, "cyberboss-backup");
