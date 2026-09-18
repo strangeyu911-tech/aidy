@@ -134,6 +134,7 @@ function bindControls() {
   for (const selector of ["#startup-setting", "#random-setting", "#report-setting", "#report-time", "#meal-duration", "#shower-duration"]) {
     $(selector).addEventListener("change", saveSettings);
   }
+  $("#persona-setting").addEventListener("change", savePersonaPack);
 }
 
 function openStopModal() {
@@ -295,6 +296,7 @@ function renderRecent(items) {
 function renderSettings() {
   const settings = snapshot.settings;
   $("#startup-setting").checked = settings.startWithWindows;
+  renderPersonaPack(snapshot.personaPack);
   $("#random-setting").checked = settings.randomCheckinsEnabled;
   $("#report-setting").checked = settings.reportEnabled;
   $("#report-time").value = settings.reportTime;
@@ -937,6 +939,35 @@ async function saveSettings() {
     reportTime: $("#report-time").value,
     contextDurations: { meal: Number($("#meal-duration").value), shower: Number($("#shower-duration").value) },
   }));
+}
+
+async function savePersonaPack() {
+  const result = await api.setPersonaPack($("#persona-setting").value);
+  if (result?.personaPack) {
+    renderPersonaPack(result.personaPack);
+  }
+  if (result && result.ok === false) {
+    window.alert(result.error || "人格包切换失败。");
+  }
+}
+
+function renderPersonaPack(personaPack) {
+  const select = $("#persona-setting");
+  if (!select) return;
+  const state = personaPack || { activeId: "", packages: [] };
+  const options = ['<option value="">不启用（默认人格）</option>'];
+  for (const pack of state.packages || []) {
+    options.push(`<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.name || pack.id)}</option>`);
+  }
+  select.innerHTML = options.join("");
+  select.value = state.activeId || "";
+  const detail = $("#persona-detail");
+  if (detail) {
+    const active = (state.packages || []).find((pack) => pack.id === state.activeId);
+    detail.textContent = active?.description
+      ? `${active.description} · 对新会话生效`
+      : "不启用时保持默认人格，对新会话生效";
+  }
 }
 
 async function loadDiary() {

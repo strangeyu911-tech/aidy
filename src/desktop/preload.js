@@ -9,6 +9,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   "desktop:list-runtime-options", "desktop:list-profiles", "desktop:save-profile",
   "desktop:write-profile-secrets", "desktop:refresh-models", "desktop:test-profile",
   "desktop:activate-profile", "desktop:delete-profile", "desktop:set-diagnostic-capture",
+  "desktop:list-persona-packs", "desktop:set-persona-pack",
 ]);
 
 function invoke(channel, ...args) {
@@ -46,6 +47,8 @@ contextBridge.exposeInMainWorld("cyberboss", Object.freeze({
   activateProfile: (profileId, options) => invoke("desktop:activate-profile", profileId, options),
   deleteProfile: (profileId) => invoke("desktop:delete-profile", profileId),
   setDiagnosticCapture: (options) => invoke("desktop:set-diagnostic-capture", options),
+  listPersonaPacks: () => invoke("desktop:list-persona-packs"),
+  setPersonaPack: (id) => invoke("desktop:set-persona-pack", id),
   exit: () => invoke("desktop:exit"),
   onSnapshot: (listener) => {
     const handler = (_event, snapshot) => listener(snapshot);

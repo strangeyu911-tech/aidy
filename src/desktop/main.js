@@ -11,6 +11,7 @@ const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/chec
 const { ComponentLogger, queryLogs } = require("../core/component-logger");
 const { readConfig } = require("../core/config");
 const { DesktopStateStore, DESIRED_STATES } = require("../core/desktop-state-store");
+const { PersonaPackStore } = require("../core/persona-pack-store");
 const { ProviderProfileStore } = require("../core/provider-profile-store");
 const { computeVerificationFingerprint } = require("../core/provider-profile-store");
 const { SupervisionPlanStore } = require("../core/supervision-plan-store");
@@ -60,6 +61,11 @@ const stateStore = new DesktopStateStore({
 const planStore = new SupervisionPlanStore({ stateDir });
 const recordsService = new RecordsService({ stateDir });
 const checkinConfig = new CheckinConfigStore({ filePath: config.checkinConfigFile });
+const personaPackStore = new PersonaPackStore({
+  stateDir,
+  filePath: config.personaPackFile,
+  packsDirs: [config.personaPacksDir, config.personaPacksUserDir],
+});
 const profileStore = new ProviderProfileStore({ filePath: config.providerProfilesFile });
 const supervisor = new RuntimeSupervisor({ rootDir, stateDir, logger, profileStore });
 const credentialVault = new CredentialVault({ filePath: config.credentialVaultFile });
@@ -288,6 +294,19 @@ function registerIpc() {
     }
   });
   ipcMain.handle("desktop:update-checkpoint", (_event, id, patch) => updateCheckpoint(id, patch));
+  ipcMain.handle("desktop:list-persona-packs", () => personaPackStore.snapshot());
+  ipcMain.handle("desktop:set-persona-pack", (_event, id) => {
+    try {
+      personaPackStore.setActiveId(id);
+      return { ok: true, error: "", personaPack: personaPackStore.snapshot() };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error?.message || "人格包切换失败。",
+        personaPack: personaPackStore.snapshot(),
+      };
+    }
+  });
   ipcMain.handle("desktop:open-record", (_event, targetPath) => openValidatedPath(targetPath));
   ipcMain.handle("desktop:record-preview", (_event, targetPath) => readRecordPreview(targetPath));
   ipcMain.handle("desktop:open-data-folder", () => shell.openPath(stateDir));
@@ -365,6 +384,7 @@ function buildSnapshot() {
   }));
   return {
     settings,
+    personaPack: personaPackStore.snapshot(),
     runtime,
     engine,
     wechat,

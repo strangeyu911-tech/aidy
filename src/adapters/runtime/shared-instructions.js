@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { PersonaPackStore } = require("../../core/persona-pack-store");
 const { renderInstructionTemplate } = require("../../core/instructions-template");
 
 function buildOpeningTurnText(config, userText) {
@@ -37,15 +38,49 @@ function buildInstructionRefreshText(config) {
 
 function loadWechatInstructions(config = {}) {
   const persona = loadInstructionFile(config.weixinInstructionsFile, config);
+  const personaPack = loadPersonaPackInstructions(config);
   const operations = loadInstructionFile(config.weixinOperationsFile, config);
   const sections = [];
   if (persona) {
     sections.push(persona);
   }
+  if (personaPack) {
+    sections.push(personaPack);
+  }
   if (operations) {
     sections.push(operations);
   }
   return sections.join("\n\n").trim();
+}
+
+function loadPersonaPackInstructions(config = {}) {
+  const packFilePath = resolvePersonaPackFilePath(config);
+  if (!packFilePath) {
+    return "";
+  }
+  return loadInstructionFile(packFilePath, config);
+}
+
+function resolvePersonaPackFilePath(config = {}) {
+  const packsDirs = [config.personaPacksDir, config.personaPacksUserDir]
+    .filter((dir) => typeof dir === "string" && dir.trim());
+  if (!packsDirs.length) {
+    return "";
+  }
+  try {
+    const store = new PersonaPackStore({
+      stateDir: typeof config.stateDir === "string" ? config.stateDir : "",
+      filePath: typeof config.personaPackFile === "string" ? config.personaPackFile : "",
+      packsDirs,
+    });
+    return store.resolveActiveFile();
+  } catch {
+    return "";
+  }
+}
+
+function stripFrontMatter(raw) {
+  return String(raw || "").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
 }
 
 const instructionCache = new Map();
@@ -62,7 +97,7 @@ function loadInstructionFile(filePath, config = {}) {
     if (cached !== undefined) {
       return cached;
     }
-    const raw = fs.readFileSync(normalizedPath, "utf8");
+    const raw = stripFrontMatter(fs.readFileSync(normalizedPath, "utf8"));
     const result = renderInstructionTemplate(raw, config).trim();
     instructionCache.set(cacheKey, result);
     return result;
@@ -75,5 +110,8 @@ module.exports = {
   buildOpeningTurnText,
   buildInstructionRefreshText,
   loadWechatInstructions,
+  loadPersonaPackInstructions,
+  resolvePersonaPackFilePath,
+  stripFrontMatter,
   loadInstructionFile,
 };

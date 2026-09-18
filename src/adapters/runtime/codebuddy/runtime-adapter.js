@@ -24,6 +24,7 @@ const {
   normalizeActionRequest,
   recordCodeBuddyNotification,
 } = require("../shared/action-evidence");
+const { buildOpeningTurnText } = require("../shared-instructions");
 
 function createCodeBuddyRuntimeAdapter({
   config = {},
@@ -221,6 +222,7 @@ function createCodeBuddyRuntimeAdapter({
 
   async function attachSession({ bindingKey, workspaceRoot, metadata, signal, turnCorrelation }) {
     let sessionId = sessionStore.getThreadIdForScope(bindingKey, workspaceRoot, runtimeScope());
+    let isNewSession = false;
     const hasPersistedSessionId = Boolean(sessionId);
     logDiagnostic("runtime.session_attach.started", diagnosticContext(turnCorrelation, {
       phase: "attach",
@@ -265,6 +267,7 @@ function createCodeBuddyRuntimeAdapter({
       }
     }
     if (!sessionId) {
+      isNewSession = true;
       logDiagnostic("runtime.session_attach.decision", diagnosticContext(turnCorrelation, {
         phase: "new",
         attachDecision: "new",
@@ -307,7 +310,7 @@ function createCodeBuddyRuntimeAdapter({
       model: normalizedProfile.modelId,
       modelProvider: "",
     });
-    return sessionId;
+    return { sessionId, isNewSession };
   }
 
   function forwardNotification(message, { threadId, turnId, workspaceRoot, turnCorrelation }) {
@@ -595,13 +598,17 @@ function createCodeBuddyRuntimeAdapter({
         stage = "verify_identity";
         await verifyLiveIdentity(signal);
         stage = "attach_session";
-        const threadId = await attachSession({
+        const attached = await attachSession({
           bindingKey: binding,
           workspaceRoot: directory,
           metadata,
           signal,
           turnCorrelation: correlation,
         });
+        const threadId = attached.sessionId;
+        const outboundText = attached.isNewSession
+          ? buildOpeningTurnText(config, promptText)
+          : promptText;
         stage = "create_turn";
         const turnId = requireText(randomUUID(), "CODEBUDDY_TURN_FAILED", "A CodeBuddy turn identifier is unavailable.");
         const controller = new AbortController();
@@ -626,7 +633,7 @@ function createCodeBuddyRuntimeAdapter({
           threadId,
           turnId,
           workspaceRoot: directory,
-          text: promptText,
+          text: outboundText,
           controller,
           turnCorrelation: correlation,
           actionRequest,
