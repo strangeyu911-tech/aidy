@@ -15,3 +15,6 @@ firmware/
 # Local design-tool state and machine-specific launch helper
 .superpowers/
 scripts/cyberboss-background.ps1
+
+# Local agent memory: contains notes about this machine and its owner, not source.
+.workbuddy/
