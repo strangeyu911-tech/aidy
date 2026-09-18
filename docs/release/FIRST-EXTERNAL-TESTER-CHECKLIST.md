@@ -57,8 +57,34 @@
 - [ ] `npm run check` —— 全量语法检查
 - [ ] `node --test "test/**/*.test.js"` —— 单元与集成测试
 - [ ] `npm run verify:desktop-boot` —— 用临时数据目录真实启动一次桌面进程，捕获渲染端错误
-- [ ] `npm run verify:release-names` —— 安装包文件名与本文档一致，且没有旧品牌安装包残留
-- [ ] `npm run verify:artifacts` —— 打包产物完整性
+- [ ] `npm run verify:release-names` —— 安装包文件名与本文档一致、产物比源码新、且没有旧品牌可执行文件残留
+- [ ] `npm run verify:artifacts` —— 打包产物完整性（会在临时数据目录里真实启动一次打包后的 `Aidy.exe`）
+
+### 关于「产物比源码新」
+
+`verify:release-names` 除了校验文件名，还会检查每个产物是否比它所包含的源码更新 ——
+基准取「最近一次触及**被打包路径**（`src/`、`bin/`、`native/`、`templates/`、`package.json`）
+的提交时间」与「已改动但未提交的被打包文件 mtime」中的较大值。只改文档或脚本不会让产物变「旧」。
+
+这条检查存在的原因是一个真实的坑：`npm run desktop:package` 只构建 `nsis` 目标，
+而便携版走的是另一个脚本 `npm run desktop:package:portable`。
+**两个都要跑**，否则会出现「安装包是新的、便携版是几个月前的」这种组合，
+而它因为文件名正确一度能骗过校验。
+
+### 关于过期产物的隔离
+
+历史上出现过「仓库里同时存在多个互相不一致的构建目录，其中一个装着旧品牌可执行文件」。
+旧品牌产物比缺少产物更危险 —— 它看起来是可以发的。因此过期产物被集中到
+`dist-quarantine/`，目录里放一个 `STALE-DO-NOT-SHIP.md` 作为**显式豁免标记**：
+`verify:release-names` 会跳过带该标记的目录，否则任何 `CyberBoss*.exe` 都会让检查失败。
+
+豁免必须是有意做出的动作：把一个装着旧品牌却没有标记的目录留在仓库里，检查仍然会失败。
+这些目录已在 `.gitignore` 中（`dist/`、`dist-release*/`、`dist-quarantine/`），不会入库。
+
+`npm run desktop:package` 在这台机器上可能以退出码 1 结束而**产物其实已经完整生成** ——
+失败点在产物写完之后的临时文件清理阶段（宿主的安全删除守卫）。判断依据是日志里
+`⨯ [safe-delete]…` 之后没有其它错误，且 `dist/` 下的产物时间戳是新的。另外 `&&` 断链
+会让末尾的 `desktop:sync-start-menu` 静默不执行，需要手动补跑 `npm run desktop:sync-start-menu`。
 
 ## 失败记录
 

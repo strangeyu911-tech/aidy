@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-release*/
+dist-quarantine/
 tmp/
 .DS_Store
 .env

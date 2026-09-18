@@ -2,139 +2,43 @@
 
 // Dependency-free Aidy app-icon generator.
 //
-// The brand mark lives only as inline SVG strings in code (see
-// src/desktop/main.js createTrayIcon()). To ship a real Windows executable
-// icon we rasterize that same geometry to a 256x256 PNG and a multi-size ICO
-// with a hand-rolled, deterministic rasterizer + PNG/ICO encoders. No image
-// library is used (sharp/png-to-ico/jimp/etc. are intentionally not added).
+// The brand geometry/rasterizer lives in src/desktop/brand-icon.js (the single
+// source of truth, also used by the runtime tray icon). This file owns only the
+// PNG and ICO encoders and the CLI. The rasterizer there returns BGRA; the
+// encoders need RGBA, so we swap the channels once here. That keeps the emitted
+// assets/icon.png and assets/icon.ico byte-identical to before the refactor.
 
 const zlib = require("node:zlib");
 const fs = require("node:fs");
 const path = require("node:path");
 
-// ---------------------------------------------------------------------------
-// Brand geometry (canonical, mirrors createTrayIcon() in src/desktop/main.js)
-// Drawn in a 32x32 user-unit coordinate space; shapes paint in table order.
-// ---------------------------------------------------------------------------
-const USER_SPACE = 32;
-const GREEN = [0x31, 0x5d, 0x52, 255]; // #315d52
-const YELLOW = [0xf7, 0xd9, 0x8b, 255]; // #f7d98b
-const TRANSPARENT = [0, 0, 0, 0];
+const {
+  rasterizeBrandIcon,
+  roundRectContains,
+  circleContains,
+  distanceToSegment,
+  smileContains,
+  buildSmilePoints,
+  BRAND_ICON_UNITS,
+} = require("../src/desktop/brand-icon");
 
-// Cubic Bezier for the smile, in absolute user coordinates:
-//   M12 19 c2.7 1.7 5.3 1.7 8 0
-const SMILE = {
-  p0: [12, 19],
-  p1: [14.7, 20.7],
-  p2: [17.3, 20.7],
-  p3: [20, 19],
-  halfWidth: 0.75, // stroke-width 1.5 / 2
-};
-
-function buildSmilePoints(segments = 64) {
-  const { p0, p1, p2, p3 } = SMILE;
-  const pts = [];
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const mt = 1 - t;
-    const a = mt * mt * mt;
-    const b = 3 * mt * mt * t;
-    const c = 3 * mt * t * t;
-    const d = t * t * t;
-    pts.push([
-      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
-      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
-    ]);
+// Swap BGRA (rasterizer native) to RGBA (what the PNG/ICO encoders expect).
+function bgraToRgba(bgra) {
+  const rgba = Buffer.alloc(bgra.length);
+  for (let i = 0; i < bgra.length; i += 4) {
+    rgba[i] = bgra[i + 2];
+    rgba[i + 1] = bgra[i + 1];
+    rgba[i + 2] = bgra[i];
+    rgba[i + 3] = bgra[i + 3];
   }
-  return pts;
+  return rgba;
 }
 
-const SMILE_POINTS = buildSmilePoints(64);
-
-function roundRectContains(px, py, x, y, w, h, r) {
-  const cx = Math.min(Math.max(px, x + r), x + w - r);
-  const cy = Math.min(Math.max(py, y + r), y + h - r);
-  const dx = px - cx;
-  const dy = py - cy;
-  return dx * dx + dy * dy <= r * r;
-}
-
-function circleContains(px, py, cx, cy, r) {
-  const dx = px - cx;
-  const dy = py - cy;
-  return dx * dx + dy * dy <= r * r;
-}
-
-function distanceToSegment(px, py, ax, ay, bx, by) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
-  t = Math.min(Math.max(t, 0), 1);
-  const cx = ax + t * dx;
-  const cy = ay + t * dy;
-  return Math.hypot(px - cx, py - cy);
-}
-
-function smileContains(ux, uy) {
-  // Tight bounding box rejects the vast majority of samples cheaply.
-  if (ux < 11 || ux > 21 || uy < 18 || uy > 21.5) return false;
-  let best = Infinity;
-  for (let i = 0; i < SMILE_POINTS.length - 1; i++) {
-    const p = SMILE_POINTS[i];
-    const q = SMILE_POINTS[i + 1];
-    const d = distanceToSegment(ux, uy, p[0], p[1], q[0], q[1]);
-    if (d < best) best = d;
-    if (best <= SMILE.halfWidth) return true;
-  }
-  return best <= SMILE.halfWidth;
-}
-
-// Paint a single user-space point; returns the topmost covering shape's RGBA.
-function paintPoint(ux, uy) {
-  let color = null;
-  if (roundRectContains(ux, uy, 0, 0, USER_SPACE, USER_SPACE, 9)) color = GREEN;
-  if (roundRectContains(ux, uy, 8, 8, 16, 16, 3.5)) color = YELLOW; // cat head
-  if (circleContains(ux, uy, 13, 15, 1.6)) color = GREEN; // left eye
-  if (circleContains(ux, uy, 19, 15, 1.6)) color = GREEN; // right eye
-  if (smileContains(ux, uy)) color = GREEN; // smile
-  return color || TRANSPARENT;
-}
-
-// ---------------------------------------------------------------------------
-// Rasterizer: supersample `supersample` x `supersample` per output pixel and
-// average per-sample RGBA so edges anti-alias and rounded corners stay clear.
-// Returns a Buffer of size*size*4 bytes (RGBA, top-left origin).
-// ---------------------------------------------------------------------------
+// RGBA view of the brand mark, matching the encoder contract. Mirrors the
+// rasterizer's output (the channel swap is a bijection, so pixels are identical
+// to the pre-refactor rasterizer).
 function rasterizeIcon(size, supersample = 4) {
-  const out = Buffer.alloc(size * size * 4);
-  const total = supersample * supersample;
-  const scale = USER_SPACE / size;
-  for (let py = 0; py < size; py++) {
-    for (let px = 0; px < size; px++) {
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let a = 0;
-      for (let sy = 0; sy < supersample; sy++) {
-        const uy = (py + (sy + 0.5) / supersample) * scale;
-        for (let sx = 0; sx < supersample; sx++) {
-          const ux = (px + (sx + 0.5) / supersample) * scale;
-          const c = paintPoint(ux, uy);
-          r += c[0];
-          g += c[1];
-          b += c[2];
-          a += c[3];
-        }
-      }
-      const idx = (py * size + px) * 4;
-      out[idx] = Math.round(r / total);
-      out[idx + 1] = Math.round(g / total);
-      out[idx + 2] = Math.round(b / total);
-      out[idx + 3] = Math.round(a / total);
-    }
-  }
-  return out;
+  return bgraToRgba(rasterizeBrandIcon(size, supersample));
 }
 
 // ---------------------------------------------------------------------------
@@ -295,17 +199,15 @@ if (require.main === module) {
 }
 
 module.exports = {
-  USER_SPACE,
-  GREEN,
-  YELLOW,
-  TRANSPARENT,
-  buildSmilePoints,
+  BRAND_ICON_UNITS,
+  bgraToRgba,
+  rasterizeIcon,
+  rasterizeBrandIcon,
   roundRectContains,
   circleContains,
   distanceToSegment,
   smileContains,
-  paintPoint,
-  rasterizeIcon,
+  buildSmilePoints,
   crc32,
   pngChunk,
   encodePNG,

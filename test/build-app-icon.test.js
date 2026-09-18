@@ -6,6 +6,8 @@ const test = require("node:test");
 
 const {
   rasterizeIcon,
+  rasterizeBrandIcon,
+  bgraToRgba,
   encodePNG,
   encodeICO,
   crc32,
@@ -152,6 +154,40 @@ test("pngChunk helper produces length+type+data+crc", () => {
   assert.equal(chunk.toString("ascii", 4, 8), "tEXt");
   assert.ok(chunk.subarray(8, 10).equals(Buffer.from("hi")));
   assert.equal(chunk.length, 4 + 4 + 2 + 4);
+});
+
+// --- shared rasterizer (src/desktop/brand-icon.js via build-app-icon re-export) ---
+test("rasterizeBrandIcon returns exactly size*size*4 bytes (BGRA)", () => {
+  const buf = rasterizeBrandIcon(SIZE, 4);
+  assert.equal(buf.length, SIZE * SIZE * 4);
+});
+
+test("rasterizeBrandIcon centre pixel is cat-head yellow in BGRA order", () => {
+  const buf = rasterizeBrandIcon(SIZE, 4);
+  const i = ((SIZE >> 1) * SIZE + (SIZE >> 1)) * 4;
+  // BGRA: blue channel first => #f7d98b yellow is [0x8b, 0xd9, 0xf7, 255]
+  assert.deepEqual([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]], [0x8b, 0xd9, 0xf7, 255]);
+});
+
+test("rasterizeBrandIcon green-surround pixel is brand green in BGRA order", () => {
+  const buf = rasterizeBrandIcon(SIZE, 4);
+  const i = (4 * SIZE + (SIZE >> 1)) * 4;
+  // BGRA: #315d52 green is [0x52, 0x5d, 0x31, 255]
+  assert.deepEqual([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]], [0x52, 0x5d, 0x31, 255]);
+});
+
+test("rasterizeBrandIcon four corners are fully transparent", () => {
+  const buf = rasterizeBrandIcon(SIZE, 4);
+  for (const [x, y] of [[0, 0], [SIZE - 1, 0], [0, SIZE - 1], [SIZE - 1, SIZE - 1]]) {
+    const i = (y * SIZE + x) * 4;
+    assert.deepEqual([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]], [0, 0, 0, 0]);
+  }
+});
+
+test("rasterizeIcon (RGBA) is the BGRA->RGBA view of rasterizeBrandIcon", () => {
+  const bgra = rasterizeBrandIcon(SIZE, 4);
+  const rgba = rasterizeIcon(SIZE, 4);
+  assert.ok(bgraToRgba(bgra).equals(rgba), "RGBA view must equal the channel-swapped BGRA");
 });
 
 module.exports = { pixelAt };

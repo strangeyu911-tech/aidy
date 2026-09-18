@@ -97,6 +97,16 @@ function finish({ timedOut, code }) {
     .filter((line) => /Error:|TypeError|ReferenceError|SyntaxError|Cannot find module|Unhandled|uncaught/i.test(line));
   if (errors.length) problems.push(`console errors:\n${errors.map((line) => `      ${line.trim()}`).join("\n")}`);
 
+  // The tray is the primary way a user finds this app, so a blank tray icon is a
+  // real defect. createTrayIcon() only logs this line if BOTH the SVG decode and
+  // the bitmap fallback fail; if it ever appears, the boot is broken and must
+  // fail this check (the wording deliberately does not match the generic error
+  // filter above, so this is an explicit, dedicated gate).
+  const trayFailures = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .filter((line) => /tray icon is empty/i.test(line));
+  if (trayFailures.length) problems.push(`tray icon is blank — both the SVG brand-mark decode and the bitmap raster fallback failed:\n${trayFailures.map((line) => `      ${line.trim()}`).join("\n")}`);
+
   const desktopStatePath = path.join(stateDir, "desktop-state.json");
   if (!fs.existsSync(desktopStatePath)) problems.push("the app never wrote desktop-state.json, so bootstrap did not finish");
 
