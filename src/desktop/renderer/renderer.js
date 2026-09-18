@@ -135,6 +135,15 @@ function bindControls() {
     $(selector).addEventListener("change", saveSettings);
   }
   $("#persona-setting").addEventListener("change", savePersonaPack);
+  $("#run-checkin-now").addEventListener("click", runCheckinNow);
+  $("#schedule-checkpoint").addEventListener("click", submitCheckpoint);
+  $$('[data-quick-time]').forEach((button) => button.addEventListener("click", () => handleQuickTime(button.dataset.quickTime)));
+  $("#checkin-preset").addEventListener("change", handleCheckinPresetChange);
+  $("#custom-min").addEventListener("change", handleCustomRangeChange);
+  $("#custom-max").addEventListener("change", handleCustomRangeChange);
+  $("#quiet-enabled").addEventListener("change", handleQuietChange);
+  $("#quiet-start").addEventListener("change", handleQuietChange);
+  $("#quiet-end").addEventListener("change", handleQuietChange);
 }
 
 function openStopModal() {
@@ -188,6 +197,8 @@ function renderSnapshot(nextSnapshot) {
     : "已关闭";
   renderError(snapshot.runtime.error || snapshot.startupTaskError);
   renderCheckpoints(snapshot.supervision.checkpoints);
+  renderCheckpointRandomStatus();
+  renderSupervisionSummary();
   renderRecent(snapshot.supervision.recent);
   renderSettings();
   renderBackfill();
@@ -274,7 +285,7 @@ async function refreshOnboarding() {
 function renderCheckpoints(items) {
   const list = $("#checkpoint-list");
   $("#checkpoint-count").textContent = String(items.length);
-  if (!items.length) { list.className = "record-list empty-state"; list.textContent = "还没有固定查岗安排"; return; }
+  if (!items.length) { list.className = "record-list empty-state"; list.textContent = "还没有约定的提醒。想让我几点回来问你？上面写一句就行。"; return; }
   list.className = "record-list";
   list.innerHTML = items.map((item) => `<article class="record-item"><div><h4>${escapeHtml(item.title)}</h4><p>${sourceLabel(item.source)} · ${formatDateTime(item.dueAt)}</p></div><div class="record-actions"><button data-delay-checkpoint="${escapeHtml(item.id)}" data-due-at="${escapeHtml(item.dueAt)}" type="button">延后 10 分钟</button><button data-cancel-checkpoint="${escapeHtml(item.id)}" type="button">取消</button></div></article>`).join("");
   $$('[data-delay-checkpoint]').forEach((button) => button.addEventListener("click", async () => {
@@ -298,16 +309,198 @@ function renderSettings() {
   $("#startup-setting").checked = settings.startWithWindows;
   renderPersonaPack(snapshot.personaPack);
   $("#random-setting").checked = settings.randomCheckinsEnabled;
+  renderCheckinPresetOptions();
   $("#report-setting").checked = settings.reportEnabled;
   $("#report-time").value = settings.reportTime;
   $("#meal-duration").value = settings.contextDurations.meal;
   $("#shower-duration").value = settings.contextDurations.shower;
+  const quiet = settings.quietHours || { enabled: true, start: "23:00", end: "07:00" };
+  $("#quiet-enabled").checked = quiet.enabled;
+  setValueIfNotFocused($("#quiet-start"), quiet.start);
+  setValueIfNotFocused($("#quiet-end"), quiet.end);
   $("#data-dir").textContent = snapshot.stateDir;
   const zhijian = snapshot.zhijiantime || { state: "not_configured" };
   const zhijianLabels = { connected: "已连接", syncing: "同步中", idle: "待同步", error: "异常", not_configured: "未配置" };
   $("#zhijian-state").textContent = zhijianLabels[zhijian.state] || zhijian.state;
   $("#zhijian-detail").textContent = zhijian.error?.summary || (zhijian.lastSyncAt ? `上次同步 ${formatDateTime(zhijian.lastSyncAt)}` : "同步今日日程和待办，按最新安排去重");
   $("#zhijian-auth-row").classList.toggle("hidden", zhijian.state !== "error" || !/DPAPI|凭据|授权|TOKEN/i.test(`${zhijian.error?.code || ""} ${zhijian.error?.summary || ""}`));
+  settingsHydrated = true;
+}
+
+function setValueIfNotFocused(element, value) {
+  if (!element || document.activeElement === element) return;
+  element.value = value;
+}
+
+function renderCheckinPresetOptions() {
+  const random = snapshot.supervision.random;
+  const presets = random.presets || [];
+  const select = $("#checkin-preset");
+  if (!select) return;
+  const options = presets.map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label)}（${preset.minMinutes}-${preset.maxMinutes} 分钟）</option>`);
+  options.push('<option value="custom">自定义</option>');
+  select.innerHTML = options.join("");
+  const isCustom = random.presetId === "custom" || !presets.some((preset) => preset.id === random.presetId);
+  select.value = isCustom ? "custom" : random.presetId;
+  toggleCustomRange(isCustom);
+  setValueIfNotFocused($("#custom-min"), String(random.minMinutes));
+  setValueIfNotFocused($("#custom-max"), String(random.maxMinutes));
+}
+
+function toggleCustomRange(visible) {
+  const container = $("#custom-range");
+  if (container) container.classList.toggle("hidden", !visible);
+}
+
+function renderCheckpointRandomStatus() {
+  const random = snapshot.supervision.random;
+  const element = $("#checkpoint-random-status");
+  if (!element) return;
+  if (random.enabled) {
+    const next = random.nextCheckinMinutes == null ? "" : ` 下次大约 ${random.nextCheckinMinutes} 分钟后。`;
+    element.textContent = `随机查岗正在运行：大约每 ${random.minMinutes}-${random.maxMinutes} 分钟来一次（具体时间不提前透露）。${next}`;
+  } else {
+    element.textContent = "随机查岗已关闭：只会在你约定的时间回来问你。";
+  }
+}
+
+function renderSupervisionSummary() {
+  const random = snapshot.supervision.random;
+  const quiet = snapshot.settings.quietHours || { enabled: true, start: "23:00", end: "07:00" };
+  const element = $("#supervision-summary");
+  if (!element) return;
+  const parts = [
+    `随机查岗：${random.enabled ? "开" : "关"}`,
+    `当前档位「${random.presetLabel || "自定义"}」（${random.minMinutes}-${random.maxMinutes} 分钟）`,
+    `静默 ${quiet.enabled ? `${quiet.start}-${quiet.end}` : "未启用"}`,
+    `今天已主动查岗 ${snapshot.supervision.todayDispatched || 0} 次`,
+  ];
+  element.textContent = parts.join(" · ");
+}
+
+async function runCheckinNow() {
+  try {
+    const result = await api.runCheckin();
+    if (result && result.ok) {
+      showToast("已经去微信找你了");
+      if (result.snapshot) renderSnapshot(result.snapshot);
+    } else {
+      showToast(result?.error || "立即查岗失败，请稍后再试。");
+    }
+  } catch (error) {
+    showToast(friendlyUiError(error));
+  }
+}
+
+async function createCheckpoint(text, dueAt) {
+  try {
+    const result = await api.createCheckpoint({ text, dueAt });
+    if (result && result.ok) {
+      if (result.snapshot) renderSnapshot(result.snapshot);
+      showToast("已经安排好了，到点我会回来问你。");
+    } else {
+      showToast(result?.error || "安排提醒失败，请稍后再试。");
+    }
+  } catch (error) {
+    showToast(friendlyUiError(error));
+  }
+}
+
+let selectedQuickDueAt = null;
+let tonightUseTomorrow = false;
+
+function quickDueAt(kind) {
+  const now = new Date();
+  if (kind === "30m") return new Date(now.getTime() + 30 * 60_000).toISOString();
+  if (kind === "1h") return new Date(now.getTime() + 60 * 60_000).toISOString();
+  if (kind === "tonight") {
+    const target = new Date(now);
+    target.setHours(21, 0, 0, 0);
+    if (target.getTime() <= now.getTime()) {
+      if (!tonightUseTomorrow) {
+        showToast("今天 21:00 已经过了，要用明天吗");
+        tonightUseTomorrow = true;
+        return null;
+      }
+      target.setDate(target.getDate() + 1);
+    }
+    return target.toISOString();
+  }
+  if (kind === "tomorrow") {
+    const target = new Date(now);
+    target.setDate(target.getDate() + 1);
+    target.setHours(9, 0, 0, 0);
+    return target.toISOString();
+  }
+  return null;
+}
+
+async function handleQuickTime(kind) {
+  const dueAt = quickDueAt(kind);
+  if (!dueAt) return;
+  const input = $("#checkpoint-text");
+  if (!input.value.trim()) input.value = "按约定时间跟进";
+  const text = input.value.trim() || "按约定时间跟进";
+  await createCheckpoint(text, dueAt);
+  selectedQuickDueAt = null;
+}
+
+async function submitCheckpoint() {
+  const text = $("#checkpoint-text").value.trim() || "按约定时间跟进";
+  const dueAt = selectedQuickDueAt || new Date(Date.now() + 30 * 60_000).toISOString();
+  selectedQuickDueAt = null;
+  await createCheckpoint(text, dueAt);
+}
+
+async function handleCheckinPresetChange() {
+  const value = $("#checkin-preset").value;
+  if (value === "custom") {
+    toggleCustomRange(true);
+    return;
+  }
+  toggleCustomRange(false);
+  const previousPresetId = snapshot.supervision.random.presetId;
+  const result = await api.setCheckinConfig({ presetId: value });
+  handleCheckinConfigResult(result, previousPresetId);
+}
+
+async function handleCustomRangeChange() {
+  const min = Math.trunc(Number($("#custom-min").value));
+  const max = Math.trunc(Number($("#custom-max").value));
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min <= 0 || max <= 0 || min > max || max > 2880) {
+    showToast("区间不合法：需为正整数、最小值 ≤ 最大值、且最大不超过 2880 分钟。");
+    renderCheckinPresetOptions();
+    return;
+  }
+  const result = await api.setCheckinConfig({ minMinutes: min, maxMinutes: max });
+  handleCheckinConfigResult(result);
+}
+
+function handleCheckinConfigResult(result, previousPresetId) {
+  if (!result) return;
+  if (result.ok) {
+    showToast("已更新查岗频率");
+    if (result.snapshot) renderSnapshot(result.snapshot);
+  } else {
+    showToast(result.error || "更新查岗频率失败。");
+    if (result.snapshot) renderSnapshot(result.snapshot);
+    else if (previousPresetId) renderCheckinPresetOptions();
+  }
+}
+
+async function handleQuietChange() {
+  const enabled = $("#quiet-enabled").checked;
+  const start = $("#quiet-start").value || "23:00";
+  const end = $("#quiet-end").value || "07:00";
+  try {
+    const result = await api.updateSettings({ quietHours: { enabled, start, end } });
+    if (result) {
+      showToast("已保存静默时段");
+      renderSnapshot(result);
+    }
+  } catch (error) {
+    showToast(friendlyUiError(error));
+  }
 }
 
 async function loadModelSettings() {
@@ -932,6 +1125,15 @@ function profileStatusLabel(status) { return profileEditorState.profileStatusLab
 function switchPhaseLabel(phase) { return ({ draining: "等待当前工作完成", aborting: "停止超时工作", stopping_old: "停止原模型", starting_new: "启动新模型", probing_new: "确认新模型状态", rolling_back: "恢复原模型" })[phase] || "切换模型"; }
 
 async function saveSettings() {
+  // Every control bound below writes the whole settings object, so a save that
+  // happens before the first snapshot has populated the panel would push the
+  // markup defaults straight into the persisted state. That is how a user who
+  // never touched 每日报表 ends up with reportEnabled=false and no diary — the
+  // damage is silent and permanent. Refuse to save until the panel is hydrated.
+  if (!settingsHydrated) {
+    showToast("设置还在加载，请稍等一下再改。");
+    return;
+  }
   renderSnapshot(await api.updateSettings({
     startWithWindows: $("#startup-setting").checked,
     randomCheckinsEnabled: $("#random-setting").checked,

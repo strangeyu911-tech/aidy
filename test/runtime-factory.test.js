@@ -176,6 +176,6 @@ test("/model is inspect-only and directs mutations to Control Center", async () 
   await app.handleModelCommand({ workspaceId: "w", accountId: "a", senderId: "s", contextToken: "c" }, { args: "other-model" });
   assert.equal(workspaceModelWrites, 0);
   assert.match(sent[0], /openai\/gpt-5/);
-  assert.match(sent[0], /Control Center/i);
-  assert.match(sent[0], /read-only/i);
+  assert.match(sent[0], /桌面控制中心/);
+  assert.match(sent[0], /只能看，不能改/);
 });

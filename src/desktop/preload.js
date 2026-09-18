@@ -10,6 +10,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   "desktop:write-profile-secrets", "desktop:refresh-models", "desktop:test-profile",
   "desktop:activate-profile", "desktop:delete-profile", "desktop:set-diagnostic-capture",
   "desktop:list-persona-packs", "desktop:set-persona-pack",
+  "desktop:create-checkpoint", "desktop:run-checkin", "desktop:set-checkin-config",
 ]);
 
 function invoke(channel, ...args) {
@@ -49,6 +50,9 @@ contextBridge.exposeInMainWorld("cyberboss", Object.freeze({
   setDiagnosticCapture: (options) => invoke("desktop:set-diagnostic-capture", options),
   listPersonaPacks: () => invoke("desktop:list-persona-packs"),
   setPersonaPack: (id) => invoke("desktop:set-persona-pack", id),
+  createCheckpoint: (payload) => invoke("desktop:create-checkpoint", payload),
+  runCheckin: () => invoke("desktop:run-checkin"),
+  setCheckinConfig: (payload) => invoke("desktop:set-checkin-config", payload),
   exit: () => invoke("desktop:exit"),
   onSnapshot: (listener) => {
     const handler = (_event, snapshot) => listener(snapshot);

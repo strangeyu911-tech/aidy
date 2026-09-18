@@ -10,7 +10,17 @@
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand-mark" aria-hidden="true">CB</div>
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 40 40" width="28" height="28" role="img" aria-hidden="true">
+          <path d="M10 15 L13 7 L18 13 Z" fill="#fff"/>
+          <path d="M30 15 L27 7 L22 13 Z" fill="#fff"/>
+          <circle cx="20" cy="22" r="11" fill="#fff"/>
+          <circle cx="16" cy="21" r="1.9" fill="#315d52"/>
+          <circle cx="24" cy="21" r="1.9" fill="#315d52"/>
+          <path d="M18.4 24 L21.6 24 L20 26.2 Z" fill="#315d52"/>
+          <path d="M20 26.2 L20 27.6" stroke="#315d52" stroke-width="1.1" stroke-linecap="round"/>
+        </svg>
+      </div>
       <div>
         <h1>Aidy <small>艾迪</small></h1>
         <p>你的日常监管控制中心</p>
@@ -66,9 +76,24 @@
         <section class="panel">
           <div class="panel-heading">
             <div><span class="eyebrow">接下来</span><h3>监管计划</h3></div>
-            <span id="checkpoint-count" class="count-badge">0</span>
+            <div class="panel-heading-actions">
+              <span id="checkpoint-count" class="count-badge">0</span>
+              <button id="run-checkin-now" type="button" class="secondary-action">立即查岗一次</button>
+            </div>
           </div>
-          <div id="checkpoint-list" class="record-list empty-state">还没有固定查岗安排</div>
+          <div class="checkpoint-creator">
+            <input id="checkpoint-text" type="text" maxlength="200" placeholder="要我在什么时间回来问你一次？例如：一小时后问我简历写了没">
+            <div class="quick-times">
+              <button type="button" data-quick-time="30m">30 分钟后</button>
+              <button type="button" data-quick-time="1h">1 小时后</button>
+              <button type="button" data-quick-time="tonight">今晚 21:00</button>
+              <button type="button" data-quick-time="tomorrow">明天早上 9:00</button>
+            </div>
+            <button id="schedule-checkpoint" type="button" class="primary-action">安排</button>
+          </div>
+          <div id="checkpoint-list" class="record-list empty-state">还没有约定的提醒。想让我几点回来问你？上面写一句就行。</div>
+          <p id="checkpoint-random-status" class="checkpoint-footnote"></p>
+          <div id="supervision-summary" class="supervision-summary"></div>
         </section>
 
         <section class="panel compact-panel">
@@ -177,7 +202,8 @@
           </section>
           <label class="setting-row"><span><strong>随 Windows 启动</strong><small>由唯一的后台启动任务负责</small></span><input id="startup-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>人格包</strong><small id="persona-detail">不启用时保持默认人格，对新会话生效</small></span><select id="persona-setting"></select></label>
-          <label class="setting-row"><span><strong>随机查岗</strong><small>只显示范围，不提前透露具体时间</small></span><input id="random-setting" type="checkbox"></label>
+          <div class="setting-row"><span><strong>随机查岗</strong><small>只显示范围，不提前透露具体时间</small></span><div class="checkin-config"><input id="random-setting" type="checkbox"><select id="checkin-preset" aria-label="查岗频率"></select><span id="custom-range" class="custom-range hidden"><input id="custom-min" type="number" min="1" max="2880" aria-label="自定义最小分钟"> – <input id="custom-max" type="number" min="1" max="2880" aria-label="自定义最大分钟"> 分钟</span></div></div>
+          <div class="setting-row"><span><strong>静默时段</strong><small>这段时间里机器不再主动打扰</small></span><div class="quiet-config"><label class="quiet-toggle"><input id="quiet-enabled" type="checkbox"> 启用静默时段</label><input id="quiet-start" type="time" aria-label="静默开始时间"><input id="quiet-end" type="time" aria-label="静默结束时间"></div></div>
           <label class="setting-row"><span><strong>每日报表</strong><small>默认汇总前一天</small></span><input id="report-setting" type="checkbox"></label>
           <label class="setting-row"><span><strong>报表时间</strong><small>Asia/Shanghai</small></span><input id="report-time" type="time"></label>
           <label class="setting-row"><span><strong>吃饭后查岗</strong><small>没有明确时间时使用</small></span><span class="number-field"><input id="meal-duration" type="number" min="1" max="1440"><em>分钟</em></span></label>

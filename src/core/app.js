@@ -30,7 +30,7 @@ const { DiagnosticCapture } = require("../security/diagnostic-capture");
 const {
   buildWeixinHelpText,
 } = require("./command-registry");
-const { CheckinConfigStore, parseCheckinRangeMinutes, resolveDefaultCheckinRange } = require("./checkin-config-store");
+const { CheckinConfigStore, parseCheckinRangeMinutes, resolveCheckinPreset, resolveDefaultCheckinRange } = require("./checkin-config-store");
 const { DesktopStateStore } = require("./desktop-state-store");
 const { extractExplicitCheckpoint } = require("./explicit-checkpoint");
 const { inferContextualCheckpoint } = require("./contextual-checkpoint");
@@ -369,7 +369,7 @@ class CyberbossApp {
             }));
           }
           if (isSessionExpiredError(error)) {
-            throw new Error("The WeChat session has expired. Run `npm run login` again.");
+            throw Object.assign(new Error("The WeChat session has expired. 微信登录已过期，请在艾迪里点「连接微信」重新扫码。"), { code: "WECHAT_SESSION_EXPIRED" });
           }
 
           console.error(`[cyberboss] poll failed: ${formatErrorMessage(error)}`);
@@ -676,8 +676,11 @@ class CyberbossApp {
       return { ...normalized, text: `${normalized.text}\n\n${systemNote}` };
     }
     const settings = this.desktopStateStore.get();
-    const arrangement = extractExplicitCheckpoint(normalized.text)
-      || inferContextualCheckpoint(normalized.text, { durations: settings.contextDurations });
+    const arrangement = extractExplicitCheckpoint(normalized.text, { quietHours: settings.quietHours })
+      || inferContextualCheckpoint(normalized.text, {
+        durations: settings.contextDurations,
+        quietHours: settings.quietHours,
+      });
     if (!arrangement) {
       return normalized;
     }
@@ -1269,7 +1272,7 @@ class CyberbossApp {
     if (!persisted.saved.length && persisted.failed.length && !String(normalized.text || "").trim()) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
+        text: `⚠️ 图片或附件没接收到\n${persisted.failed.map((item) => item.reason).join("\n")}`,
         contextToken: normalized.contextToken,
         preserveBlock: true,
       }).catch(() => {});
@@ -1283,7 +1286,7 @@ class CyberbossApp {
     if (!prepared.originalText && !prepared.attachments.length && prepared.attachmentFailures.length) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
+        text: `⚠️ 图片或附件没接收到\n${persisted.failed.map((item) => item.reason).join("\n")}`,
         contextToken: normalized.contextToken,
         preserveBlock: true,
       }).catch(() => {});
@@ -1358,7 +1361,7 @@ class CyberbossApp {
         }).catch(() => {});
         await this.channelAdapter.sendText({
           userId: job.senderId,
-          text: `❌ Timeline screenshot failed\n${messageText}`,
+          text: `❌ 时间轴截图失败\n${messageText}`,
           preserveBlock: true,
         }).catch(() => {});
       }
@@ -1488,12 +1491,19 @@ class CyberbossApp {
         await this.handleStarCommand(normalized);
         return;
       case "help":
-        await this.handleHelpCommand(normalized);
+        await this.handleHelpCommand(normalized, command);
         return;
       default:
         await this.channelAdapter.sendText({
           userId: normalized.senderId,
-          text: buildWeixinHelpText(),
+          text: [
+            "这条命令我还不认识。",
+            "想让我提醒你的话，直接说一句就行，比如：",
+            "  “一小时后问我简历写了没”",
+            "  “今晚十点提醒我吃药”",
+            "",
+            "想看我认得的全部命令，发 /help",
+          ].join("\n"),
           contextToken: normalized.contextToken,
         });
     }
@@ -1504,7 +1514,7 @@ class CyberbossApp {
     if (!workspaceRoot) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "💡 Usage: /bind /absolute/path",
+        text: "💡 用法：/bind /绝对路径",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1513,7 +1523,7 @@ class CyberbossApp {
     if (!isAbsoluteWorkspacePath(workspaceRoot)) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "⚠️ Only absolute paths are supported for /bind.",
+        text: "⚠️ /bind 只支持绝对路径。",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1522,7 +1532,7 @@ class CyberbossApp {
     if (!isPathWithinAllowedDirectories(workspaceRoot)) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "⚠️ The path must be within your home directory or the current working directory.",
+        text: "⚠️ 这个路径必须位于你的用户目录或当前工作目录之内。",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1532,7 +1542,7 @@ class CyberbossApp {
     if (!stats?.isDirectory()) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `❌ Workspace does not exist\n${workspaceRoot}`,
+        text: `❌ 目录不存在\n${workspaceRoot}`,
         contextToken: normalized.contextToken,
       });
       return;
@@ -1546,7 +1556,7 @@ class CyberbossApp {
     this.runtimeAdapter.getSessionStore().setActiveWorkspaceRoot(bindingKey, workspaceRoot);
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Workspace bound\nworkspace: ${workspaceRoot}`,
+      text: `✅ 已绑定目录\n目录：${workspaceRoot}`,
       contextToken: normalized.contextToken,
     });
   }
@@ -1570,12 +1580,12 @@ class CyberbossApp {
     const storedModelProvider = activeProfile.providerId;
 
     const lines = [
-      `📍 workspace: ${workspaceRoot}`,
-      `🧵 thread: ${threadId || "(none)"}`,
-      `📊 status: ${threadState?.status || "idle"}`,
-      `🤖 runtime: ${runtimeName}`,
-      `🤖 model: ${effectiveModel || "(default)"}`,
-      `🤖 provider: ${storedModelProvider || "(default)"}`,
+      `📍 目录：${workspaceRoot}`,
+      `🧵 会话：${threadId || "（无）"}`,
+      `📊 状态：${formatThreadStatus(threadState?.status)}`,
+      `🤖 引擎：${runtimeName}`,
+      `🤖 模型：${effectiveModel || "（默认）"}`,
+      `🤖 供应商：${storedModelProvider || "（默认）"}`,
     ];
     lines.push(formatContextStatusLine({
       runtimeName,
@@ -1603,7 +1613,7 @@ class CyberbossApp {
     this.runtimeAdapter.getSessionStore().clearThreadIdForWorkspace(bindingKey, workspaceRoot);
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Switched to a fresh thread draft\nworkspace: ${workspaceRoot}`,
+      text: `✅ 已开一个新会话\n目录：${workspaceRoot}`,
       contextToken: normalized.contextToken,
     });
   }
@@ -1620,7 +1630,7 @@ class CyberbossApp {
     if (!threadId) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "💡 There is no active thread yet. Send a normal message first.",
+        text: "💡 现在还没有会话。先随便跟我说一句话。",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1642,7 +1652,7 @@ class CyberbossApp {
     } catch (error) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `❌ Reread failed\n${error instanceof Error ? error.message : String(error || "unknown error")}`,
+        text: `❌ 重新读取失败\n${error instanceof Error ? error.message : String(error || "未知错误")}`,
         contextToken: normalized.contextToken,
       }).catch(() => {});
     }
@@ -1660,7 +1670,7 @@ class CyberbossApp {
     if (!threadId) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "💡 There is no active thread yet. Send a normal message first.",
+        text: "💡 现在还没有会话。先随便跟我说一句话。",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1688,13 +1698,13 @@ class CyberbossApp {
       });
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `🗜️ Compact request sent\nthread: ${threadId}`,
+        text: `🗜️ 已请求压缩会话\n会话：${threadId}`,
         contextToken: normalized.contextToken,
       });
     } catch (error) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `❌ Compact failed\n${error instanceof Error ? error.message : String(error || "unknown error")}`,
+        text: `❌ 压缩失败\n${error instanceof Error ? error.message : String(error || "未知错误")}`,
         contextToken: normalized.contextToken,
       }).catch(() => {});
     }
@@ -1705,7 +1715,7 @@ class CyberbossApp {
     if (!targetThreadId) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "💡 Usage: /switch <threadId>",
+        text: "💡 用法：/switch <会话ID>",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1732,7 +1742,7 @@ class CyberbossApp {
     );
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Thread switched\nworkspace: ${workspaceRoot}\nthread: ${resumed?.threadId || targetThreadId}`,
+      text: `✅ 已切换会话\n目录：${workspaceRoot}\n会话：${resumed?.threadId || targetThreadId}`,
       contextToken: normalized.contextToken,
     });
   }
@@ -1749,7 +1759,7 @@ class CyberbossApp {
     if (!threadId || !threadState?.turnId || !["running", "waiting_approval"].includes(threadState.status)) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "💡 There is no running thread right now.",
+        text: "💡 现在没有正在进行的任务。",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1762,18 +1772,40 @@ class CyberbossApp {
     });
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `⏹️ Stop request sent\nthread: ${threadId}`,
+      text: `⏹️ 已发出停止请求\n会话：${threadId}`,
       contextToken: normalized.contextToken,
     });
   }
 
   async handleCheckinCommand(normalized, command) {
     const rangeInput = normalizeCommandArgument(command.args);
+    const currentRange = this.checkinConfigStore.getRange(resolveDefaultCheckinRange());
+    const formatRange = (range) => `${Math.round(range.minIntervalMs / 60_000)}-${Math.round(range.maxIntervalMs / 60_000)} 分钟`;
+
     if (!rangeInput) {
-      const currentRange = this.checkinConfigStore.getRange(resolveDefaultCheckinRange());
+      const currentPreset = resolveCheckinPreset(this.checkinConfigStore.getPresetId());
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `⏰ Current check-in interval is ${Math.round(currentRange.minIntervalMs / 60000)}-${Math.round(currentRange.maxIntervalMs / 60000)} minutes.`,
+        text: [
+          `⏰ 我现在是「${currentPreset ? currentPreset.label : "自定义"}」：大约每 ${formatRange(currentRange)}来一次。`,
+          "",
+          "想改的话，发其中一条：",
+          "  /checkin 轻陪伴  （大约 30-90 分钟）",
+          "  /checkin 标准    （大约 15-45 分钟）",
+          "  /checkin 紧密    （大约 5-20 分钟）",
+          "  /checkin 15-45   （自定义区间）",
+        ].join("\n"),
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+
+    const preset = resolveCheckinPreset(rangeInput);
+    if (preset) {
+      this.checkinConfigStore.setPreset(preset.id);
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `✅ 已改成「${preset.label}」：大约每 ${preset.minMinutes}-${preset.maxMinutes} 分钟来一次。${preset.description}`,
         contextToken: normalized.contextToken,
       });
       return;
@@ -1783,7 +1815,10 @@ class CyberbossApp {
     if (!parsedRange) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "💡 Usage: /checkin <min>-<max>",
+        text: [
+          "这个区间我没看懂。可以写成 15-45 这样的「最小-最大」分钟数，",
+          "或者直接选档位：/checkin 轻陪伴、/checkin 标准、/checkin 紧密。",
+        ].join("\n"),
         contextToken: normalized.contextToken,
       });
       return;
@@ -1795,7 +1830,7 @@ class CyberbossApp {
     });
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Check-in interval reset to ${parsedRange.minMinutes}-${parsedRange.maxMinutes} minutes and will apply on the next polling cycle.`,
+      text: `✅ 已改成大约每 ${parsedRange.minMinutes}-${parsedRange.maxMinutes} 分钟来一次，从下一个调度周期开始生效。`,
       contextToken: normalized.contextToken,
     });
   }
@@ -1806,7 +1841,7 @@ class CyberbossApp {
       const current = this.channelAdapter.getMinChunkChars?.() ?? DEFAULT_MIN_WEIXIN_CHUNK;
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `💡 Current minimum merge chunk is ${current} characters. Usage: /chunk <number> (e.g. /chunk 50)`,
+        text: `💡 当前短消息合并长度是 ${current} 个字符。用法：/chunk <数字>（例如 /chunk 50）`,
         contextToken: normalized.contextToken,
       });
       return;
@@ -1815,7 +1850,7 @@ class CyberbossApp {
     if (!Number.isFinite(parsed) || parsed < 1 || parsed > MAX_MIN_WEIXIN_CHUNK) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `⚠️  Invalid value. Please provide a number between 1 and ${MAX_MIN_WEIXIN_CHUNK}.`,
+        text: `⚠️ 这个数值不对，请填 1 到 ${MAX_MIN_WEIXIN_CHUNK} 之间的整数。`,
         contextToken: normalized.contextToken,
       });
       return;
@@ -1823,7 +1858,7 @@ class CyberbossApp {
     const updated = this.channelAdapter.setMinChunkChars?.(parsed) ?? parsed;
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Minimum merge chunk set to ${updated} characters. Shorter fragments will be merged into one message up to this size.`,
+      text: `✅ 短消息合并长度已设为 ${updated} 个字符。比这更短的碎片会合并成一条消息。`,
       contextToken: normalized.contextToken,
     });
   }
@@ -1841,7 +1876,7 @@ class CyberbossApp {
     if (!threadId || approval?.requestId == null || String(approval.requestId).trim() === "") {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "💡 There is no pending approval request right now.",
+        text: "💡 现在没有等你确认的操作。",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1851,7 +1886,7 @@ class CyberbossApp {
     if (!approvalResponse) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "⚠️ This Codex MCP request cannot be answered from WeChat yet.",
+        text: "⚠️ 这个 Codex MCP 请求暂时不能在微信里确认，请到桌面控制中心处理。",
         contextToken: normalized.contextToken,
       });
       return;
@@ -1881,14 +1916,14 @@ class CyberbossApp {
     const profile = this.activeProfile || this.profileStore?.getActive?.() || null;
     const runtime = this.runtimeAdapter?.describe?.() || {};
     const lines = [
-      "Model selection is global and this command is read-only.",
-      `Profile: ${profile?.name || profile?.id || runtime.profileId || "(none)"}`,
-      `Runtime: ${profile?.runtimeId || runtime.id || "(none)"}`,
-      `Provider: ${profile?.providerId || runtime.provider || runtime.modelProvider || "(none)"}`,
-      `Model: ${profile?.modelId || runtime.model || "(none)"}`,
-      "Open Control Center → Models and APIs to verify and activate a different profile.",
+      "🤖 模型是全局配置，这里只能看，不能改。",
+      `配置：${profile?.name || profile?.id || runtime.profileId || "（无）"}`,
+      `引擎：${profile?.runtimeId || runtime.id || "（无）"}`,
+      `供应商：${profile?.providerId || runtime.provider || runtime.modelProvider || "（无）"}`,
+      `模型：${profile?.modelId || runtime.model || "（无）"}`,
+      "要验证或切换配置，请在桌面控制中心 → AI 引擎 里操作。",
     ];
-    if (query) lines.push(`Requested value was not applied: ${query}`);
+    if (query) lines.push(`（你写的「${query}」这次没有生效）`);
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: lines.join("\n"),
@@ -1900,8 +1935,8 @@ class CyberbossApp {
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: [
-        "⭐️ Liked this project? Throw me a star on GitHub!",
-        "It really means a lot to an indie dev working on passion projects 💖",
+        "⭐️ 觉得这个项目还不错？在 GitHub 上给我点个星吧！",
+        "这点鼓励对一个人做独立项目的人来说，真的很重要 💖",
         "",
         "https://github.com/WenXiaoWendy/cyberboss",
       ].join("\n"),
@@ -1914,10 +1949,11 @@ class CyberbossApp {
     }).catch(() => {});
   }
 
-  async handleHelpCommand(normalized) {
+  async handleHelpCommand(normalized, command) {
+    const wantsAll = /^(all|全部|进阶)$/i.test(normalizeCommandArgument(command?.args));
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: buildWeixinHelpText(),
+      text: buildWeixinHelpText({ includeDeveloper: wantsAll }),
       contextToken: normalized.contextToken,
     });
   }
@@ -2006,7 +2042,7 @@ class CyberbossApp {
         if (pendingOperation?.kind === "compact" && event.type === "runtime.turn.completed") {
           await this.channelAdapter.sendText({
             userId: pendingOperation.userId,
-            text: `✅ Compact finished\nthread: ${event.payload.threadId}`,
+            text: `✅ 压缩完成\n会话：${event.payload.threadId}`,
             contextToken: pendingOperation.contextToken,
           }).catch(() => {});
         }
@@ -2668,7 +2704,7 @@ function buildApprovalPromptText(approval) {
   const shouldShowReason = reasonText && normalizeText(reasonText) !== normalizeText(`Tool: ${firstCommandLine}`);
 
   const out = [];
-  out.push(`🔐 【Approval】${toolName || "Tool request"}`);
+  out.push(`🔐 【需要你确认】${toolName || "工具调用"}`);
 
   if (shouldShowReason) {
     out.push(`📋 ${reasonText}`);
@@ -2684,14 +2720,14 @@ function buildApprovalPromptText(approval) {
   }
 
   if (!reasonText && !commandText) {
-    out.push("❓ (unknown)");
+    out.push("❓ （未提供说明）");
   }
 
   out.push("━━━━━━━━━━━━━");
-  out.push("💬 Reply with:");
-  out.push("👉 /yes    allow once");
-  out.push("👉 /always auto-allow");
-  out.push("👉 /no     deny");
+  out.push("💬 回复其中一个就行：");
+  out.push("👉 /yes    这次允许");
+  out.push("👉 /always 以后同类都允许");
+  out.push("👉 /no     拒绝");
 
   return out.join("\n");
 }
@@ -2744,16 +2780,16 @@ function buildApprovalResponsePayload(approval, commandName) {
 function buildApprovalResponseText(approval, commandName, approvalResponse) {
   if (approval?.kind === "mcp_tool_call" || approval?.kind === "mcp_elicitation") {
     if (commandName === "always" && isApprovalAcceptResponse(approvalResponse)) {
-      return "💡 Auto-approve enabled for this MCP tool in the current workspace.";
+      return "💡 已在这个工作目录里对这个 MCP 工具开启自动允许。";
     }
     if (commandName === "yes") {
-      return "✅ This request has been approved.";
+      return "✅ 这次请求已允许。";
     }
-    return "❌ This request has been cancelled.";
+    return "❌ 这次请求已取消。";
   }
   return commandName === "always"
-    ? "💡 Auto-approve enabled for this command prefix in the current workspace."
-    : (commandName === "yes" ? "✅ This request has been approved." : "❌ This request has been denied.");
+    ? "💡 已在这个工作目录里对这条命令前缀开启自动允许。"
+    : (commandName === "yes" ? "✅ 这次请求已允许。" : "❌ 这次请求已拒绝。");
 }
 
 function isApprovalAcceptResponse(approvalResponse) {
@@ -2772,7 +2808,7 @@ function buildElicitationApprovalPromptText(approval) {
   const commandText = normalizeText(approval?.command);
   const approvalKind = normalizeText(elicitation?.approvalKind);
   const out = [];
-  out.push(`🔐 【Approval】${normalizeText(approval?.reason) || "MCP request"}`);
+  out.push(`🔐 【需要你确认】${normalizeText(approval?.reason) || "MCP 请求"}`);
   if (messageText) {
     out.push(`📋 ${messageText.split("\n")[0]}`);
   }
@@ -2798,18 +2834,18 @@ function buildElicitationApprovalPromptText(approval) {
       : []
   );
   out.push("━━━━━━━━━━━━━");
-  out.push("💬 Reply with:");
+  out.push("💬 回复其中一个就行：");
   if (supportedCommands.has("yes")) {
-    out.push("👉 /yes    allow once");
+    out.push("👉 /yes    这次允许");
   }
   if (supportedCommands.has("always") || (supportedCommands.has("yes") && approval?.kind === "mcp_tool_call")) {
-    out.push("👉 /always auto-allow");
+    out.push("👉 /always 以后同类都允许");
   }
   if (supportedCommands.has("no")) {
-    out.push("👉 /no     cancel this request");
+    out.push("👉 /no     取消这次请求");
   }
   if (!supportedCommands.size) {
-    out.push("⚠️ This Codex MCP request cannot be answered from WeChat yet.");
+    out.push("⚠️ 这个 Codex MCP 请求暂时不能在微信里确认，请到桌面控制中心处理。");
   }
 
   return out.join("\n");
@@ -2819,6 +2855,20 @@ function buildReminderSystemTrigger(reminder, config = {}) {
   const reminderText = String(reminder?.text || "").trim();
   const userName = String(config?.userName || "").trim() || "the user";
   return `Due reminder for ${userName}: ${reminderText}`;
+}
+
+// Thread status values are internal English tokens; users read these lines in
+// WeChat, so translate them on the way out.
+function formatThreadStatus(status) {
+  switch (normalizeText(status)) {
+    case "idle": return "空闲";
+    case "running": return "进行中";
+    case "waiting_approval": return "等待你确认";
+    case "completed": return "已完成";
+    case "failed": return "失败";
+    case "": return "空闲";
+    default: return normalizeText(status);
+  }
 }
 
 function buildScopeKey(bindingKey, workspaceRoot) {

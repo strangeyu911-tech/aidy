@@ -217,4 +217,20 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .model-coach-actions button { border: 1px solid var(--line); border-radius: 9px; background: #fff; padding: 8px 12px; }
 .model-coach-target { position: relative; z-index: 61; outline: 3px solid var(--gold); outline-offset: 4px; box-shadow: 0 0 0 7px rgba(230,185,92,.18); }
 .hidden { display: none !important; }
+.panel-heading-actions { display: flex; align-items: center; gap: 10px; }
+.checkpoint-creator { margin-top: 15px; display: grid; gap: 11px; }
+.checkpoint-creator input[type="text"] { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px; background: #fff; }
+.quick-times { display: flex; gap: 8px; flex-wrap: wrap; }
+.quick-times button { border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 10px; padding: 8px 12px; }
+.quick-times button:hover { border-color: var(--green); color: var(--green); }
+#schedule-checkpoint { justify-self: start; }
+.checkpoint-footnote { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.supervision-summary { margin-top: 8px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: #f7f4ec; color: var(--ink); font-size: 12px; line-height: 1.6; }
+.checkin-config { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.checkin-config select { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: #fff; max-width: 220px; }
+.custom-range { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.custom-range input[type="number"] { width: 74px; border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: #fff; }
+.quiet-config { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.quiet-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-size: 13px; }
+.quiet-config input[type="time"] { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: #fff; }
 @media (max-width: 900px) { .status-grid, .form-grid, .model-guide-steps { grid-template-columns: 1fr; } .mode-card { align-items: flex-start; } .profile-card { align-items: flex-start; flex-direction: column; } }

@@ -400,6 +400,8 @@ class RuntimeSupervisor extends EventEmitter {
       child.__cyberbossError = processError("WECHAT_LOGIN_REQUIRED", "尚未连接微信。", "wechat");
     } else if (child && component === "bridge" && /Multiple WeChat accounts were detected/i.test(output)) {
       child.__cyberbossError = processError("WECHAT_ACCOUNT_SELECTION_REQUIRED", "检测到多个微信账号，需要先选择一个账号。", "wechat");
+    } else if (child && component === "bridge" && /WECHAT_SESSION_EXPIRED|session\s+(?:has\s+)?expired|session\s+invalidated|errcode[=:\s-]+-14/i.test(output)) {
+      child.__cyberbossError = processError("WECHAT_SESSION_EXPIRED", "微信登录已过期，需要重新扫码。", "wechat");
     }
     if (child && component === "bridge" && output.includes("bridge loop started")) {
       child.__cyberbossReady = true;
@@ -423,6 +425,17 @@ class RuntimeSupervisor extends EventEmitter {
     if (this.plannedChildStops.delete(component)) return;
     if (this.intentionalStop || this.desiredState === "stopped") return;
     if (component === "appserver" && this.externalAppServer) return;
+    // These conditions can only be resolved by the user (re-scan the QR code, pick
+    // an account). Restarting cannot fix them: it just burns the circuit breaker and
+    // replaces the real reason with a generic "kept exiting" message, which is how
+    // Aidy used to go silent with no way for the user to know why.
+    const blocking = blockingWechatError(child.__cyberbossError);
+    if (component === "bridge" && blocking) {
+      this.phase = "error";
+      this.lastError = friendlyProcessError(blocking);
+      this.emitState();
+      return;
+    }
     this.phase = "starting";
     this.emitState();
     void this.prepareRestart(component);
@@ -594,6 +607,16 @@ function processError(code, message, capability) {
   error.code = code;
   error.capability = capability;
   return error;
+}
+
+const BLOCKING_WECHAT_CODES = new Set([
+  "WECHAT_LOGIN_REQUIRED",
+  "WECHAT_ACCOUNT_SELECTION_REQUIRED",
+  "WECHAT_SESSION_EXPIRED",
+]);
+
+function blockingWechatError(error) {
+  return error && BLOCKING_WECHAT_CODES.has(error.code) ? error : null;
 }
 
 function normalizeGraceMs(value) {

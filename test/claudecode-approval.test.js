@@ -606,7 +606,7 @@ test("handleNewCommand asks runtime to start a fresh draft before clearing the s
   assert.deepEqual(calls, [
     ["fresh", "/workspace"],
     ["clear", "binding-1", "/workspace"],
-    ["send", "✅ Switched to a fresh thread draft\nworkspace: /workspace"],
+    ["send", "✅ 已开一个新会话\n目录：/workspace"],
   ]);
 });
 
@@ -659,7 +659,7 @@ test("handleCompactCommand invokes runtime compaction for the current thread", a
   assert.deepEqual(calls, [
     ["queue", "thread-1", "user-1", "ctx-1", "weixin"],
     ["compact", "thread-1", "/workspace", "claude-sonnet"],
-    ["send", "🗜️ Compact request sent\nthread: thread-1"],
+    ["send", "🗜️ 已请求压缩会话\n会话：thread-1"],
   ]);
   assert.equal(appLike.pendingOperationByRunKey.get("thread-1:turn-1")?.kind, "compact");
 });
@@ -697,7 +697,7 @@ test("handleCompactCommand reports when there is no active thread", async () => 
   });
 
   assert.deepEqual(calls, [
-    "💡 There is no active thread yet. Send a normal message first.",
+    "💡 现在还没有会话。先随便跟我说一句话。",
   ]);
 });
 
@@ -749,7 +749,7 @@ test("handleStopCommand passes workspaceRoot through to runtime cancellation", a
   assert.deepEqual(calls, [
     ["state", "thread-1"],
     ["cancel", "thread-1", "turn-1", "/workspace"],
-    ["send", "⏹️ Stop request sent\nthread: thread-1"],
+    ["send", "⏹️ 已发出停止请求\n会话：thread-1"],
   ]);
 });
 
@@ -798,7 +798,7 @@ test("handleStopCommand allows stopping while waiting for approval", async () =>
   });
 
   assert.equal(calls[0].workspaceRoot, "/workspace");
-  assert.equal(calls[1], "⏹️ Stop request sent\nthread: thread-1");
+  assert.equal(calls[1], "⏹️ 已发出停止请求\n会话：thread-1");
 });
 
 test("handleRuntimeEvent reports compact completion back to WeChat", async () => {
@@ -852,7 +852,7 @@ test("handleRuntimeEvent reports compact completion back to WeChat", async () =>
     },
   });
 
-  assert.deepEqual(sent, ["✅ Compact finished\nthread: thread-1"]);
+  assert.deepEqual(sent, ["✅ 压缩完成\n会话：thread-1"]);
   assert.equal(appLike.pendingOperationByRunKey.size, 0);
 });
 test("handleRuntimeEvent auto-approves built-in view_image approvals without prompting", async () => {
@@ -1217,7 +1217,7 @@ test("handleSwitchCommand stores the verified claudecode thread returned by runt
   assert.deepEqual(calls, [
     ["resume", "target-thread", "/workspace"],
     ["set", "binding-1", "/workspace", "actual-thread"],
-    ["send", "✅ Thread switched\nworkspace: /workspace\nthread: actual-thread"],
+    ["send", "✅ 已切换会话\n目录：/workspace\n会话：actual-thread"],
   ]);
 });
 

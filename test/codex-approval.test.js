@@ -254,7 +254,7 @@ test("handleApprovalCommand sends MCP elicitation responses back through the run
       action: "accept",
     },
   }]);
-  assert.deepEqual(sent, ["✅ This request has been approved."]);
+  assert.deepEqual(sent, ["✅ 这次请求已允许。"]);
 });
 
 test("handleApprovalCommand enables persistent Codex MCP tool approval from WeChat", async () => {
@@ -330,5 +330,5 @@ test("handleApprovalCommand enables persistent Codex MCP tool approval from WeCh
     workspaceRoot: "/workspace",
     commandTokens: ["mcp_tool", "notes_server", "note_create"],
   }]);
-  assert.deepEqual(sent, ["💡 Auto-approve enabled for this MCP tool in the current workspace."]);
+  assert.deepEqual(sent, ["💡 已在这个工作目录里对这个 MCP 工具开启自动允许。"]);
 });

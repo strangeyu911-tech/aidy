@@ -7,7 +7,7 @@ const { spawn } = require("child_process");
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } = require("electron");
 const dotenv = require("dotenv");
 
-const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
+const { CheckinConfigStore, resolveDefaultCheckinRange, listCheckinPresets, resolveCheckinPreset, CUSTOM_PRESET_ID } = require("../core/checkin-config-store");
 const { ComponentLogger, queryLogs } = require("../core/component-logger");
 const { readConfig } = require("../core/config");
 const { DesktopStateStore, DESIRED_STATES } = require("../core/desktop-state-store");
@@ -274,6 +274,9 @@ function registerIpc() {
   ipcMain.handle("desktop:start-wechat-login", () => startWeixinLogin());
   ipcMain.handle("desktop:refresh-onboarding", () => buildSnapshot());
   ipcMain.handle("desktop:update-settings", (_event, patch) => updateSettings(patch));
+  ipcMain.handle("desktop:create-checkpoint", (_event, payload = {}) => createCheckpointFromUi(payload));
+  ipcMain.handle("desktop:run-checkin", () => runCheckinFromUi());
+  ipcMain.handle("desktop:set-checkin-config", (_event, payload = {}) => setCheckinConfigFromUi(payload));
   ipcMain.handle("desktop:list-diary", (_event, options) => recordsService.listDiary(options));
   ipcMain.handle("desktop:list-reports", () => recordsService.listReports());
   ipcMain.handle("desktop:backfill", (_event, action) => {
@@ -333,7 +336,7 @@ async function applyDesiredState(desiredState) {
 
 async function updateSettings(patch) {
   const allowed = {};
-  for (const key of ["startWithWindows", "randomCheckinsEnabled", "reportEnabled", "reportTime", "contextDurations", "backfillPaused"]) {
+  for (const key of ["startWithWindows", "randomCheckinsEnabled", "reportEnabled", "reportTime", "contextDurations", "backfillPaused", "quietHours"]) {
     if (Object.prototype.hasOwnProperty.call(patch || {}, key)) allowed[key] = patch[key];
   }
   const previous = stateStore.get();
@@ -395,9 +398,14 @@ function buildSnapshot() {
         enabled: settings.randomCheckinsEnabled,
         minMinutes: Math.round(range.minIntervalMs / 60_000),
         maxMinutes: Math.round(range.maxIntervalMs / 60_000),
+        presetId: checkinConfig.getPresetId(),
+        presetLabel: resolveCheckinPreset(checkinConfig.getPresetId())?.label || "自定义",
+        presets: listCheckinPresets(),
+        nextCheckinMinutes: resolveNextRandomCheckinMinutes(),
       },
       checkpoints: planStore.list({ includeRandom: false }).filter((item) => item.state === "pending").slice(0, 50),
       recent: planStore.list({ includeRandom: true }).filter((item) => item.state !== "pending").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 20),
+      todayDispatched: countTodayDispatched(),
     },
     reports: {
       backfillPaused: settings.backfillPaused,
@@ -408,6 +416,82 @@ function buildSnapshot() {
     startupTaskError,
     stateDir,
   };
+}
+
+function resolveNextRandomCheckinMinutes() {
+  const next = planStore.list({ state: "pending", includeRandom: true }).find((item) => item.source === "random");
+  if (!next) return null;
+  const remainingMs = Date.parse(next.dueAt) - Date.now();
+  if (!Number.isFinite(remainingMs)) return null;
+  return Math.max(0, Math.round(remainingMs / 60_000));
+}
+
+function countTodayDispatched() {
+  const today = new Date();
+  return planStore.list({ includeRandom: true }).filter((item) => {
+    if (item.state !== "completed" || item.outcome !== "queued") return false;
+    const when = new Date(item.updatedAt);
+    return when.getFullYear() === today.getFullYear()
+      && when.getMonth() === today.getMonth()
+      && when.getDate() === today.getDate();
+  }).length;
+}
+
+function createCheckpointFromUi(payload = {}) {
+  try {
+    const dueMs = Date.parse(payload?.dueAt);
+    if (!Number.isFinite(dueMs) || dueMs <= Date.now()) {
+      return { ok: false, error: "请选择一个未来的时间。", snapshot: buildSnapshot() };
+    }
+    const safeText = typeof payload?.text === "string" ? payload.text.trim() : "";
+    const title = (safeText.slice(0, 36) || "按约定时间跟进").slice(0, 36);
+    const slug = (safeText.replace(/[\s\p{P}]/gu, "").toLowerCase().slice(0, 48)) || "follow-up";
+    const canonicalTaskId = `conversation:${slug}`;
+    planStore.supersedeCanonical(canonicalTaskId);
+    const checkpoint = planStore.add({
+      source: "conversation",
+      title,
+      canonicalTaskId,
+      dueAt: new Date(dueMs).toISOString(),
+      timezone: "Asia/Shanghai",
+      exemptQuietHours: true,
+      prompt: "结合最近和用户的对话，自然地问问这件事进展得怎么样了。如果有具体约定，确认是否按时完成；如果还没有新进展，简短提醒一次就好，不要反复追问。",
+    });
+    publishSnapshot();
+    return { ok: true, checkpoint, snapshot: buildSnapshot() };
+  } catch (error) {
+    return { ok: false, error: error?.message || "安排提醒失败。", snapshot: buildSnapshot() };
+  }
+}
+
+function runCheckinFromUi() {
+  try {
+    const result = dispatcher.runCheckinNow();
+    publishSnapshot();
+    return { ok: result.ok, error: result.error || "", snapshot: buildSnapshot() };
+  } catch (error) {
+    return { ok: false, error: error?.message || "立即查岗失败。", snapshot: buildSnapshot() };
+  }
+}
+
+function setCheckinConfigFromUi(payload = {}) {
+  try {
+    if (typeof payload?.presetId === "string" && payload.presetId) {
+      checkinConfig.setPreset(payload.presetId);
+    } else if (Number.isFinite(payload?.minMinutes) && Number.isFinite(payload?.maxMinutes)) {
+      checkinConfig.setRange({
+        minIntervalMs: payload.minMinutes * 60_000,
+        maxIntervalMs: payload.maxMinutes * 60_000,
+      });
+    } else {
+      return { ok: false, error: "请提供 presetId 或 minMinutes / maxMinutes。", snapshot: buildSnapshot() };
+    }
+    dispatcher.ensureRandomCheckpoint();
+    publishSnapshot();
+    return { ok: true, snapshot: buildSnapshot() };
+  } catch (error) {
+    return { ok: false, error: error?.message || "更新查岗频率失败。", snapshot: buildSnapshot() };
+  }
 }
 
 async function checkCodeBuddyEnvironment() {
