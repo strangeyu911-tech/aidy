@@ -234,7 +234,14 @@ function createTray() {
 
 function createTrayIcon() {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect rx="9" width="32" height="32" fill="#315d52"/><path d="M8 11.5C8 9.6 9.6 8 11.5 8h9C22.4 8 24 9.6 24 11.5v9c0 1.9-1.6 3.5-3.5 3.5h-9A3.5 3.5 0 0 1 8 20.5z" fill="#f7d98b"/><circle cx="13" cy="15" r="1.6" fill="#315d52"/><circle cx="19" cy="15" r="1.6" fill="#315d52"/><path d="M12 19c2.7 1.7 5.3 1.7 8 0" fill="none" stroke="#315d52" stroke-width="1.5" stroke-linecap="round"/></svg>`;
-  return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`).resize({ width: 20, height: 20 });
+  const trayIcon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`).resize({ width: 20, height: 20 });
+  if (trayIcon.isEmpty()) {
+    // nativeImage documents PNG/JPEG support only; an SVG data URL can come
+    // back empty on some runtimes. Make the failure loud instead of shipping a
+    // silently blank tray icon — but do not change behaviour when it succeeds.
+    console.error("Aidy desktop: tray icon is empty — the runtime could not decode the SVG brand mark (nativeImage.createFromDataURL returned a 0x0 image). The tray icon may appear blank. This is an environment limitation, not a code change.");
+  }
+  return trayIcon;
 }
 
 function updateTrayMenu() {
