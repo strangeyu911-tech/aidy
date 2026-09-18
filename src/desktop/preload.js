@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 const ALLOWED_INVOKE_CHANNELS = new Set([
   "desktop:get-snapshot", "desktop:set-state", "desktop:retry", "desktop:check-codebuddy", "desktop:start-wechat-login", "desktop:refresh-onboarding", "desktop:update-settings",
+  "desktop:wechat-login-status", "desktop:cancel-wechat-login",
   "desktop:list-diary", "desktop:list-reports", "desktop:backfill", "desktop:retry-report",
   "desktop:list-logs", "desktop:sync-zhijiantime", "desktop:authorize-zhijiantime",
   "desktop:update-checkpoint", "desktop:open-record", "desktop:record-preview",
@@ -24,6 +25,8 @@ contextBridge.exposeInMainWorld("cyberboss", Object.freeze({
   retry: () => invoke("desktop:retry"),
   checkCodeBuddy: () => invoke("desktop:check-codebuddy"),
   startWeChatLogin: () => invoke("desktop:start-wechat-login"),
+  wechatLoginStatus: () => invoke("desktop:wechat-login-status"),
+  cancelWeChatLogin: () => invoke("desktop:cancel-wechat-login"),
   refreshOnboarding: () => invoke("desktop:refresh-onboarding"),
   updateSettings: (patch) => invoke("desktop:update-settings", patch),
   listDiary: (options) => invoke("desktop:list-diary", options),

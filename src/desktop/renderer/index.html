@@ -32,6 +32,7 @@
     <main>
       <section id="view-control" class="view active" aria-labelledby="nav-control">
         <div id="error-card" class="error-card hidden"></div>
+        <div id="channel-warning" class="channel-warning hidden" role="status"></div>
         <section id="first-run-setup" class="setup-panel hidden" aria-labelledby="first-run-title">
           <span id="onboarding-eyebrow" class="eyebrow">首次设置 · 共 3 步</span>
           <h2 id="first-run-title">让艾迪开始工作</h2>
@@ -259,12 +260,28 @@
   <div id="modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal"><h3 id="modal-title">确认停止？</h3><p id="modal-description">停止后，微信回复、查岗、同步、日记和报表都会暂停。桌面控制中心会继续留在托盘中。</p><div class="modal-actions"><button id="modal-cancel" type="button">取消</button><button id="modal-stop-now" class="hidden" type="button">立即停止当前工作</button><button id="modal-confirm" class="danger" type="button">停止艾迪</button></div></div>
   </div>
+  <div id="wechat-login-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="wechat-login-title">
+    <div class="modal wechat-login-modal">
+      <span class="eyebrow">连接微信</span>
+      <h3 id="wechat-login-title">用微信扫这个二维码</h3>
+      <p id="wechat-login-status" class="wechat-login-status" role="status">正在获取二维码…</p>
+      <div id="wechat-login-qr" class="qr-frame" aria-live="polite"></div>
+      <p class="qr-hint">扫码后在手机上点「确认登录」就会自动连上。二维码过期会自动刷新，不用管它。</p>
+      <p id="wechat-login-error" class="qr-error hidden"></p>
+      <div class="modal-actions">
+        <button id="wechat-login-cancel" type="button">取消</button>
+        <button id="wechat-login-retry" class="primary-action hidden" type="button">重新获取二维码</button>
+        <button id="wechat-login-done" class="primary-action" type="button">我已完成扫码，重新检查</button>
+      </div>
+    </div>
+  </div>
   <div id="toast" class="toast hidden"><span id="toast-text"></span><button id="toast-undo" type="button">撤销</button></div>
   <script src="./profile-editor-state.js"></script>
   <script src="./model-settings-model-picker.js"></script>
   <script src="./model-settings-view-state.js"></script>
   <script src="./model-settings-coach-state.js"></script>
   <script src="./connection-status-view.js"></script>
+  <script src="./wechat-login-view.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

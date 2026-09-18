@@ -14,10 +14,15 @@ const modelSettingsView = window.cyberbossModelSettingsViewState;
 let modelSettingsViewState = modelSettingsView.createModelSettingsViewState();
 const modelSettingsCoach = window.cyberbossModelSettingsCoachState;
 const connectionStatusView = window.cyberbossConnectionStatusView;
+const wechatLoginView = window.cyberbossWechatLoginView;
 const MODEL_SETTINGS_COACH_STORAGE_KEY = "cyberboss:model-settings-coach:v1";
 let modelSettingsCoachState = modelSettingsCoach.createModelSettingsCoachState({ completed: readModelCoachCompleted() });
 let modelCoachTarget = null;
 const profileTestResults = new Map();
+let wechatLoginOpen = false;
+let wechatLoginPollTimer = null;
+let renderedQrUrl = "";
+const WECHAT_LOGIN_POLL_MS = 2_000;
 
 const COMPATIBILITY_RUNTIME_IDS = Object.freeze(["codex", "claudecode", "codebuddy"]);
 const RUNTIME_DISPLAY_ORDER = Object.freeze({ codebuddy: 0, "builtin-api": 1, codex: 2, claudecode: 3, opencode: 4 });
@@ -89,6 +94,9 @@ function bindControls() {
   $("#modal-cancel").addEventListener("click", () => $("#modal").classList.add("hidden"));
   $("#modal-confirm").addEventListener("click", async () => { $("#modal").classList.add("hidden"); await changeState("stopped"); });
   $("#modal-stop-now").addEventListener("click", async () => { $("#modal").classList.add("hidden"); await api.controlBackfill("pause"); await changeState("stopped"); });
+  $("#wechat-login-cancel").addEventListener("click", closeWeChatLogin);
+  $("#wechat-login-retry").addEventListener("click", () => openWeChatLogin());
+  $("#wechat-login-done").addEventListener("click", checkWeChatLoginResult);
   $("#toast-undo").addEventListener("click", async () => { if (previousMode) await changeState(previousMode, false); hideToast(); });
   $("#diary-search-button").addEventListener("click", loadDiary);
   $("#diary-search").addEventListener("keydown", (event) => { if (event.key === "Enter") loadDiary(); });
@@ -191,11 +199,15 @@ function renderSnapshot(nextSnapshot) {
   });
   renderEngine(snapshot.engine, snapshot.runtime);
   $("#wechat-state").textContent = snapshot.wechat.label;
-  $("#wechat-detail").textContent = phase === "quiet" ? "回复保留，主动推送静默" : snapshot.wechat.detail || "后台连接状态";
+  const wechatDetail = phase === "quiet" ? "回复保留，主动推送静默" : snapshot.wechat.detail || "后台连接状态";
+  const channelSuffix = describeChannelState(nextSnapshot.channelHealth);
+  $("#wechat-detail").textContent = channelSuffix ? `${channelSuffix} · ${wechatDetail}` : wechatDetail;
   $("#random-range").textContent = snapshot.supervision.random.enabled
     ? `${snapshot.supervision.random.minMinutes}–${snapshot.supervision.random.maxMinutes} 分钟`
     : "已关闭";
   renderError(snapshot.runtime.error || snapshot.startupTaskError);
+  renderChannelWarning(nextSnapshot.channelHealth);
+  renderWeChatLogin(nextSnapshot.wechatLogin);
   renderCheckpoints(snapshot.supervision.checkpoints);
   renderCheckpointRandomStatus();
   renderSupervisionSummary();
@@ -218,14 +230,45 @@ function renderError(error) {
   if (view.buttonAction === "retry") {
     $("#error-action-button").addEventListener("click", async () => renderSnapshot(await api.retry()));
   } else if (view.buttonAction === "wechat_login") {
-    $("#error-action-button").addEventListener("click", async () => {
-      const result = await api.startWeChatLogin();
-      const feedback = document.createElement("p");
-      feedback.textContent = result?.message || "微信登录窗口已打开。完成扫码后请重新检查。";
-      feedback.setAttribute("role", "status");
-      card.append(feedback);
-    });
+    $("#error-action-button").addEventListener("click", () => openWeChatLogin());
   }
+}
+
+const CHANNEL_STATE_TEXT = { healthy: "通道正常", degraded: "连接不稳定", unknown: "尚未收到心跳" };
+
+function describeChannelState(health) {
+  if (!health || typeof health !== "object") return "";
+  return CHANNEL_STATE_TEXT[health.state] || "";
+}
+
+function formatDuration(minutes) {
+  if (!Number.isFinite(minutes)) return "";
+  if (minutes < 1) return "不到 1 分钟";
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
+}
+
+// The failure this exists for: Aidy says it is running, the tray icon is there,
+// and nothing is being delivered. Nothing else in the UI would ever say so.
+function renderChannelWarning(health) {
+  const banner = $("#channel-warning");
+  if (!health?.stale) {
+    banner.classList.add("hidden");
+    banner.textContent = "";
+    return;
+  }
+  const silentFor = health.hasHeartbeat
+    ? `已经 ${formatDuration(health.lastSuccessMinutes)} 没能连上微信`
+    : "启动后一直没能连上微信";
+  const queued = health.pendingMessages > 0
+    ? `有 ${health.pendingMessages} 条消息还堆在队列里没发出去。`
+    : "这段时间的提醒可能一条都没送到。";
+  banner.innerHTML = `<strong>微信连接可能已经断开</strong><p>艾迪显示正在运行，但${silentFor}。${queued}</p>`
+    + '<button id="channel-warning-action" type="button">连接微信</button>';
+  banner.classList.remove("hidden");
+  $("#channel-warning-action").addEventListener("click", () => openWeChatLogin());
 }
 
 function renderOnboarding(currentSnapshot) {
@@ -258,15 +301,104 @@ function handleOnboardingPrimaryAction() {
 }
 
 async function connectWeChat() {
-  const result = $("#onboarding-action-result");
+  $("#onboarding-action-result").classList.add("hidden");
+  await openWeChatLogin();
+}
+
+const WECHAT_LOGIN_STATUS_TEXT = wechatLoginView.STATUS_TEXT;
+
+async function openWeChatLogin() {
+  wechatLoginOpen = true;
+  renderedQrUrl = "";
+  $("#wechat-login-qr").innerHTML = "";
+  $("#wechat-login-qr").classList.remove("scanned");
+  $("#wechat-login-error").textContent = "";
+  $("#wechat-login-error").classList.add("hidden");
+  $("#wechat-login-status").textContent = WECHAT_LOGIN_STATUS_TEXT.starting;
+  $("#wechat-login-retry").classList.add("hidden");
+  $("#wechat-login-done").classList.remove("hidden");
+  $("#wechat-login-modal").classList.remove("hidden");
+  startWeChatLoginPolling();
   try {
     const response = await api.startWeChatLogin();
-    result.textContent = response.message || "微信登录窗口已打开。完成扫码后回到这里检查。";
-    result.classList.remove("hidden", "error-result");
+    if (response?.wechatLogin) renderWeChatLogin(response.wechatLogin);
   } catch (error) {
-    result.textContent = friendlyUiError(error);
-    result.classList.remove("hidden");
-    result.classList.add("error-result");
+    showWeChatLoginError(friendlyUiError(error));
+  }
+}
+
+function closeWeChatLogin() {
+  wechatLoginOpen = false;
+  stopWeChatLoginPolling();
+  renderedQrUrl = "";
+  $("#wechat-login-qr").innerHTML = "";
+  $("#wechat-login-modal").classList.add("hidden");
+  // Leaving the login polling in the background would keep hitting the network
+  // after the user explicitly closed the dialog.
+  api.cancelWeChatLogin().catch(() => {});
+}
+
+function startWeChatLoginPolling() {
+  stopWeChatLoginPolling();
+  // The main process pushes every state transition, so this is only a safety
+  // net in case a push is missed while the window was hidden.
+  wechatLoginPollTimer = setInterval(async () => {
+    if (!wechatLoginOpen) return;
+    try {
+      renderWeChatLogin(await api.wechatLoginStatus());
+    } catch {
+      // Ignored on purpose: a dropped poll does not invalidate the login.
+    }
+  }, WECHAT_LOGIN_POLL_MS);
+}
+
+function stopWeChatLoginPolling() {
+  if (wechatLoginPollTimer) {
+    clearInterval(wechatLoginPollTimer);
+    wechatLoginPollTimer = null;
+  }
+}
+
+function renderWeChatLogin(state) {
+  if (!state || !wechatLoginOpen) return;
+  const view = wechatLoginView.resolveLoginView(state);
+  if (view.connected) {
+    closeWeChatLogin();
+    showToast("微信已连接。");
+    api.getSnapshot().then(renderSnapshot).catch(() => {});
+    return;
+  }
+  if (view.showQr && view.qrUrl !== renderedQrUrl) {
+    $("#wechat-login-qr").innerHTML = view.qrSvg;
+    renderedQrUrl = view.qrUrl;
+  } else if (!view.showQr) {
+    // Never leave a code the user cannot actually scan.
+    $("#wechat-login-qr").innerHTML = "";
+    renderedQrUrl = "";
+  }
+  $("#wechat-login-qr").classList.toggle("scanned", view.scanned);
+  $("#wechat-login-status").textContent = view.message;
+  $("#wechat-login-retry").classList.toggle("hidden", !view.showRetry);
+  $("#wechat-login-done").classList.toggle("hidden", !view.showDone);
+  showWeChatLoginError(view.error);
+}
+
+function showWeChatLoginError(text) {
+  $("#wechat-login-error").textContent = text || "";
+  $("#wechat-login-error").classList.toggle("hidden", !text);
+}
+
+async function checkWeChatLoginResult() {
+  try {
+    renderSnapshot(await api.refreshOnboarding());
+    if (snapshot?.wechat?.configured) {
+      closeWeChatLogin();
+      showToast("微信已连接。");
+      return;
+    }
+    $("#wechat-login-status").textContent = "还没有收到确认。请在手机上点「确认登录」，或者重新扫一次二维码。";
+  } catch (error) {
+    showWeChatLoginError(friendlyUiError(error));
   }
 }
 

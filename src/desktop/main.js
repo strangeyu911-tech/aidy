@@ -2,7 +2,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
-const { spawn } = require("child_process");
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } = require("electron");
 const dotenv = require("dotenv");
@@ -15,6 +14,7 @@ const { PersonaPackStore } = require("../core/persona-pack-store");
 const { ProviderProfileStore } = require("../core/provider-profile-store");
 const { computeVerificationFingerprint } = require("../core/provider-profile-store");
 const { SupervisionPlanStore } = require("../core/supervision-plan-store");
+const { WechatActivityStore } = require("../core/wechat-activity-store");
 const { createTimelineIntegration } = require("../integrations/timeline");
 const { ZhijiantimeClient, ZhijiantimeSyncService } = require("../integrations/zhijiantime");
 const { BackupService } = require("../services/backup-service");
@@ -42,6 +42,8 @@ const { WindowsTaskService } = require("./windows-task-service");
 const { resolveOnboardingStatus, resolveWeixinAccountStatus } = require("./onboarding-state");
 const { prepareElectronWorkingDirectory } = require("./electron-working-directory");
 const { resolveWechatStatus } = require("./connection-diagnostics");
+const channelHealthView = require("./channel-health-view");
+const { WeixinLoginRunner } = require("./weixin-login-runner");
 const { BRAND, configureElectronBranding } = require("./brand");
 
 const rootDir = path.resolve(__dirname, "..", "..");
@@ -66,8 +68,15 @@ const personaPackStore = new PersonaPackStore({
   filePath: config.personaPackFile,
   packsDirs: [config.personaPacksDir, config.personaPacksUserDir],
 });
+// Read-only here: the bridge child process is the writer. That file is the
+// channel heartbeat, and reading it is what lets the control center notice a
+// bridge that is still alive but no longer reaching WeChat.
+const wechatActivityStore = new WechatActivityStore({ stateDir });
 const profileStore = new ProviderProfileStore({ filePath: config.providerProfilesFile });
 const supervisor = new RuntimeSupervisor({ rootDir, stateDir, logger, profileStore });
+// Login runs in this process so the QR code can be drawn in the control center
+// instead of a detached terminal window.
+const weixinLoginRunner = new WeixinLoginRunner({ config, onUpdate: () => publishSnapshot() });
 const credentialVault = new CredentialVault({ filePath: config.credentialVaultFile });
 const diagnosticCapture = new DiagnosticCapture({ filePath: config.diagnosticCaptureFile });
 const providerCatalog = new ProviderCatalog();
@@ -139,7 +148,6 @@ let mainWindow = null;
 let tray = null;
 let quitting = false;
 let shutdownStarted = false;
-let wechatLoginProcess = null;
 let codeBuddyStatus = { state: "not_checked", label: "尚未检查 WorkBuddy" };
 
 if (!app.requestSingleInstanceLock()) {
@@ -272,6 +280,8 @@ function registerIpc() {
   ipcMain.handle("desktop:retry", async () => { await supervisor.retry(); return buildSnapshot(); });
   ipcMain.handle("desktop:check-codebuddy", async () => checkCodeBuddyEnvironment());
   ipcMain.handle("desktop:start-wechat-login", () => startWeixinLogin());
+  ipcMain.handle("desktop:wechat-login-status", () => weixinLoginRunner.snapshot());
+  ipcMain.handle("desktop:cancel-wechat-login", () => cancelWeixinLogin());
   ipcMain.handle("desktop:refresh-onboarding", () => buildSnapshot());
   ipcMain.handle("desktop:update-settings", (_event, patch) => updateSettings(patch));
   ipcMain.handle("desktop:create-checkpoint", (_event, payload = {}) => createCheckpointFromUi(payload));
@@ -391,6 +401,8 @@ function buildSnapshot() {
     runtime,
     engine,
     wechat,
+    wechatLogin: weixinLoginRunner.snapshot(),
+    channelHealth: buildChannelHealth(runtime),
     onboarding: resolveOnboardingStatus({ engine, runtime, wechat, settings }),
     codeBuddy: codeBuddyStatus,
     supervision: {
@@ -416,6 +428,33 @@ function buildSnapshot() {
     startupTaskError,
     stateDir,
   };
+}
+
+// The staleness maths lives in ./channel-health-view so it can be unit-tested;
+// this only supplies the bridge's heartbeat file and the queued-message count.
+let channelSilenceSince = null;
+
+function buildChannelHealth(runtime) {
+  const health = channelHealthView.resolveChannelHealth({
+    activity: wechatActivityStore.read(),
+    runtimePhase: runtime?.phase,
+    pendingMessages: countPendingWechatMessages(),
+    silenceSinceMs: channelSilenceSince,
+  });
+  channelSilenceSince = health.silenceSinceMs;
+  return health;
+}
+
+// Read-only on purpose: the bridge owns this queue and
+// SystemMessageQueueStore.load() rewrites the file while coalescing. Two
+// processes writing the same queue is exactly the hazard P2-3 was about.
+function countPendingWechatMessages() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(config.systemMessageQueueFile, "utf8"));
+    return Array.isArray(parsed?.messages) ? parsed.messages.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function resolveNextRandomCheckinMinutes() {
@@ -517,38 +556,13 @@ async function checkCodeBuddyEnvironment() {
 }
 
 function startWeixinLogin() {
-  if (wechatLoginProcess && wechatLoginProcess.exitCode == null) {
-    return { started: false, alreadyRunning: true, message: "微信登录窗口已经打开。完成扫码后关闭窗口，再回到这里检查。" };
-  }
-  if (process.platform !== "win32") {
-    return { started: false, message: `请在 ${BRAND.chinese} 项目目录运行 npm run login。` };
-  }
-  const command = process.env.ComSpec || "cmd.exe";
-  const packaged = app.isPackaged || /(?:^|[\\/])app\.asar(?:[\\/]|$)/i.test(rootDir);
-  const loginScript = path.join(rootDir, "bin", "cyberboss.js");
-  const loginArgs = packaged
-    ? ["/d", "/k", `${quoteWindowsCommandArg(process.execPath)} ${quoteWindowsCommandArg(loginScript)} login`]
-    : ["/d", "/k", "npm.cmd", "run", "login"];
-  const loginEnv = { ...process.env };
-  if (packaged) loginEnv.ELECTRON_RUN_AS_NODE = "1";
-  const child = spawn(command, loginArgs, {
-    cwd: packaged && process.resourcesPath && !/app\.asar/i.test(process.resourcesPath) ? process.resourcesPath : rootDir,
-    env: loginEnv,
-    detached: true,
-    windowsHide: false,
-    stdio: "ignore",
-  });
-  wechatLoginProcess = child;
-  child.once("exit", () => {
-    if (wechatLoginProcess === child) wechatLoginProcess = null;
-    publishSnapshot();
-  });
-  child.unref();
-  return { started: true, message: "微信登录窗口已打开。完成扫码后关闭窗口，再回到这里检查。" };
+  const result = weixinLoginRunner.start();
+  return { ...result, wechatLogin: weixinLoginRunner.snapshot() };
 }
 
-function quoteWindowsCommandArg(value) {
-  return `"${String(value || "").replace(/"/g, '""')}"`;
+function cancelWeixinLogin() {
+  const result = weixinLoginRunner.cancel();
+  return { ...result, wechatLogin: weixinLoginRunner.snapshot() };
 }
 
 async function listOpenCodeCatalog(profile, secrets, options = {}) {

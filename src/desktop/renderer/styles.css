@@ -234,3 +234,20 @@ main { max-width: 1040px; margin: 0 auto; padding: 28px 34px 60px; }
 .quiet-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-size: 13px; }
 .quiet-config input[type="time"] { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: #fff; }
 @media (max-width: 900px) { .status-grid, .form-grid, .model-guide-steps { grid-template-columns: 1fr; } .mode-card { align-items: flex-start; } .profile-card { align-items: flex-start; flex-direction: column; } }
+.wechat-login-modal { width: 420px; text-align: center; }
+.wechat-login-modal h3 { margin: 0 0 6px; }
+.wechat-login-status { margin: 0 0 14px; font-size: 13px; }
+.qr-frame { width: 268px; height: 268px; margin: 0 auto; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 16px; background: #fff; overflow: hidden; }
+/* The QR stays dark-on-light on purpose: inverting it breaks scanning. */
+.qr-frame svg { width: 244px; height: 244px; display: block; }
+.qr-frame.scanned { box-shadow: 0 0 0 3px var(--green-soft) inset; }
+.qr-frame.scanned svg { opacity: .35; filter: grayscale(1); }
+.qr-hint { margin: 14px 0 0; font-size: 12px; }
+.qr-error { margin: 12px 0 0; padding: 10px 12px; border: 1px solid #e2bdb7; border-radius: 11px; background: #fbeeec; color: var(--danger); font-size: 12px; line-height: 1.6; }
+.wechat-login-modal .modal-actions { justify-content: center; }
+.modal-actions .primary-action { background: var(--green); border-color: var(--green); color: #fff; }
+/* Amber, not red: a silent channel is suspicious, not a confirmed failure. */
+.channel-warning { border: 1px solid #d9bd72; background: #fff8e7; color: #6b5527; border-radius: 16px; padding: 16px 18px; margin-bottom: 16px; }
+.channel-warning strong { display: block; margin-bottom: 6px; }
+.channel-warning p { margin: 0 0 10px; line-height: 1.6; }
+.channel-warning button { border: 1px solid #c0a053; border-radius: 10px; background: #fff; color: #6b5527; padding: 8px 12px; font-weight: 700; }
