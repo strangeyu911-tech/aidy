@@ -32,6 +32,8 @@ const {
 } = require("./command-registry");
 const { CheckinConfigStore, parseCheckinRangeMinutes, resolveCheckinPreset, resolveDefaultCheckinRange } = require("./checkin-config-store");
 const { DesktopStateStore } = require("./desktop-state-store");
+const { createChannelHealth } = require("./channel-health");
+const { WechatActivityStore } = require("./wechat-activity-store");
 const { extractExplicitCheckpoint } = require("./explicit-checkpoint");
 const { inferContextualCheckpoint } = require("./contextual-checkpoint");
 const { SupervisionPlanStore } = require("./supervision-plan-store");
@@ -69,6 +71,7 @@ const SESSION_EXPIRED_ERRCODE = -14;
 const RETRY_DELAY_MS = 2_000;
 const BACKOFF_DELAY_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+const MAX_CONSECUTIVE_TIMEOUTS = 5;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
 const PROACTIVE_RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000];
@@ -139,6 +142,8 @@ class CyberbossApp {
     this.nonInterruptibleBoundaryCount = 0;
     this.bridgeControlServer = null;
     this.runtimeState = null;
+    this.channelHealth = dependencies.channelHealth || createChannelHealth({ maxConsecutiveTimeouts: MAX_CONSECUTIVE_TIMEOUTS });
+    this.wechatActivityStore = dependencies.wechatActivityStore || (config.stateDir ? new WechatActivityStore({ stateDir: config.stateDir }) : null);
   }
 
   async ensureRuntimeAdapter() {
@@ -301,7 +306,52 @@ class CyberbossApp {
           }
           pollMeta = this.channelAdapter.consumeLastPollMeta?.() || {};
           assertWeixinUpdateResponse(response);
-          consecutiveFailures = 0;
+
+          // Decide the liveness outcome from BOTH available signals: the explicit
+          // `timedOut` marker on the response object and the consumed poll meta.
+          // Either may be the only available one, so treat a timeout as soon as
+          // either reports it. A timeout is NOT a successful round trip.
+          const observationTimedOut = Boolean(response && response.timedOut === true)
+            || Boolean(pollMeta && pollMeta.outcome === "timeout");
+          const outcome = observationTimedOut ? "timeout" : "success";
+          const pollLatencyMs = pollStartedMonotonicMs
+            ? Math.max(0, Math.round(monotonicNowMs() - Number(pollStartedMonotonicMs)))
+            : null;
+
+          const healthBefore = this.channelHealth.snapshot().state;
+          this.channelHealth.observe({ outcome, latencyMs: pollLatencyMs });
+          const healthAfter = this.channelHealth.snapshot();
+          this.wechatActivityStore?.record({
+            snapshot: healthAfter,
+            outcome,
+            latencyMs: pollLatencyMs,
+            error: null,
+          });
+          if (healthBefore !== "degraded" && healthAfter.state === "degraded") {
+            this.logRuntimeDiagnostic?.("poll.degraded", {
+              reason: healthAfter.reason,
+              consecutiveTimeouts: healthAfter.consecutiveTimeouts,
+              consecutiveFailures: healthAfter.consecutiveFailures,
+              degradedSince: healthAfter.degradedSince,
+            });
+          } else if (healthBefore === "degraded" && healthAfter.state === "healthy") {
+            this.logRuntimeDiagnostic?.("poll.recovered", { reason: healthAfter.reason });
+          }
+
+          // A real round trip (including a zero-message idle success) resets the
+          // failure counter for the existing retry/backoff contract. A timeout
+          // must NOT reset it — that was the original silent-failure bug.
+          if (outcome === "success") {
+            consecutiveFailures = 0;
+          }
+
+          // A wedged channel that only ever times out (and therefore never backs
+          // off via the error path) must not hot-loop the CPU at the short 2s
+          // poll timeout. Back off once health is degraded.
+          if (healthAfter.state === "degraded") {
+            await sleep(BACKOFF_DELAY_MS);
+          }
+
           const messages = sortInboundUpdateMessages(Array.isArray(response?.msgs) ? response.msgs : []);
           let parserAcceptedCount = 0;
           let parserRejectedCount = 0;
@@ -368,6 +418,25 @@ class CyberbossApp {
               retryDelayMs,
             }));
           }
+
+          const healthBefore = this.channelHealth.snapshot().state;
+          this.channelHealth.observe({ outcome: "failure", latencyMs: null, error });
+          const healthAfter = this.channelHealth.snapshot();
+          this.wechatActivityStore?.record({
+            snapshot: healthAfter,
+            outcome: "failure",
+            latencyMs: null,
+            error,
+          });
+          if (healthBefore !== "degraded" && healthAfter.state === "degraded") {
+            this.logRuntimeDiagnostic?.("poll.degraded", {
+              reason: healthAfter.reason,
+              consecutiveTimeouts: healthAfter.consecutiveTimeouts,
+              consecutiveFailures: healthAfter.consecutiveFailures,
+              degradedSince: healthAfter.degradedSince,
+            });
+          }
+
           if (isSessionExpiredError(error)) {
             throw Object.assign(new Error("The WeChat session has expired. 微信登录已过期，请在艾迪里点「连接微信」重新扫码。"), { code: "WECHAT_SESSION_EXPIRED" });
           }

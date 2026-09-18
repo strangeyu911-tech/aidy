@@ -228,7 +228,14 @@ async function getUpdates({ baseUrl, token, getUpdatesBuf = "", timeoutMs = DEFA
     return parsed;
   } catch (error) {
     if (error instanceof Error && (error.name === "AbortError" || String(error.message || "").includes("aborted"))) {
-      return attachPollMeta({ ret: 0, msgs: [], get_updates_buf: getUpdatesBuf }, {
+      // NOTE: this is NOT a successful round trip, even though it looks like a
+      // normal `{ ret: 0, msgs: [] }` empty idle poll. The long-poll only hit
+      // our own client timeout. The `timedOut: true` flag exists so callers
+      // (the app.js poll loop) can distinguish it from a real empty success and
+      // must NOT treat it as liveness or reset any failure counters. The
+      // `get_updates_buf` cursor and `msgs: []` are preserved so the loop keeps
+      // working unchanged.
+      return attachPollMeta({ ret: 0, msgs: [], get_updates_buf: getUpdatesBuf, timedOut: true }, {
         outcome: "timeout",
         errorClass: "timeout",
         httpStatus: null,

@@ -106,6 +106,8 @@ test("timeout remains the existing synthetic empty response but is distinguishab
   }, async () => {
     const result = await getUpdates({ baseUrl: "https://example.test", token: "private-token", getUpdatesBuf: "cursor" });
     assert.deepEqual(result.msgs, []);
+    // The explicit marker lets callers tell this apart from a real empty poll.
+    assert.equal(result.timedOut, true);
     assert.deepEqual(readPollMeta(result), {
       outcome: "timeout",
       errorClass: "timeout",
@@ -115,6 +117,14 @@ test("timeout remains the existing synthetic empty response but is distinguishab
       parseSuccess: null,
     });
     assert.equal(classifyPollError({}, readPollMeta(result)), "timeout");
+  });
+});
+
+test("a real empty poll (HTTP 200, zero messages) is NOT flagged as timed out", async () => {
+  await withFetch(async () => response(JSON.stringify({ ret: 0, msgs: [], get_updates_buf: "cursor-next" })), async () => {
+    const result = await getUpdates({ baseUrl: "https://example.test", token: "private-token", getUpdatesBuf: "cursor" });
+    assert.equal(result.timedOut, undefined);
+    assert.equal(readPollMeta(result).outcome, "success");
   });
 });
 
