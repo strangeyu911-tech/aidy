@@ -133,6 +133,37 @@
 
 ---
 
+## 独立复核（2026-09-19）
+
+不引用本文的自述，回到源码逐项查标记复验这 14 项（27 条断言全部通过）。其中两项断言过于宽松、不足以作为证据，已单独取证：
+
+- **P1-2**：`DEFAULT_QUIET_HOURS = { enabled: true, start: "23:00", end: "07:00" }`（原为硬编码 00:00–06:00），
+  且 `supervision-policy.js` 注释明确「by default, protect every checkpoint source」，另有 `QUIET_LATE_GRACE_MS = 6h`。
+  **界面控件确实存在**（`index.html:207`：启停勾选 + 两个 `type="time"` 输入；`renderer.js:628` 经 `updateSettings` 保存）——
+  只检查存储层白名单会漏判：本项的原话是「用户没有控制权」，**有控件才算改好**。
+- **P1-3**：`DEFAULT_PRESET_ID = "standard"`、`DEFAULT_MIN/MAX_INTERVAL_MS = 15/45 分钟`（原 3–60）；档位别名支持中文「标准」。
+
+## 本次整改**未覆盖**的两块（如实记录）
+
+1. **`2026-09-07-aidy-project-tools-capability-parity.md` 的 release boundary 未完全闭合。**
+   该文结论为 `source fixed only / packaged build pending / current user runtime not fixed`：
+   - 「packaged build pending」——**已由本次重新出包解决**；
+   - 但该文同时写明「**ReportScheduler、timeline launcher 与 stale queue 没有被本轮源码修复**」，
+     这几项**不在** 9-18 产品审计的 14 项之内，本次也未处理。
+
+2. **本机运行时仍未出现「报表 / 日记已恢复」的证据**（2026-09-19 实测）：
+   - `reportEnabled` 现为 `true`（9-07 审计时为 `false`，且当时环境安全审核不允许修改）—— 这一项自行恢复；
+   - `quietHours` 在持久化 state 中**不存在** → 走代码默认 23:00–07:00（功能正常，只是从未显式设置过）；
+   - **日记最后一份仍是 `2026-08-25.md`**；
+   - `reports/index.json` 现为 **0 条**（审计当日为全部 pending/running）；
+   - `supervision-plan.json` **296 条 / 200 KB**（与审计当日同数，未增长）。
+
+   这正对应产品审计 §5 的开放问题 #3（「`reportEnabled=false` 与 6 天没写日记，是你不想要还是它坏了」）—— **需要产品主判断，不是工程问题**。
+
+3. 产品审计 §5 的另外 3 个开放问题（随机查岗默认密度、提醒入口以桌面还是微信为主、是否保留多用户场景）仍为**待决策项**，不属整改范围。
+
+---
+
 ## 遗留事项（不阻塞发布）
 
 1. **`dist-quarantine/` 可整体删除**。确认当前产物验证通过且不再需要这些证据之后即可清理，不影响构建或发布。
