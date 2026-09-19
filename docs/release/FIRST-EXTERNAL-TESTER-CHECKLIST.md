@@ -86,6 +86,29 @@
 `⨯ [safe-delete]…` 之后没有其它错误，且 `dist/` 下的产物时间戳是新的。另外 `&&` 断链
 会让末尾的 `desktop:sync-start-menu` 静默不执行，需要手动补跑 `npm run desktop:sync-start-menu`。
 
+## 发布 Release 与上传附件
+
+`gh release create` 的流程是「先建草稿 → 逐个上传附件 → 最后发布」，所以上传中途中断会留下一个
+**正文完好、附件为空**的草稿。附件可以后补（`node ./scripts/upload-release-assets.js`），不必重建 Release。
+草稿也不出现在 `GET /releases/tags/{tag}` 里（该端点对草稿返回 404），要取草稿得走列表接口。
+
+仓库同时有 `origin`（个人 fork）和 `upstream`（原仓库）时，**`gh` 默认会解析到 upstream**。
+所有 `gh` 命令都必须显式带 `--repo <owner>/<repo>`（或先一次性 `gh repo set-default`）。
+`gh release create` 还应带 `--verify-tag` —— 否则万一解析到错误的仓库，就会**在别人的仓库上建标签和 Release**。
+
+上传大附件请用 `node ./scripts/upload-release-assets.js <tag> <文件...>`，不要用 `gh release upload`：
+
+- `gh` 的 Go 客户端 `TLSHandshakeTimeout` 默认 10s，而国内访问 GitHub 的新建 TLS 握手常达 10~25s，会直接失败；
+- 握手成功但吞吐极低时，`gh` **没有超时保护**，会静默挂住且零产出（实测盲等 1.5 小时）；
+- `gh` 上传**不打印任何进度**，无法区分「正在慢慢传」和「已经死了」。
+
+`upload-release-assets.js` 对应的措施：每 10s 打印进度、进度停滞 3 分钟即判定卡死并重试（最多 3 次）、
+上传前先对 `uploads.github.com` 预建连接把握手成本前置，并在结束后**用 API 复核服务端记录的大小**
+而不采信上传器的自述。
+
+两点硬约束：GitHub 的附件上传**不支持断点续传**（只有一个裸 `POST`，无 `Content-Range`），
+中断就必须从零重来；**同名附件会导致 422**，所以脚本每次上传前会先删掉同名旧附件。
+
 ## 失败记录
 
 - 安装包文件名和 SHA-256：
