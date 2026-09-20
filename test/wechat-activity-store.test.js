@@ -127,9 +127,11 @@ test("a corrupt / truncated file is tolerated without throwing", () => {
   fs.writeFileSync(filePath, '{ "state": "degraded", "reason": "timeout", "lastSuc'); // truncated JSON
 
   const reader = new WechatActivityStore({ filePath });
-  // Must not throw; must return a normalized default-shaped snapshot.
+  // Must not throw; must return a normalized default-shaped snapshot. The default
+  // is "unverified", not "healthy": an unreadable heartbeat file is no evidence
+  // that the channel ever worked.
   const snap = reader.read();
-  assert.equal(snap.state, "healthy");
+  assert.equal(snap.state, "unverified");
   assert.equal(snap.reason, null);
   assert.equal(snap.consecutiveTimeouts, 0);
   assert.equal(snap.schemaVersion, 1);
@@ -147,4 +149,24 @@ test("no raw error text is persisted; only a bounded error class category", () =
   // could contain a token.
   assert.equal(recorded.lastErrorClass, "network");
   assert.equal(recorded.lastOutcome, "failure");
+});
+
+test("an unverified state survives the disk round trip instead of being flattened to healthy", () => {
+  const dir = makeTempDir();
+  const writer = new WechatActivityStore({ stateDir: dir });
+  // The exact shape a bridge that has only ever failed writes: `recordedAt` is
+  // refreshed on every failed poll while `lastSuccessAt` stays null forever.
+  // Collapsing this to `healthy` on disk is what let the desktop tell the user
+  // WeChat was connected while nothing was being delivered.
+  const recorded = writer.record({
+    snapshot: { state: "unverified", reason: null, consecutiveTimeouts: 0, consecutiveFailures: 1, lastSuccessAt: null },
+    outcome: "failure",
+  });
+  assert.equal(recorded.state, "unverified");
+
+  const reader = new WechatActivityStore({ stateDir: dir });
+  const readBack = reader.read();
+  assert.equal(readBack.state, "unverified");
+  assert.equal(readBack.lastSuccessAt, null);
+  assert.ok(readBack.recordedAt, "recordedAt is still written on failure");
 });

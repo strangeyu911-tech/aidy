@@ -10,14 +10,72 @@ const {
 
 const now = () => new Date("2026-09-01T00:00:00.000Z");
 
+const LIVE_CHANNEL = { hasHeartbeat: true, stale: false, lastSuccessMinutes: 1, state: "healthy" };
+const NEVER_HEARTBEAT_CHANNEL = { hasHeartbeat: false, stale: false, lastSuccessMinutes: null, state: "unknown" };
+const SILENT_CHANNEL = { hasHeartbeat: false, stale: true, lastSuccessMinutes: null, state: "unknown" };
+const WENT_QUIET_CHANNEL = { hasHeartbeat: true, stale: true, lastSuccessMinutes: 95, state: "healthy" };
+
 test("healthy bridge and configured account report WeChat connected", () => {
   const result = resolveWechatStatus(
     { phase: "running", error: null },
     { configured: true, state: "ready", accountId: "account-1" },
+    LIVE_CHANNEL,
   );
   assert.equal(result.state, "connected");
   assert.equal(result.label, "已连接");
   assert.equal(result.diagnostic, null);
+});
+
+test("a running supervisor with no heartbeat never claims WeChat is connected", () => {
+  // The supervisor phase only says the process is up. Reporting "已连接" off the
+  // phase alone is how Aidy told the user everything was fine while the bridge
+  // had never reached WeChat.
+  const connecting = resolveWechatStatus(
+    { phase: "running", error: null },
+    { configured: true, state: "ready" },
+    NEVER_HEARTBEAT_CHANNEL,
+  );
+  assert.equal(connecting.state, "connecting");
+  assert.equal(connecting.label, "正在连接");
+  assert.equal(connecting.diagnostic, null);
+  assert.notEqual(connecting.label, "已连接");
+
+  const silent = resolveWechatStatus(
+    { phase: "running", error: null },
+    { configured: true, state: "ready" },
+    SILENT_CHANNEL,
+  );
+  assert.equal(silent.state, "degraded");
+  assert.equal(silent.label, "连接异常");
+  assert.equal(silent.diagnostic.code, "WECHAT_CHANNEL_SILENT");
+  assert.equal(silent.diagnostic.nextAction, "wechat_login");
+  assert.match(silent.detail, /一直没有成功连上微信/);
+});
+
+test("a channel that used to work and then went quiet is reported as degraded with the duration", () => {
+  const result = resolveWechatStatus(
+    { phase: "running", error: null },
+    { configured: true, state: "ready" },
+    WENT_QUIET_CHANNEL,
+  );
+  assert.equal(result.state, "degraded");
+  assert.equal(result.label, "连接异常");
+  assert.match(result.detail, /1 小时/);
+  assert.match(result.detail, /消息可能收不到/);
+});
+
+test("a missing channel snapshot is treated as unverified rather than connected", () => {
+  const result = resolveWechatStatus({ phase: "running", error: null }, { configured: true, state: "ready" });
+  assert.equal(result.state, "connecting");
+  assert.notEqual(result.state, "connected");
+});
+
+test("the quiet phase is held to the same liveness standard as running", () => {
+  const live = resolveWechatStatus({ phase: "quiet", error: null }, { configured: true }, LIVE_CHANNEL);
+  assert.equal(live.state, "connected");
+
+  const dead = resolveWechatStatus({ phase: "quiet", error: null }, { configured: true }, SILENT_CHANNEL);
+  assert.equal(dead.state, "degraded");
 });
 
 test("missing desktop WeChat and desktop WeChat login codes have distinct remediation", () => {

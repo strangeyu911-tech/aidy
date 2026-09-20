@@ -13,6 +13,18 @@ function makeClock(start = 1_000) {
   };
 }
 
+test("a fresh channel is unverified, never healthy, until a round trip succeeds", () => {
+  const health = createChannelHealth({ maxConsecutiveTimeouts: 5 });
+  const snap = health.snapshot();
+  // Liveness is the one thing this machine must never assume. A channel that has
+  // not completed a single round trip reporting "healthy" is what let Aidy tell
+  // the user WeChat was connected while the bridge had never reached it.
+  assert.equal(snap.state, "unverified");
+  assert.equal(snap.lastSuccessAt, null);
+  assert.equal(snap.everSucceeded, false);
+  assert.equal(snap.degradedSince, null);
+});
+
 test("a zero-message success counts as liveness and clears degraded", () => {
   const clock = makeClock();
   const health = createChannelHealth({ maxConsecutiveTimeouts: 5, now: clock.now });
@@ -30,16 +42,18 @@ test("a zero-message success counts as liveness and clears degraded", () => {
   assert.equal(snap.consecutiveFailures, 0);
   assert.equal(snap.degradedSince, null);
   assert.equal(snap.lastSuccessLatencyMs, 123);
+  assert.equal(snap.everSucceeded, true);
   assert.ok(typeof snap.lastSuccessAt === "string" && snap.lastSuccessAt.length > 0);
 });
 
 test("N consecutive timeouts flip to degraded exactly at the threshold", () => {
   const health = createChannelHealth({ maxConsecutiveTimeouts: 5 });
 
-  // N-1 timeouts stay healthy.
+  // N-1 timeouts must not degrade. They stay "unverified" rather than "healthy",
+  // because a run of failed attempts proves nothing about liveness.
   for (let i = 0; i < 4; i += 1) {
     health.observe({ outcome: "timeout" });
-    assert.equal(health.snapshot().state, "healthy", `timeout #${i + 1} should stay healthy`);
+    assert.equal(health.snapshot().state, "unverified", `timeout #${i + 1} should not degrade`);
   }
   assert.equal(health.snapshot().consecutiveTimeouts, 4);
 
@@ -55,7 +69,7 @@ test("a single transient failure does not degrade", () => {
   const health = createChannelHealth({ maxConsecutiveTimeouts: 5 });
   health.observe({ outcome: "failure", error: new Error("socket reset") });
   const snap = health.snapshot();
-  assert.equal(snap.state, "healthy");
+  assert.equal(snap.state, "unverified");
   assert.equal(snap.reason, null);
   assert.equal(snap.consecutiveFailures, 1);
 });
@@ -119,7 +133,7 @@ test("failures only degrade at the threshold, with reason 'failure'", () => {
   const health = createChannelHealth({ maxConsecutiveTimeouts: 5 });
   for (let i = 0; i < 4; i += 1) {
     health.observe({ outcome: "failure" });
-    assert.equal(health.snapshot().state, "healthy");
+    assert.equal(health.snapshot().state, "unverified");
   }
   health.observe({ outcome: "failure" });
   const snap = health.snapshot();

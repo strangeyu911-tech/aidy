@@ -3,7 +3,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { resolveChannelHealth, CHANNEL_STALE_AFTER_MS } = require("../src/desktop/channel-health-view");
+const {
+  resolveChannelHealth,
+  CHANNEL_STALE_AFTER_MS,
+  CHANNEL_NEVER_HEARTBEAT_STALE_AFTER_MS,
+} = require("../src/desktop/channel-health-view");
 
 const NOW = Date.parse("2026-09-19T02:00:00.000Z");
 
@@ -51,7 +55,7 @@ test("a silent channel is only reported while Aidy claims to be running", () => 
   }
 });
 
-test("a running bridge that has never produced a heartbeat gets a grace period", () => {
+test("a running bridge that has never produced a heartbeat gets a short grace period", () => {
   const first = resolveChannelHealth({ activity: null, runtimePhase: "running", nowMs: NOW });
   assert.equal(first.state, "unknown");
   assert.equal(first.hasHeartbeat, false);
@@ -70,14 +74,41 @@ test("a running bridge that has never produced a heartbeat gets a grace period",
   assert.equal(minuteLater.stale, false);
   assert.equal(minuteLater.silenceSinceMs, NOW, "the clock must not restart on every snapshot");
 
-  // Past the threshold it finally reports silence.
+  // Past the threshold it finally reports silence. The never-succeeded case uses
+  // a much shorter grace than the went-quiet case: a healthy first poll lands in
+  // ~20s, so minutes of nothing is already abnormal, and the old 30-minute wait
+  // just left the user staring at a connected-looking UI.
   const tooLate = resolveChannelHealth({
     activity: null,
     runtimePhase: "running",
-    nowMs: NOW + CHANNEL_STALE_AFTER_MS,
+    nowMs: NOW + CHANNEL_NEVER_HEARTBEAT_STALE_AFTER_MS,
     silenceSinceMs: first.silenceSinceMs,
   });
   assert.equal(tooLate.stale, true);
+  assert.ok(
+    CHANNEL_NEVER_HEARTBEAT_STALE_AFTER_MS < CHANNEL_STALE_AFTER_MS,
+    "the never-succeeded grace must be shorter than the went-quiet one",
+  );
+});
+
+test("a heartbeat-less activity file that keeps recording failures still has no heartbeat", () => {
+  // This is the exact on-disk shape that used to be rendered as connected: the
+  // bridge wrote `recordedAt` on every failed poll while `lastSuccessAt` stayed
+  // null forever.
+  const activity = {
+    recordedAt: new Date(NOW - 1_000).toISOString(),
+    lastSuccessAt: null,
+    state: "unverified",
+    reason: null,
+    consecutiveTimeouts: 0,
+    consecutiveFailures: 1,
+    lastOutcome: "failure",
+    lastErrorClass: "unknown",
+  };
+  const health = resolveChannelHealth({ activity, runtimePhase: "running", nowMs: NOW });
+  assert.equal(health.hasHeartbeat, false);
+  assert.equal(health.state, "unknown");
+  assert.equal(health.lastSuccessAt, null);
 });
 
 test("the grace clock resets when the bridge stops or finally reports in", () => {

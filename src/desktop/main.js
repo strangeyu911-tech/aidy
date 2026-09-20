@@ -406,11 +406,15 @@ function buildSnapshot() {
     ? { ...supervisorRuntime, phase: "configuration_required" }
     : supervisorRuntime;
   const engine = buildEngineSnapshot({ activeProfile: profileStore.getActive(), runtime });
+  // Built before `wechat` on purpose: the WeChat card has to be able to see the
+  // channel heartbeat, otherwise it claims "已连接" off the supervisor phase
+  // alone while nothing is actually being delivered.
+  const channelHealth = buildChannelHealth(runtime);
   const wechat = resolveWechatStatus(runtime, resolveWeixinAccountStatus({
     config,
     listAccounts: listWeixinAccounts,
     loadAccount: loadWeixinAccount,
-  }));
+  }), channelHealth);
   return {
     settings,
     personaPack: personaPackStore.snapshot(),
@@ -418,7 +422,7 @@ function buildSnapshot() {
     engine,
     wechat,
     wechatLogin: weixinLoginRunner.snapshot(),
-    channelHealth: buildChannelHealth(runtime),
+    channelHealth,
     onboarding: resolveOnboardingStatus({ engine, runtime, wechat, settings }),
     codeBuddy: codeBuddyStatus,
     supervision: {

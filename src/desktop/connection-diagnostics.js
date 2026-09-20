@@ -28,6 +28,11 @@ function knownDiagnostic(code, capability) {
       return configuration("检测到多个微信账号，艾迪无法确定要连接哪一个。", "设置默认微信账号后重试。", "inspect_logs");
     case "WECHAT_SESSION_EXPIRED":
       return configuration("微信连接已过期。", "点击“连接微信”，重新扫码登录。", "wechat_login");
+    case "WECHAT_CHANNEL_SILENT":
+      // Reached the network but stopped hearing anything back, or never heard
+      // anything at all. The most common real cause is an expired login, which
+      // also happens to be the only thing the user can actually fix.
+      return configuration("微信连接没有生效。", "点击“连接微信”重新扫码；如果刚启动，请稍等一两分钟再重试。", "wechat_login");
     case "WECHAT_CLIENT_NOT_RUNNING":
       return configuration("电脑版微信没有运行。", "请先启动电脑版微信，然后重新检查。", "retry");
     case "WECHAT_CLIENT_NOT_LOGGED_IN":
@@ -51,14 +56,30 @@ function knownDiagnostic(code, capability) {
   }
 }
 
-function resolveWechatStatus(runtime = {}, account = {}) {
-  if (["running", "quiet"].includes(runtime.phase)) {
+/**
+ * Decide what to say about WeChat while the supervisor claims to be running.
+ *
+ * The supervisor phase says the *process* is up; it says nothing about whether
+ * a single message ever made it to WeChat. Reporting "已连接" off the phase alone
+ * is exactly how Aidy told the user everything was fine while the bridge had
+ * been dead for an hour, so liveness is now a precondition:
+ *
+ *  - a heartbeat and not stale -> connected
+ *  - no heartbeat yet, inside the grace window -> connecting (honest, quiet)
+ *  - no heartbeat past the grace window, or a stale heartbeat -> degraded
+ *  - no channel data handed in at all -> connecting, never connected
+ */
+function resolveWechatStatus(runtime = {}, account = {}, channelHealth = null) {
+  const phase = runtime?.phase;
+  if (phase === "running" || phase === "quiet") {
+    const liveness = resolveChannelLiveness(channelHealth);
+    if (liveness) return { ...account, ...liveness };
     return { ...account, state: "connected", label: "已连接", detail: "微信回复和监管安排已启用。", diagnostic: null };
   }
-  if (runtime.phase === "starting") {
+  if (phase === "starting") {
     return { ...account, state: "connecting", label: "正在连接", detail: "正在连接微信和模型服务。", diagnostic: null };
   }
-  if (runtime.phase === "error" && account.configured) {
+  if (phase === "error" && account.configured) {
     const diagnostic = createConnectionDiagnostic(runtime.error);
     if (!WECHAT_CAPABILITIES.has(diagnostic.capability)) {
       return {
@@ -79,6 +100,43 @@ function resolveWechatStatus(runtime = {}, account = {}) {
   }
   if (!account.configured) return { ...account, diagnostic: null };
   return { ...account, state: "ready", label: "已登录", detail: "启动艾迪后会连接微信。", diagnostic: null };
+}
+
+function resolveChannelLiveness(channelHealth) {
+  if (!channelHealth || typeof channelHealth !== "object") {
+    // No evidence was supplied. Claiming a connection we cannot see would be the
+    // original bug all over again, so report the honest intermediate state.
+    return { state: "connecting", label: "正在连接", detail: "艾迪已启动，正在等待微信心跳。", diagnostic: null };
+  }
+
+  if (channelHealth.hasHeartbeat === true && !channelHealth.stale) return null;
+
+  const silent = channelHealth.hasHeartbeat === true
+    ? `已经有 ${formatMinutes(channelHealth.lastSuccessMinutes)}没能连上微信`
+    : "启动后一直没有成功连上微信";
+
+  if (!channelHealth.stale) {
+    // Only reachable without a heartbeat -- a present-and-recent one returned null
+    // above -- so say what is actually happening rather than glueing two clauses
+    // into "艾迪已启动，启动后一直没有…".
+    return { state: "connecting", label: "正在连接", detail: "艾迪已启动，正在等待微信心跳。消息可能还收不到。", diagnostic: null };
+  }
+
+  const diagnostic = createConnectionDiagnostic({ code: "WECHAT_CHANNEL_SILENT", capability: "wechat" });
+  return {
+    state: "degraded",
+    label: "连接异常",
+    detail: `${silent}，消息可能收不到。`,
+    diagnostic,
+  };
+}
+
+function formatMinutes(minutes) {
+  if (!Number.isFinite(minutes)) return "一段时间";
+  if (minutes < 1) return "不到 1 分钟";
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 小时`;
 }
 
 function configuration(summary, repairAction, nextAction) {

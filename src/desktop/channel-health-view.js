@@ -14,6 +14,14 @@ const MS_PER_MINUTE = 60_000;
 // network is gone -- not that the user simply had nothing to say.
 const CHANNEL_STALE_AFTER_MS = 30 * MS_PER_MINUTE;
 
+// The never-succeeded case gets a much shorter grace than the went-quiet case.
+// Half an hour was borrowed from the "used to work" threshold, but a channel
+// that has never worked has no good state to fall back to: a healthy first poll
+// lands in ~20s, so a few minutes of nothing is already abnormal. Waiting the
+// full 30 minutes just left the user staring at "connecting" while every
+// message went nowhere.
+const CHANNEL_NEVER_HEARTBEAT_STALE_AFTER_MS = 3 * MS_PER_MINUTE;
+
 /**
  * @param {object}   options
  * @param {object}   options.activity       Parsed `wechat-activity.json`.
@@ -33,6 +41,10 @@ function resolveChannelHealth({
 } = {}) {
   const source = activity && typeof activity === "object" ? activity : {};
   const lastSuccessAt = normalizeIso(source.lastSuccessAt);
+  // A heartbeat requires a recorded liveness timestamp, NOT just a `recordedAt`.
+  // A bridge that has only ever failed still writes `recordedAt` on every
+  // failure, and treating that as a heartbeat is how "never worked" used to be
+  // rendered as a healthy channel.
   const hasHeartbeat = Boolean(normalizeIso(source.recordedAt)) && lastSuccessAt !== null;
   const silentMs = hasHeartbeat ? Math.max(0, nowMs - Date.parse(lastSuccessAt)) : null;
   // Stopped or broken states are already explained by the hero card and the error
@@ -49,10 +61,13 @@ function resolveChannelHealth({
   }
 
   const neverHeartbeat = claimsRunning && !hasHeartbeat && nextSilenceSince !== null
-    && nowMs - nextSilenceSince >= CHANNEL_STALE_AFTER_MS;
+    && nowMs - nextSilenceSince >= CHANNEL_NEVER_HEARTBEAT_STALE_AFTER_MS;
   const stale = claimsRunning && (hasHeartbeat ? silentMs >= CHANNEL_STALE_AFTER_MS : neverHeartbeat);
 
   return {
+    // `healthy` requires a heartbeat; the persisted `state` alone is not enough,
+    // because a bridge that has never succeeded reports `unverified` and must not
+    // be shown as connected.
     state: hasHeartbeat ? (source.state === "degraded" ? "degraded" : "healthy") : "unknown",
     reason: hasHeartbeat && (source.reason === "timeout" || source.reason === "failure") ? source.reason : null,
     lastSuccessAt: hasHeartbeat ? lastSuccessAt : null,
@@ -77,4 +92,8 @@ function toNonNegativeInt(value) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-module.exports = { resolveChannelHealth, CHANNEL_STALE_AFTER_MS };
+module.exports = {
+  resolveChannelHealth,
+  CHANNEL_STALE_AFTER_MS,
+  CHANNEL_NEVER_HEARTBEAT_STALE_AFTER_MS,
+};

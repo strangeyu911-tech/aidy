@@ -10,17 +10,24 @@
 // state transition into or out of `degraded` is always written immediately so
 // the user never waits 30s to learn the channel died or recovered.
 //
+// The `state` field is persisted verbatim across all three channel states. It
+// used to be collapsed to a boolean (degraded vs everything-else-is-healthy),
+// which meant "never completed a single round trip" was written to disk as
+// `state: "healthy"`. Every reader that trusted the field reported a dead
+// channel as connected. `unverified` now survives the round trip.
+//
 // No raw error text is ever persisted. If a textual error detail is stored it is
 // passed through the WeChat adapter's redaction helper first.
 
 const path = require("path");
 const { AtomicJsonStore } = require("./atomic-json-store");
+const { CHANNEL_STATES, UNVERIFIED_STATE } = require("./channel-health");
 
 const ACTIVITY_WRITE_THROTTLE_MS = 30_000;
 
 const DEFAULT_ACTIVITY = Object.freeze({
   schemaVersion: 1,
-  state: "healthy",
+  state: UNVERIFIED_STATE,
   reason: null,
   consecutiveTimeouts: 0,
   consecutiveFailures: 0,
@@ -49,7 +56,7 @@ class WechatActivityStore {
     // still writes the recovery promptly instead of thinking it was always
     // healthy.
     const initial = this.store.read();
-    this._lastState = initial.state === "degraded" ? "degraded" : "healthy";
+    this._lastState = normalizeActivityState(initial.state);
     this._lastWriteAt = null;
   }
 
@@ -96,11 +103,17 @@ function safeErrorClass(error) {
   return "unknown";
 }
 
+// An unrecognised or missing state normalizes to `unverified`, never `healthy`:
+// the safe default for "we do not know that this channel works" is to admit it.
+function normalizeActivityState(value) {
+  return CHANNEL_STATES.includes(value) ? value : UNVERIFIED_STATE;
+}
+
 function normalizeActivity(value) {
   const input = value && typeof value === "object" ? value : {};
   return {
     schemaVersion: 1,
-    state: input.state === "degraded" ? "degraded" : "healthy",
+    state: normalizeActivityState(input.state),
     reason: input.reason === "timeout" || input.reason === "failure" ? input.reason : null,
     consecutiveTimeouts: normalizeNonNegativeInt(input.consecutiveTimeouts),
     consecutiveFailures: normalizeNonNegativeInt(input.consecutiveFailures),
