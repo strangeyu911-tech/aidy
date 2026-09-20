@@ -3,24 +3,17 @@
 // Dependency-free Aidy app-icon generator.
 //
 // The brand geometry/rasterizer lives in src/desktop/brand-icon.js (the single
-// source of truth, also used by the runtime tray icon). This file owns only the
-// PNG and ICO encoders and the CLI. The rasterizer there returns BGRA; the
-// encoders need RGBA, so we swap the channels once here. That keeps the emitted
-// assets/icon.png and assets/icon.ico byte-identical to before the refactor.
+// source of truth, also used by the runtime tray icon in main.js). This file
+// owns only the RGBA view, the PNG and ICO encoders, and the CLI. The
+// rasterizer there returns BGRA; the encoders need RGBA, so we swap the
+// channels once here. That keeps the emitted assets/icon.png and
+// assets/icon.ico identical to what the tray icon draws at runtime.
 
 const zlib = require("node:zlib");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const {
-  rasterizeBrandIcon,
-  roundRectContains,
-  circleContains,
-  distanceToSegment,
-  smileContains,
-  buildSmilePoints,
-  BRAND_ICON_UNITS,
-} = require("../src/desktop/brand-icon");
+const { rasterizeBrandIcon } = require("../src/desktop/brand-icon");
 
 // Swap BGRA (rasterizer native) to RGBA (what the PNG/ICO encoders expect).
 function bgraToRgba(bgra) {
@@ -36,7 +29,7 @@ function bgraToRgba(bgra) {
 
 // RGBA view of the brand mark, matching the encoder contract. Mirrors the
 // rasterizer's output (the channel swap is a bijection, so pixels are identical
-// to the pre-refactor rasterizer).
+// to the runtime tray raster).
 function rasterizeIcon(size, supersample = 4) {
   return bgraToRgba(rasterizeBrandIcon(size, supersample));
 }
@@ -199,15 +192,9 @@ if (require.main === module) {
 }
 
 module.exports = {
-  BRAND_ICON_UNITS,
   bgraToRgba,
   rasterizeIcon,
   rasterizeBrandIcon,
-  roundRectContains,
-  circleContains,
-  distanceToSegment,
-  smileContains,
-  buildSmilePoints,
   crc32,
   pngChunk,
   encodePNG,

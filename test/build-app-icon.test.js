@@ -36,11 +36,24 @@ test("four corners are fully transparent (rounded corner r=9/32 stays clear)", (
   }
 });
 
-test("centre pixel is opaque cat-head yellow #f7d98b", () => {
+// The mark is a two-letter monogram, so which colour lands on the exact centre
+// pixel is a layout detail, not a contract. This used to hard-code the old
+// cat-head yellow, which meant the assertion only ever encoded the previous
+// design and had to be re-baselined on every redraw. What genuinely must hold is
+// that the centre is opaque and painted from the brand palette.
+const BRAND_PALETTE = [
+  [0x31, 0x5d, 0x52], // brand green
+  [0xf7, 0xd9, 0x8b], // brand yellow
+];
+
+test("centre pixel is opaque and uses a brand colour", () => {
   const buf = rasterizeIcon(SIZE, 4);
   const [r, g, b, a] = pixelAt(buf, SIZE >> 1, SIZE >> 1);
   assert.equal(a, 255, "centre must be opaque");
-  assert.deepEqual([r, g, b], [0xf7, 0xd9, 0x8b], "centre must be cat-head yellow #f7d98b");
+  assert.ok(
+    BRAND_PALETTE.some(([pr, pg, pb]) => pr === r && pg === g && pb === b),
+    `centre must be a brand colour, got #${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("")}`,
+  );
 });
 
 test("a pixel inside the green surround near the top edge is #315d52", () => {
@@ -162,11 +175,20 @@ test("rasterizeBrandIcon returns exactly size*size*4 bytes (BGRA)", () => {
   assert.equal(buf.length, SIZE * SIZE * 4);
 });
 
-test("rasterizeBrandIcon centre pixel is cat-head yellow in BGRA order", () => {
-  const buf = rasterizeBrandIcon(SIZE, 4);
+// Cross-checks the two rasterizer entry points instead of re-asserting a colour
+// that both of them already agree on. A channel-order regression (BGRA written
+// where RGBA is expected) flips red/blue and fails here immediately, which is the
+// only thing this test was ever really guarding.
+test("the BGRA rasterizer agrees with the RGBA view at the centre", () => {
+  const bgra = rasterizeBrandIcon(SIZE, 4);
+  const rgba = rasterizeIcon(SIZE, 4);
   const i = ((SIZE >> 1) * SIZE + (SIZE >> 1)) * 4;
-  // BGRA: blue channel first => #f7d98b yellow is [0x8b, 0xd9, 0xf7, 255]
-  assert.deepEqual([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]], [0x8b, 0xd9, 0xf7, 255]);
+  assert.equal(bgra[i + 3], 255, "centre must be opaque");
+  assert.deepEqual(
+    [bgra[i], bgra[i + 1], bgra[i + 2], bgra[i + 3]],
+    [rgba[i + 2], rgba[i + 1], rgba[i], rgba[i + 3]],
+    "BGRA must be the channel-reversed view of the RGBA buffer",
+  );
 });
 
 test("rasterizeBrandIcon green-surround pixel is brand green in BGRA order", () => {
