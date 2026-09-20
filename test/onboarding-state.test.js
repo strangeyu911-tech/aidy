@@ -14,6 +14,27 @@ test("onboarding keeps model, WeChat, and start as separate actionable steps", (
   assert.equal(resolveOnboardingStatus({ engine: { configurationRequired: false, activeProfile: { id: "p1" } }, runtime: { phase: "running" }, wechat: { configured: true } }).complete, true);
 });
 
+test("completed onboarding does not claim a WeChat connection it cannot see", () => {
+  const base = {
+    engine: { configurationRequired: false, activeProfile: { id: "p1" } },
+    runtime: { phase: "running" },
+    settings: { lastStableState: "running" },
+  };
+
+  const live = resolveOnboardingStatus({ ...base, wechat: { configured: true, state: "connected" } });
+  assert.equal(live.complete, true);
+  assert.match(live.description, /微信已连接/);
+
+  const silent = resolveOnboardingStatus({ ...base, wechat: { configured: true, state: "connecting" } });
+  assert.equal(silent.complete, true);
+  assert.doesNotMatch(silent.description, /微信已连接/);
+  assert.match(silent.description, /还没有连上/);
+
+  const degraded = resolveOnboardingStatus({ ...base, wechat: { configured: true, state: "degraded" } });
+  assert.doesNotMatch(degraded.description, /微信已连接/);
+  assert.match(degraded.description, /还没有连上/);
+});
+
 test("WeChat account status distinguishes missing, incomplete, and ready accounts", () => {
   const config = {};
   assert.equal(resolveWeixinAccountStatus({ config, listAccounts: () => [], loadAccount: () => null }).state, "not_configured");

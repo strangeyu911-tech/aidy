@@ -183,7 +183,10 @@ function renderSnapshot(nextSnapshot) {
   snapshot = nextSnapshot;
   const desired = snapshot.settings.desiredState;
   const phase = snapshot.runtime.phase;
-  const display = connectionStatusView.stateDisplay(phase, desired, snapshot.onboarding, snapshot.runtime.error);
+  // `snapshot.wechat` is passed through on purpose: the hero card must not claim
+  // "微信已连接" from the supervisor phase alone, or it contradicts the WeChat tile
+  // right below it (which reads the real channel heartbeat).
+  const display = connectionStatusView.stateDisplay(phase, desired, snapshot.onboarding, snapshot.runtime.error, snapshot.wechat);
   $("#state-title").textContent = display.title;
   $("#state-description").textContent = display.description;
   $("#header-state").textContent = display.short;

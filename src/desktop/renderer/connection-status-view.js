@@ -5,9 +5,19 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function createConnectionStatusView() {
   "use strict";
 
-  function stateDisplay(phase, desired, onboarding = null, error = null) {
+  function stateDisplay(phase, desired, onboarding = null, error = null, wechat = null) {
     if (onboarding?.complete && ["running", "quiet"].includes(phase)) {
-      return { title: "艾迪已配置完成并正在运行", short: "运行中", description: "AI 模型已连接，微信已连接。现在可以关闭控制中心，艾迪会继续在托盘运行。" };
+      // "Setup is complete" is not the same claim as "WeChat is connected". This
+      // card used to assert the second one from the supervisor phase alone, so
+      // the hero read "微信已连接" while the WeChat tile directly below it said
+      // it had never heard a heartbeat. Observed liveness decides the wording.
+      if (wechat?.state === "connected") {
+        return { title: "艾迪已配置完成并正在运行", short: "运行中", description: "AI 模型已连接，微信已连接。现在可以关闭控制中心，艾迪会继续在托盘运行。" };
+      }
+      if (wechat?.state === "degraded") {
+        return { title: "艾迪正在运行，微信没有连上", short: "微信异常", description: "AI 模型已连接，但微信没有连上，消息可能收不到。请点「连接微信」重新扫码。" };
+      }
+      return { title: "艾迪已启动，正在连接微信", short: "连接中", description: "AI 模型已连接，微信还在连接中。连上之后消息才会通。" };
     }
     if (onboarding?.step === "wechat" && phase !== "starting") {
       return { title: "还差微信连接", short: "待连接", description: "模型已经准备好。连接微信后，才能接收和回复消息。" };

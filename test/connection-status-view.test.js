@@ -43,3 +43,33 @@ test("renderer fallback never pretends to know an unknown repair", () => {
   assert.match(result.repairAction, /查看最近日志/);
   assert.equal(result.buttonAction, "");
 });
+
+// The hero card used to assert "微信已连接" from the supervisor phase alone, so it
+// contradicted the WeChat tile directly below it (which reads the channel
+// heartbeat) whenever the bridge was silent. These four cases pin the contract:
+// the hero card may only claim a connection the channel actually reported.
+test("hero card claims WeChat only when the channel reports it connected", () => {
+  const onboarding = { complete: true };
+  const running = ["running", "quiet"];
+
+  for (const phase of running) {
+    const connected = stateDisplay(phase, "running", onboarding, null, { state: "connected" });
+    assert.equal(connected.title, "艾迪已配置完成并正在运行");
+    assert.match(connected.description, /微信已连接/);
+
+    const connecting = stateDisplay(phase, "running", onboarding, null, { state: "connecting" });
+    assert.doesNotMatch(connecting.description, /微信已连接/);
+    assert.match(connecting.description, /还在连接中|正在连接/);
+    assert.equal(connecting.short, "连接中");
+
+    const degraded = stateDisplay(phase, "running", onboarding, null, { state: "degraded" });
+    assert.doesNotMatch(degraded.description, /微信已连接/);
+    assert.match(degraded.description, /没有连上/);
+    assert.equal(degraded.short, "微信异常");
+
+    // No evidence at all must not be read as success either.
+    const unknown = stateDisplay(phase, "running", onboarding, null, undefined);
+    assert.doesNotMatch(unknown.description, /微信已连接/);
+    assert.equal(unknown.short, "连接中");
+  }
+});

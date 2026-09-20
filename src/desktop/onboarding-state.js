@@ -24,13 +24,21 @@ function resolveOnboardingStatus({ engine, runtime, wechat, settings } = {}) {
   if (!modelReady) return { step: "model", complete: false, title: "先连接一个你能使用的模型", description: "完成模型连接测试并激活后，下一步是连接微信。" };
   if (!wechat?.configured) return { step: "wechat", complete: false, title: "连接微信", description: "模型已经准备好。请扫码登录微信，艾迪才能接收和回复消息。" };
   if (!running && !hasRunBefore) return { step: "start", complete: false, title: "启动艾迪", description: "模型和微信都已准备好，启动后艾迪才会开始工作。" };
+  // A configured account is not a live channel. `wechat` here is the resolved
+  // status from connection-diagnostics, which only reports "connected" once the
+  // bridge has actually completed a round trip, so it is safe to lean on.
+  const wechatLive = wechat?.state === "connected";
   return {
     step: "complete",
     complete: true,
     title: running ? "艾迪已配置完成并正在运行" : "艾迪已配置完成",
-    description: running
-      ? "AI 模型已连接，微信已连接。现在可以关闭控制中心，艾迪会继续在托盘运行。"
-      : "AI 模型和微信均已连接。当前艾迪已停止，可随时启动。",
+    description: wechatLive
+      ? (running
+        ? "AI 模型已连接，微信已连接。现在可以关闭控制中心，艾迪会继续在托盘运行。"
+        : "AI 模型和微信均已连接。当前艾迪已停止，可随时启动。")
+      : (running
+        ? "AI 模型已连接，微信还没有连上。现在可以关闭控制中心，艾迪会继续在托盘重试。"
+        : "AI 模型已连接，但微信还没有连上。启动艾迪后它会继续尝试连接微信。"),
   };
 }
 
