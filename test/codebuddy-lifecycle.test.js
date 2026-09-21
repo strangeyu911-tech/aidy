@@ -173,6 +173,66 @@ test("a nonterminal overall turn timeout resets only the ordinary persisted sess
   await adapter.close();
 });
 
+test("a proactive turn reusing the user's binding never resets the shared session", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-lifecycle-system-turn-"));
+  const { adapter, calls } = createHarness({
+    root,
+    clientOverrides: {
+      async prompt() {
+        calls.push("prompt");
+        throw Object.assign(new Error("stream ended without a correlated terminal"), {
+          code: "CODEBUDDY_START_TIMEOUT",
+          diagnostic: {
+            method: "session/prompt",
+            timeoutKind: "overall_turn",
+            stage: "streaming_nonterminal",
+            sseEventCount: 4,
+            terminalEventSeen: false,
+            lastEventType: "assistant",
+          },
+        });
+      },
+    },
+  });
+  const events = [];
+  adapter.onEvent((event) => events.push(event));
+
+  // Route A: the proactive turn shares the user's binding key, so the runtime
+  // has to be told it is a proactive turn instead of inferring it from a key
+  // suffix. Without that, this timeout would clear the shared session and the
+  // user's next turn would start from scratch.
+  await adapter.sendTurn({
+    bindingKey: "binding",
+    workspaceRoot: "D:\\CyberBoss",
+    text: "系统查岗",
+    metadata: { systemTurn: true },
+  });
+  await waitFor(() => events.some((event) => event.type === "runtime.turn.failed"));
+
+  assert.equal(adapter.getSessionStore().getThreadIdForWorkspace("binding", "D:\\CyberBoss"), "session-1");
+  await adapter.close();
+});
+
+test("an HTTP rejection does not tear the transport down or rotate the connection", async () => {
+  const lifecycle = [];
+  let call = 0;
+  const client = new CodeBuddyClient({
+    endpoint: "http://127.0.0.1:45050",
+    servicePassword: "gateway-secret",
+    transportGenerationId: "generation-1",
+    onLifecycle: (event) => lifecycle.push(event),
+    fetchImpl: async () => {
+      call += 1;
+      if (call === 1) return { ok: true, status: 200, async text() { return JSON.stringify({ connectionId: "connection-1", sessionToken: "session-token" }); } };
+      return { ok: false, status: 503, async text() { return ""; } };
+    },
+  });
+  await client.connect();
+  await assert.rejects(client.prompt({ sessionId: "session-1", text: "hello" }), (error) => error.code === "CODEBUDDY_CONNECTION_LOST");
+  assert.equal(client.connectionId, "connection-1");
+  assert.deepEqual(lifecycle.map((event) => event.type), ["connected"]);
+});
+
 test("CodeBuddyClient reports disconnect and rotates generation only on a later reconnect", async () => {
   const lifecycle = [];
   let call = 0;
@@ -181,10 +241,10 @@ test("CodeBuddyClient reports disconnect and rotates generation only on a later 
     servicePassword: "gateway-secret",
     transportGenerationId: "generation-1",
     onLifecycle: (event) => lifecycle.push(event),
-    fetchImpl: async (_url, options) => {
+    fetchImpl: async () => {
       call += 1;
       if (call === 1 || call === 3) return { ok: true, status: 200, async text() { return JSON.stringify({ connectionId: `connection-${call}`, sessionToken: "session-token" }); } };
-      return { ok: false, status: 503, async text() { return ""; } };
+      throw new Error("socket hang up");
     },
   });
   await client.connect();

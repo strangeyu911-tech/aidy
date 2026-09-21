@@ -5,6 +5,42 @@ const os = require("os");
 const path = require("path");
 
 const { CyberbossApp } = require("../src/core/app");
+const { SystemMessageDispatcher } = require("../src/core/system-message-dispatcher");
+const { buildActionRequest } = require("../src/adapters/runtime/shared/action-evidence");
+
+test("a proactive turn reads as a log entry while keeping the JSON action contract", () => {
+  const dispatcher = new SystemMessageDispatcher({
+    queueStore: {},
+    config: { workspaceId: "default", workspaceRoot: "D:\\CyberBoss" },
+    accountId: "acc-1",
+  });
+  const prepared = dispatcher.buildPreparedMessage({
+    id: "supervision:random:one",
+    senderId: "user-1",
+    text: "指尖时光今日仍为空，已催办",
+    createdAt: "2026-09-22T12:00:00.000Z",
+  });
+
+  assert.equal(prepared.provider, "system");
+  assert.match(prepared.text, /系统查岗/);
+  assert.match(prepared.text, /用户没有说话/);
+  assert.match(prepared.text, /背景：/);
+  assert.match(prepared.text, /指尖时光今日仍为空/);
+  assert.match(prepared.text, /\{"action":"silent"\}/);
+  assert.match(prepared.text, /\{"action":"send_message","message"/);
+  // The command-body frame is what made the model read its own history back as
+  // instructions and drift into a command register in user replies.
+  assert.doesNotMatch(prepared.text, /SYSTEM ACTION MODE/);
+  assert.doesNotMatch(prepared.text, /^Trigger:$/m);
+  // `action-evidence` derives its request from this text by keyword. The value is
+  // pinned to the frame this replaced ("markdown" trips the mutation regex in
+  // both), so swapping the wording does not silently re-arm the action-claim
+  // guard for check-ins.
+  assert.deepEqual(buildActionRequest(prepared.text), {
+    requiresEvidence: true,
+    requestedTargets: ["00]"],
+  });
+});
 
 test("system messages bypass normal inbound wrapping", async () => {
   const prepared = await CyberbossApp.prototype.prepareIncomingMessageForRuntime.call({}, {

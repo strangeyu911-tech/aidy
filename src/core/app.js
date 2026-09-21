@@ -898,9 +898,17 @@ class CyberbossApp {
       const sendTurn = typeof this.runtimeAdapter.sendTurn === "function"
         ? this.runtimeAdapter.sendTurn.bind(this.runtimeAdapter)
         : this.runtimeAdapter.sendTextTurn.bind(this.runtimeAdapter);
-      const runtimeBindingKey = prepared.provider === "system"
-        ? buildSystemRuntimeBindingKey(bindingKey)
-        : bindingKey;
+      /*
+       * Route A root fix: a proactive (system) turn runs in the *same* session
+       * as the user's turns. This previously appended `::system` to the binding
+       * key, which gave proactive turns their own ACP session — and therefore
+       * their own history, so a later user turn had no idea what had already
+       * been sent and greeted the user again. `systemTurn` is now carried
+       * explicitly so the runtime keeps its non-terminal-timeout protection
+       * without relying on the binding-key suffix.
+       */
+      const runtimeBindingKey = bindingKey;
+      const systemTurn = prepared.provider === "system";
       if (activeRecord) activeRecord.stage = "runtime_send";
       const turn = await sendTurn({
         bindingKey: runtimeBindingKey,
@@ -915,6 +923,7 @@ class CyberbossApp {
           activeProfileId: activeProfile.id,
           actionRequestText: prepared.originalText || prepared.text || "",
           visionUsage: runtimeTurn.usageAttributions,
+          systemTurn,
         },
         turnCorrelation,
       });
@@ -960,7 +969,7 @@ class CyberbossApp {
       } else {
         this.streamDelivery.queueReplyTargetForThread(turn.threadId, replyTarget);
       }
-      if (prepared.provider === "system" && prepared.systemMessage?.id) {
+      if (systemTurn && prepared.systemMessage?.id) {
         this.systemMessageByRunKey.set(buildRunKey(turn.threadId, turn.turnId), {
           ...prepared.systemMessage,
           __bindingKey: bindingKey,
@@ -3004,11 +3013,6 @@ function buildScopeKey(bindingKey, workspaceRoot) {
     return "";
   }
   return `${normalizedBindingKey}::${normalizedWorkspaceRoot}`;
-}
-
-function buildSystemRuntimeBindingKey(bindingKey) {
-  const normalized = normalizeText(bindingKey);
-  return normalized ? `${normalized}::system` : normalized;
 }
 
 function compareProactiveMessages(left, right) {

@@ -259,6 +259,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
   const turnBindings = [];
   const queuedBindings = [];
   const runtimeBindingKeys = [];
+  const runtimeSystemTurnFlags = [];
   const order = [];
   const appLike = {
     activeTurnRecords: new Map(),
@@ -283,6 +284,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
       },
       async sendTextTurn(args) {
         runtimeBindingKeys.push(args.bindingKey);
+        runtimeSystemTurnFlags.push(args.metadata?.systemTurn);
         return { threadId: "thread-1", turnId: "turn-1" };
       },
       getSessionStore() {
@@ -340,7 +342,10 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
     },
   }]);
   assert.deepEqual(queuedBindings, []);
-  assert.deepEqual(runtimeBindingKeys, ["binding-1::system"]);
+  // Route A: a proactive turn reuses the user's binding key so it lands in the
+  // same session, and it says so explicitly instead of via a key suffix.
+  assert.deepEqual(runtimeBindingKeys, ["binding-1"]);
+  assert.deepEqual(runtimeSystemTurnFlags, [true]);
   assert.deepEqual(order, ["begin", "typing"]);
 });
 

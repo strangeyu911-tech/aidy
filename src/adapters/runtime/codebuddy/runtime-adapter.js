@@ -70,6 +70,9 @@ function createCodeBuddyRuntimeAdapter({
   let closed = false;
   let liveIdentity = "";
   let agentCapabilities = {};
+  // A gateway-side wedged run survives `session/new`, so repeated non-terminal
+  // turn timeouts escalate to restarting the managed process.
+  let consecutiveNonterminalTimeouts = 0;
 
   function invalidateAttachments({ reason = "lifecycle", generationId = "" } = {}) {
     const nextGenerationId = normalizeText(generationId);
@@ -183,6 +186,13 @@ function createCodeBuddyRuntimeAdapter({
         allowedTools: capabilityMode === "developer"
           ? (Array.isArray(config.codebuddyAllowedTools) ? config.codebuddyAllowedTools : null)
           : supervisorAllowedTools,
+        // Supervisor mode intentionally blocks tool use, so let the managed
+        // process resolve that itself instead of asking and waiting. The
+        // interactive approval round trip is what previously wedged the channel:
+        // a dropped permission response left the run in `waiting_for_permission`
+        // and every later prompt was parked in a queue forever. Developer mode
+        // keeps asking, because the control center is meant to answer.
+        permissionMode: capabilityMode === "developer" ? "default" : "dontAsk",
       });
       client = clientFactory({
         endpoint: started.endpoint,
@@ -337,13 +347,13 @@ function createCodeBuddyRuntimeAdapter({
           }),
         }, message);
         if (outcome) {
-          void sendPermissionResponse({
+          void respondToPermissionResilient({
             requestId: message?.id ?? event.payload.requestId,
             outcome,
             sessionId: threadId,
             turnCorrelation,
             phase: "automatic_denial",
-          }).catch(() => {});
+          });
         }
         continue;
       }
@@ -359,16 +369,42 @@ function createCodeBuddyRuntimeAdapter({
         payload: runtimePayload({ ...event.payload, workspaceRoot, turnCorrelation }),
       }, message);
       if (event?.type === "runtime.approval.denied" && event.payload.response?.outcome) {
-        void sendPermissionResponse({
+        void respondToPermissionResilient({
           requestId: message?.id ?? event.payload.requestId,
           outcome: event.payload.response.outcome,
           sessionId: threadId,
           turnCorrelation,
           phase: "automatic_denial",
-        }).catch(() => {});
+        });
       }
     }
     return events;
+  }
+
+  // A permission response that never lands strands the gateway run in
+  // `waiting_for_permission`: every later prompt is queued behind it and never
+  // runs, and the bridge only sees a non-terminal stream that times out. The
+  // response is best-effort by design, so retry once before giving up, and never
+  // drop the failure silently.
+  async function respondToPermissionResilient({ requestId, outcome, sessionId, turnCorrelation, phase }) {
+    const attempts = 2;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await sendPermissionResponse({ requestId, outcome, sessionId, turnCorrelation, phase });
+        return;
+      } catch (error) {
+        if (attempt >= attempts) {
+          logDiagnostic("runtime.approval.response.abandoned", diagnosticContext(turnCorrelation, {
+            phase,
+            attempts,
+            requestIdFingerprint: fingerprintIdentifier(normalizeRpcId(requestId)),
+            error: summarizeDiagnosticError(error),
+          }));
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
   }
 
   async function sendPermissionResponse({ requestId, outcome, sessionId, turnCorrelation, phase, signal }) {
@@ -407,15 +443,47 @@ function createCodeBuddyRuntimeAdapter({
     }
   }
 
-  function resetOrdinarySessionAfterTimeout({ bindingKey, workspaceRoot, threadId, turnCorrelation, error, controller }) {
+  // A wedged run lives on the managed CLI's internal per-workspace session, not
+  // on the ACP-facing session id, so `session/new` cannot clear it. Only a fresh
+  // managed process does — which is exactly what the observed incident needed.
+  async function restartManagedGateway() {
+    const currentClient = client;
+    const currentHost = host;
+    client = null;
+    host = null;
+    ready = null;
+    readyPromise = null;
+    attachedSessions.clear();
+    try { await Promise.resolve(currentClient?.disconnect?.()); } catch {}
+    try { await Promise.resolve(currentHost?.stop?.()); } catch {}
+    logDiagnostic("runtime.managed_restart.completed", diagnosticContext("", {
+      phase: "managed_gateway_restart",
+    }));
+  }
+
+  function resetOrdinarySessionAfterTimeout({ bindingKey, workspaceRoot, threadId, turnCorrelation, error, controller, systemTurn = false }) {
     const diagnostic = error?.diagnostic;
-    if (controller?.signal?.aborted || normalizeText(bindingKey).endsWith("::system")) return false;
-    if (normalizeText(error?.code) !== "CODEBUDDY_START_TIMEOUT"
-      || normalizeText(diagnostic?.timeoutKind) !== "overall_turn"
-      || diagnostic?.terminalEventSeen !== false) return false;
+    // A proactive turn must never reset the session that the user's turns share
+    // with it: clearing the binding here would make the next user turn start a
+    // brand-new session and drop the conversation. `systemTurn` carries that
+    // fact explicitly now that proactive turns reuse the user's binding key;
+    // the `::system` suffix is kept as a fallback for pre-existing bindings.
+    const abortOrSystem = Boolean(controller?.signal?.aborted)
+      || systemTurn === true
+      || normalizeText(bindingKey).endsWith("::system");
+    const nonterminalTimeout = normalizeText(error?.code) === "CODEBUDDY_START_TIMEOUT"
+      && normalizeText(diagnostic?.timeoutKind) === "overall_turn"
+      && diagnostic?.terminalEventSeen === false;
+    if (abortOrSystem || !nonterminalTimeout) {
+      consecutiveNonterminalTimeouts = 0;
+      return false;
+    }
     sessionStore.clearThreadIdForScope(bindingKey, workspaceRoot, runtimeScope());
     sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
     attachedSessions.delete(threadId);
+    consecutiveNonterminalTimeouts += 1;
+    const escalate = consecutiveNonterminalTimeouts >= 2;
+    if (escalate) consecutiveNonterminalTimeouts = 0;
     logDiagnostic("runtime.session_migration.reset", diagnosticContext(turnCorrelation, {
       phase: "ordinary_session_recovery",
       bindingKind: "ordinary",
@@ -424,11 +492,13 @@ function createCodeBuddyRuntimeAdapter({
       timeoutStage: normalizeText(diagnostic.stage),
       sseEventCount: nonNegativeInteger(diagnostic.sseEventCount),
       lastEventType: normalizeText(diagnostic.lastEventType),
+      ...(escalate ? { escalation: "managed_gateway_restart" } : {}),
     }));
+    if (escalate) void restartManagedGateway().catch(() => {});
     return true;
   }
 
-  async function runTurn({ bindingKey, threadId, turnId, workspaceRoot, text, controller, turnCorrelation = "", actionRequest = {} }) {
+  async function runTurn({ bindingKey, threadId, turnId, workspaceRoot, text, controller, turnCorrelation = "", actionRequest = {}, systemTurn = false }) {
     const startedAt = Date.now();
     const correlation = normalizeText(turnCorrelation);
     const actionEvidenceLedger = createActionEvidenceLedger(actionRequest);
@@ -491,6 +561,7 @@ function createCodeBuddyRuntimeAdapter({
         replyByteLength: Buffer.byteLength(replyText, "utf8"),
         replyEmpty: !replyText.trim(),
       }));
+      consecutiveNonterminalTimeouts = 0;
       emit({
         type: "runtime.turn.completed",
         payload: runtimePayload(completionPayload),
@@ -504,6 +575,7 @@ function createCodeBuddyRuntimeAdapter({
         turnCorrelation: correlation,
         error,
         controller,
+        systemTurn,
       });
       const failure = mapCodeBuddyFailure(cancelled ? { code: "CANCELLED" } : error, { threadId, turnId, turnCorrelation: correlation });
       logDiagnostic("runtime.turn.failed", diagnosticContext(correlation, {
@@ -637,6 +709,7 @@ function createCodeBuddyRuntimeAdapter({
           controller,
           turnCorrelation: correlation,
           actionRequest,
+          systemTurn: metadata?.systemTurn === true,
         })
           .finally(() => {
             signal?.removeEventListener?.("abort", abortFromParent);

@@ -235,13 +235,25 @@ class StreamDelivery {
       const target = this.replyTargetByBindingKey.get(linked.bindingKey);
       state.replyTarget = target;
     }
-    if (!state.deferredReplyPrefix) {
-      const prefix = this.deferredReplyPrefixByBindingKey.get(linked.bindingKey) || "";
-      if (prefix) {
-        state.deferredReplyPrefix = prefix;
-        this.deferredReplyPrefixByBindingKey.delete(linked.bindingKey);
-      }
+  }
+
+  /**
+   * A deferred system reply is only ever prepended to a *user* reply, so it is
+   * adopted lazily on the plain-reply path instead of at attach time. Proactive
+   * turns now share the user's binding key (route A), and adopting at attach
+   * time let a proactive turn swallow the batch: the batch is already drained
+   * from the store when the prefix is set, so consuming it there loses it.
+   */
+  adoptBindingDeferredPrefix(state) {
+    if (state.deferredReplyPrefix || !state.bindingKey) {
+      return;
     }
+    const prefix = this.deferredReplyPrefixByBindingKey.get(state.bindingKey) || "";
+    if (!prefix) {
+      return;
+    }
+    state.deferredReplyPrefix = prefix;
+    this.deferredReplyPrefixByBindingKey.delete(state.bindingKey);
   }
 
   captureTurnCompletionText(state, text) {
@@ -326,6 +338,8 @@ class StreamDelivery {
       await this.flushSystemReply(state, { force });
       return;
     }
+
+    this.adoptBindingDeferredPrefix(state);
 
     const pendingDeliveries = collectPendingReplyDeliveries(state, { force });
     if (!pendingDeliveries.length) {

@@ -622,6 +622,54 @@ test("plain reply prepends deferred prefix to the next reply", async () => {
   });
 });
 
+test("a proactive turn sharing the binding does not swallow the user's deferred prefix", async () => {
+  const { sent, streamDelivery, bindingByThreadId } = createHarness();
+  bindingByThreadId.set("thread-9", { bindingKey: "binding-9" });
+  streamDelivery.setReplyTarget("binding-9", {
+    userId: "user-9",
+    contextToken: "ctx-9",
+    provider: "weixin",
+  });
+  streamDelivery.setDeferredReplyPrefix("binding-9", "旧尾段\n\n中间主动联系");
+
+  // Route A: the proactive turn runs on the same thread and binding key as the
+  // user's turns. Adopting the prefix at attach time used to let this turn
+  // consume the batch — the batch is already drained from the store by then, so
+  // the content would be lost for good.
+  streamDelivery.bindReplyTargetForTurn({
+    threadId: "thread-9",
+    turnId: "turn-sys-9",
+    target: { userId: "user-9", contextToken: "ctx-9", provider: "system" },
+  });
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-9",
+    turnId: "turn-sys-9",
+    itemId: "item-sys-9",
+    text: "{\"action\":\"send_message\",\"message\":\"指尖时光还是空的。\"}",
+  });
+
+  assert.deepEqual(sent, [{
+    userId: "user-9",
+    text: "指尖时光还是空的。",
+    contextToken: "ctx-9",
+  }]);
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-9",
+    turnId: "turn-9",
+    itemId: "item-9",
+    text: "我这就去排计划",
+  });
+
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1], {
+    userId: "user-9",
+    text: "旧尾段\n\n中间主动联系\n\n我这就去排计划",
+    contextToken: "ctx-9",
+    preserveBlock: true,
+  });
+});
+
 test("plain reply with deferred prefix is sent as soon as the first item is finalized", async () => {
   const { sent, streamDelivery, bindingByThreadId } = createHarness();
   bindingByThreadId.set("thread-8", { bindingKey: "binding-8" });

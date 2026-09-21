@@ -41,21 +41,36 @@ class SystemMessageDispatcher {
   }
 }
 
+/*
+ * The prose around the trigger is written as a short log entry rather than a
+ * command body, and this is deliberate:
+ *
+ *  - proactive turns now share the user's session (route A), so this text stays
+ *    in the transcript and is read back by every later turn. A short log entry
+ *    is cheap to re-read and does not push the model into a command register,
+ *    which is what made the old "SYSTEM ACTION MODE" frame leak into replies.
+ *  - the JSON action contract itself is unchanged; `stream-delivery` still
+ *    parses exactly one `{"action":...}` object.
+ *  - the wording is kept free of mutation verbs because `action-evidence`
+ *    derives `requiresEvidence` from this text by keyword. A stray 完成/修改
+ *    here would silently switch the action-claim guard on for check-ins.
+ */
 function buildSystemInboundText(text, createdAt = "") {
   const body = normalizeText(text);
   const localTime = formatSystemLocalTime(createdAt);
   const sections = [
-    ...(localTime ? [`[${localTime}]`, ""] : []),
-    "SYSTEM ACTION MODE: internal trigger, not user chat.",
-    "Do any timeline/diary/reminder/whereabouts work in this turn.",
-    "If you act, end with send_message that briefly and naturally reflects what you did or what changed; use silent only if you do nothing.",
-    "Return exactly one JSON object after any tool calls:",
+    ...(localTime ? [`[${localTime}]`] : []),
+    "系统查岗（你自己的主动触达回合，用户没有说话）",
+    "",
+    "可以顺手做的后台工作：时间轴、日记、提醒、定位。",
+    "收尾只输出一个 JSON 对象，用来决定要不要联系用户：",
     "{\"action\":\"silent\"}",
-    "{\"action\":\"send_message\",\"message\":\"<one short natural WeChat message>\"}",
-    "No markdown fences. No reasoning. No text outside the JSON.",
+    "{\"action\":\"send_message\",\"message\":\"<一条自然、简短的微信消息>\"}",
+    "有动作就用 send_message 简短自然地说明你做了什么或有什么变化；什么都没做就用 silent。",
+    "不要 markdown 代码块，不要推理，不要在 JSON 之外写任何文字。",
   ];
   if (body) {
-    sections.push("", "Trigger:", body);
+    sections.push("", "背景：", body);
   }
   return sections.join("\n").trim();
 }
