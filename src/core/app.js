@@ -48,6 +48,7 @@ const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./d
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
 const { DeferredSystemReplyStore } = require("./deferred-system-reply-store");
+const { ProactiveDeliveryLog } = require("./proactive-delivery-log");
 const { coalesceSystemMessages, SystemMessageQueueStore } = require("./system-message-queue-store");
 const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
@@ -111,6 +112,9 @@ class CyberbossApp {
       resolveSupervisionKey: (message) => this.resolveLegacySupervisionKey(message),
     });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
+    this.proactiveDeliveryLog = config.proactiveDeliveryLogFile
+      ? new ProactiveDeliveryLog({ filePath: config.proactiveDeliveryLogFile })
+      : null;
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.desktopStateStore = new DesktopStateStore({ stateDir: config.stateDir });
     this.zhijiantimeClient = new ZhijiantimeClient({
@@ -182,6 +186,7 @@ class CyberbossApp {
       runtimeId: adapter.describe().id,
       logger: this.logger,
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
+      onSystemReplyDelivered: (payload) => this.recordProactiveDelivery(payload),
     });
     adapter.onEvent((event) => {
       this.threadStateStore.applyRuntimeEvent(withUsageProfile(event, this.activeProfile?.id));
@@ -702,6 +707,11 @@ class CyberbossApp {
   }
 
   async enrichIncomingMessageWithZhijiantimeFreshRead(normalized) {
+    const withFreshRead = await CyberbossApp.prototype.applyZhijiantimeFreshRead.call(this, normalized);
+    return CyberbossApp.prototype.injectProactiveDeliveryDigest.call(this, withFreshRead);
+  }
+
+  async applyZhijiantimeFreshRead(normalized) {
     if (!normalized || normalized.provider === "system" || !normalizeText(normalized.text)) {
       return normalized;
     }
@@ -724,6 +734,53 @@ class CyberbossApp {
       ...normalized,
       text: `${normalizeText(normalized.text)}\n\n${result.context}`.trim(),
     };
+  }
+
+  /**
+   * RC1 mitigation: the proactive turns run in their own `system:<senderId>`
+   * scope, so the user-scope transcript never sees what was already sent. Tell
+   * the user turn what the assistant already delivered today, otherwise the
+   * model greets the user again over content that was already handled.
+   *
+   * Source is the delivered text recorded by the delivery path, not the queued
+   * message, so no internal context block can be echoed back into the session.
+   */
+  injectProactiveDeliveryDigest(normalized) {
+    if (!this.proactiveDeliveryLog || !normalized || normalized.provider === "system" || !normalizeText(normalized.text)) {
+      return normalized;
+    }
+    const digest = this.proactiveDeliveryLog.buildUserTurnDigest({ senderId: normalized.senderId });
+    if (!digest?.text) {
+      return normalized;
+    }
+    this.logRuntimeDiagnostic?.("proactive.digest_injected", {
+      turnCorrelation: normalizeText(normalized.turnCorrelation),
+      entryCount: digest.entryCount,
+      charLength: digest.charLength,
+    });
+    return {
+      ...normalized,
+      text: `${normalizeText(normalized.text)}\n\n${digest.text}`.trim(),
+    };
+  }
+
+  /**
+   * Called only after the provider accepted a proactive message. Stores the
+   * model's final text so a later user turn can be told what the user saw.
+   */
+  recordProactiveDelivery({ userId = "", text = "", kind = "", threadId = "" } = {}) {
+    if (kind !== "system_reply") {
+      return null;
+    }
+    const entry = this.proactiveDeliveryLog?.record({ senderId: userId, text, sourceId: threadId });
+    if (entry) {
+      this.logRuntimeDiagnostic?.("proactive.delivery_logged", {
+        userIdFingerprint: fingerprint(userId),
+        charLength: entry.text.length,
+        deliveredAt: entry.deliveredAt,
+      });
+    }
+    return entry;
   }
 
   captureSupervisionArrangement(normalized) {

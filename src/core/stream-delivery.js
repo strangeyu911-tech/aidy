@@ -10,7 +10,7 @@ const {
 const { OutboundMessageBoundary } = require("./outbound-message-boundary");
 
 class StreamDelivery {
-  constructor({ channelAdapter, sessionStore, runtimeId = "", logger, onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
+  constructor({ channelAdapter, sessionStore, runtimeId = "", logger, onDeferredSystemReply, onSystemReplyDelivered, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
     this.channelAdapter = channelAdapter;
     this.outboundBoundary = new OutboundMessageBoundary({ channelAdapter });
     this.sessionStore = sessionStore;
@@ -18,6 +18,7 @@ class StreamDelivery {
     this.logger = logger;
     this.systemReplyPolicy = createSystemReplyPolicy(this.runtimeId);
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
+    this.onSystemReplyDelivered = typeof onSystemReplyDelivered === "function" ? onSystemReplyDelivered : null;
     this.systemReplyRetryScheduleMs = Array.isArray(systemReplyRetryScheduleMs) && systemReplyRetryScheduleMs.length
       ? systemReplyRetryScheduleMs.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0)
       : [1_500, 2_500, 4_000, 6_000];
@@ -505,6 +506,7 @@ class StreamDelivery {
     };
     try {
       await send(initialTarget);
+      this.notifySystemReplyDelivered(state, payload.text, kind, initialTarget);
       return;
     } catch (error) {
       const retryTarget = this.resolveRetriableReplyTarget(initialTarget, error);
@@ -536,6 +538,7 @@ class StreamDelivery {
             provider: retryTarget.provider,
           });
         }
+        this.notifySystemReplyDelivered(state, payload.text, kind, retryTarget);
       } catch (retryError) {
         const deferred = await this.deferSystemReply(state, payload.text, retryError, kind);
         if (deferred) {
@@ -543,6 +546,28 @@ class StreamDelivery {
         }
         throw retryError;
       }
+    }
+  }
+
+  /**
+   * Fires only after the provider accepted the message. A reply that was
+   * deferred for a later context token never reaches this point, so the
+   * delivery log can never claim a message the user has not seen.
+   */
+  notifySystemReplyDelivered(state, text, kind, target) {
+    if (kind !== "system_reply") {
+      return;
+    }
+    try {
+      this.onSystemReplyDelivered?.({
+        threadId: normalizeText(state?.threadId),
+        userId: normalizeText(target?.userId) || normalizeText(state?.replyTarget?.userId),
+        text: normalizeText(text),
+        kind,
+      });
+    } catch (error) {
+      // Delivery logging must never affect the send path.
+      console.warn(`[cyberboss] system reply delivery log failed: ${error?.message || error}`);
     }
   }
 

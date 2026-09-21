@@ -8,7 +8,7 @@ const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
 const DEFERRED_SYSTEM_REPLY_HEADER = "===== 期间模型主动联系 =====";
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
-function createHarness({ sendText, getKnownContextTokens, runtimeId = "" } = {}) {
+function createHarness({ sendText, getKnownContextTokens, runtimeId = "", onSystemReplyDelivered, onDeferredSystemReply } = {}) {
   const sent = [];
   const channelAdapter = {
     async sendText(payload) {
@@ -33,7 +33,13 @@ function createHarness({ sendText, getKnownContextTokens, runtimeId = "" } = {})
     },
   };
 
-  const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore, runtimeId });
+  const streamDelivery = new StreamDelivery({
+    channelAdapter,
+    sessionStore,
+    runtimeId,
+    onSystemReplyDelivered,
+    onDeferredSystemReply,
+  });
   return { sent, streamDelivery, bindingByThreadId };
 }
 
@@ -124,6 +130,93 @@ test("system send_message JSON may be wrapped in a json fence", async () => {
     text: "我来看看你。",
     contextToken: "ctx-2f",
   }]);
+});
+
+test("a delivered system reply is reported to the delivery log exactly once", async () => {
+  const delivered = [];
+  const { sent, streamDelivery } = createHarness({
+    onSystemReplyDelivered: (payload) => delivered.push(payload),
+  });
+  streamDelivery.queueReplyTargetForThread("thread-log-1", {
+    userId: "user-log-1",
+    contextToken: "ctx-log-1",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-log-1",
+    turnId: "turn-log-1",
+    itemId: "item-log-1",
+    text: "{\"action\":\"send_message\",\"message\":\"指尖时光还是空的。\"}",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(delivered, [{
+    threadId: "thread-log-1",
+    userId: "user-log-1",
+    text: "指尖时光还是空的。",
+    kind: "system_reply",
+  }]);
+});
+
+test("a silent system reply and a plain user reply are not reported as delivered proactive messages", async () => {
+  const delivered = [];
+  const { streamDelivery } = createHarness({
+    onSystemReplyDelivered: (payload) => delivered.push(payload),
+  });
+  streamDelivery.queueReplyTargetForThread("thread-log-2", {
+    userId: "user-log-2",
+    contextToken: "ctx-log-2",
+    provider: "system",
+  });
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-log-2",
+    turnId: "turn-log-2",
+    itemId: "item-log-2",
+    text: "{\"action\":\"silent\"}",
+  });
+
+  streamDelivery.queueReplyTargetForThread("thread-log-3", {
+    userId: "user-log-3",
+    contextToken: "ctx-log-3",
+    provider: "weixin",
+  });
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-log-3",
+    turnId: "turn-log-3",
+    itemId: "item-log-3",
+    text: "普通用户回合的回复",
+  });
+
+  assert.deepEqual(delivered, []);
+});
+
+test("a deferred system reply is not reported as delivered", async () => {
+  const delivered = [];
+  const deferred = [];
+  const { streamDelivery } = createHarness({
+    sendText: async () => {
+      throw Object.assign(new Error("sendMessage ret=-2"), { ret: -2 });
+    },
+    getKnownContextTokens: () => ({}),
+    onSystemReplyDelivered: (payload) => delivered.push(payload),
+    onDeferredSystemReply: (payload) => deferred.push(payload),
+  });
+  streamDelivery.queueReplyTargetForThread("thread-log-4", {
+    userId: "user-log-4",
+    contextToken: "ctx-log-4",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-log-4",
+    turnId: "turn-log-4",
+    itemId: "item-log-4",
+    text: "{\"action\":\"send_message\",\"message\":\"这条其实没送到。\"}",
+  });
+
+  assert.equal(deferred.length, 1);
+  assert.deepEqual(delivered, []);
 });
 
 test("codex system reply rejects plain text", async () => {
