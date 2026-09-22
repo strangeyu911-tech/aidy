@@ -69,6 +69,11 @@ const { ComponentLogger } = require("./component-logger");
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
+// Wall-clock slack for the "credential on disk is newer than this process" check.
+// Both timestamps come from the same machine, but the login runner writes the
+// account file moments before the supervisor respawns the bridge, so a small
+// tolerance keeps a legitimate restart from being misread as a superseded login.
+const WECHAT_CREDENTIAL_RACE_TOLERANCE_MS = 5_000;
 const RETRY_DELAY_MS = 2_000;
 const BACKOFF_DELAY_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -105,6 +110,7 @@ class CyberbossApp {
     this.runtimeAdapter = null;
     this.activeProfile = null;
     this.visionFallback = null;
+    this.startedAtMs = Date.now();
     this.threadStateStore = new ThreadStateStore();
     this.supervisionPlanStore = new SupervisionPlanStore({ stateDir: config.stateDir });
     this.systemMessageQueue = new SystemMessageQueueStore({
@@ -226,10 +232,71 @@ class CyberbossApp {
     this.channelAdapter.printAccounts();
   }
 
+  /**
+   * Re-login survival. A WeChat re-scan mints a new accountId, which changes the
+   * bindingKey and orphans every threadId the old account had accumulated. The
+   * transcripts live in the runtime's store keyed by threadId, so nothing is gone
+   * — the new binding just has to be pointed back at them. Runs once per bridge
+   * process, after the account is resolved and before subscriptions are restored.
+   */
+  inheritPriorAccountThreadBindings(account) {
+    try {
+      const sessionStore = this.runtimeAdapter.getSessionStore();
+      const migrated = sessionStore.inheritThreadBindingsFromPriorAccounts?.({
+        accountId: account?.accountId,
+        senderId: account?.userId,
+      });
+      if (Array.isArray(migrated) && migrated.length) {
+        console.log(
+          `[cyberboss] inherited ${migrated.length} thread binding(s) from earlier WeChat account(s) into ${account.accountId}: ${migrated.join(", ")}`,
+        );
+      }
+      return migrated || [];
+    } catch (error) {
+      // Inheritance is an optimization over "start a fresh thread", never a
+      // precondition for polling. A failure must not take the bridge down.
+      console.error(`[cyberboss] thread binding inheritance skipped: ${formatErrorMessage(error)}`);
+      return [];
+    }
+  }
+
+  /**
+   * Distinguishes "my token was revoked by a newer login" from "my token expired".
+   *
+   * The scan flow saves the new credential to `accounts/` and the platform revokes
+   * the session this process still holds seconds later. When the credential on
+   * disk is newer than this process, the right move is to exit with a *retryable*
+   * code so the supervisor respawns the bridge and it adopts the fresh token —
+   * not to demand another scan, which would revoke the fresh credential again and
+   * lock the user into the scan → revoke → "please scan again" loop.
+   */
+  hasWeChatCredentialNewerThanProcess() {
+    const accountsDir = this.config?.accountsDir;
+    const startedAtMs = Number(this.startedAtMs) || 0;
+    if (!accountsDir || !startedAtMs) {
+      return false;
+    }
+    try {
+      const entries = fs.readdirSync(accountsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        if (!entry.name.endsWith(".json") || entry.name.endsWith(".context-tokens.json")) continue;
+        const stats = fs.statSync(path.join(accountsDir, entry.name));
+        if (stats.mtimeMs > startedAtMs - WECHAT_CREDENTIAL_RACE_TOLERANCE_MS) {
+          return true;
+        }
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
+
   async start() {
     await this.ensureRuntimeAdapter();
     const account = this.channelAdapter.resolveAccount();
     this.activeAccountId = account.accountId;
+    this.inheritPriorAccountThreadBindings(account);
     this.systemMessageDispatcher = new SystemMessageDispatcher({
       queueStore: this.systemMessageQueue,
       config: this.config,
@@ -439,6 +506,17 @@ class CyberbossApp {
           }
 
           if (isSessionExpiredError(error)) {
+            if (this.hasWeChatCredentialNewerThanProcess()) {
+              // A newer login is already on disk and revoked the session this
+              // process holds. Retryable: the supervisor restarts the bridge and
+              // the fresh token is adopted. This must NOT read as "expired" to the
+              // user — demanding another scan would revoke the fresh credential
+              // again and lock them into the scan → revoke → scan-again loop.
+              throw Object.assign(
+                new Error("A newer WeChat login was saved after this bridge started; restarting to adopt it."),
+                { code: "WECHAT_SESSION_SUPERSEDED" },
+              );
+            }
             throw Object.assign(new Error("The WeChat session has expired. 微信登录已过期，请在艾迪里点「连接微信」重新扫码。"), { code: "WECHAT_SESSION_EXPIRED" });
           }
 

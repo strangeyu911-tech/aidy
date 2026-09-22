@@ -335,3 +335,75 @@ test("the fatal session-expiry path releases the bridge control server", async (
   ]);
 });
 
+test("WECHAT_SESSION_SUPERSEDED is retryable and must not read as 'please scan again'", () => {
+  // The scan → revoke → scan-again self-lock: a re-scan revokes the live session
+  // seconds later, the bridge dies with -14, and the old message demanded yet
+  // another scan — revoking the fresh credential in turn. When the credential on
+  // disk is newer than the process, the exit must land on the ordinary restart
+  // path, NOT the fatal WECHAT_SESSION_EXPIRED branch.
+  const { supervisor, stateDir } = createSupervisor();
+  try {
+    const child = supervisor.children.get("bridge");
+    driveBridgeExit(
+      supervisor,
+      child,
+      "Error: A newer WeChat login was saved after this bridge started; restarting to adopt it.",
+    );
+    assert.notEqual(supervisor.phase, "error", "a superseded session must not stop the restart loop");
+    assert.notEqual(supervisor.lastError?.code, "WECHAT_SESSION_EXPIRED");
+    assert.ok(supervisor.restartTimes.length >= 1, "the supervisor must schedule a bridge restart");
+  } finally {
+    if (supervisor.retryTimer) clearTimeout(supervisor.retryTimer);
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("hasWeChatCredentialNewerThanProcess is false when no credential postdates the process", () => {
+  const app = Object.create(CyberbossApp.prototype);
+  const accountsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-credential-fresh-"));
+  try {
+    app.config = { accountsDir };
+    app.startedAtMs = Date.now();
+    fs.writeFileSync(path.join(accountsDir, "old-acct.json"), JSON.stringify({ accountId: "old-acct" }));
+    // The credential predates the process by a minute — well outside the 5s race window.
+    const stale = new Date(app.startedAtMs - 60_000);
+    fs.utimesSync(path.join(accountsDir, "old-acct.json"), stale, stale);
+    assert.equal(app.hasWeChatCredentialNewerThanProcess(), false);
+  } finally {
+    fs.rmSync(accountsDir, { recursive: true, force: true });
+  }
+});
+
+test("hasWeChatCredentialNewerThanProcess is true when a fresh login was saved after start", () => {
+  const app = Object.create(CyberbossApp.prototype);
+  const accountsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-credential-fresh-"));
+  try {
+    app.config = { accountsDir };
+    app.startedAtMs = Date.now();
+    // Written now, so its mtime is newer than startedAtMs minus the race window.
+    fs.writeFileSync(path.join(accountsDir, "new-acct.json"), JSON.stringify({ accountId: "new-acct" }));
+    assert.equal(app.hasWeChatCredentialNewerThanProcess(), true);
+  } finally {
+    fs.rmSync(accountsDir, { recursive: true, force: true });
+  }
+});
+
+test("hasWeChatCredentialNewerThanProcess ignores retired credentials and missing directories", () => {
+  const app = Object.create(CyberbossApp.prototype);
+  app.startedAtMs = Date.now();
+
+  app.config = { accountsDir: path.join(os.tmpdir(), "cyberboss-credential-missing-dir") };
+  assert.equal(app.hasWeChatCredentialNewerThanProcess(), false);
+
+  // A `.retired-...` file no longer ends in `.json`, so it must not count as a
+  // fresh credential even though its mtime is current.
+  const accountsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-credential-retired-"));
+  try {
+    app.config = { accountsDir };
+    fs.writeFileSync(path.join(accountsDir, "old-acct.json.retired-2026-09-22T10-00-00-000Z"), "{}");
+    assert.equal(app.hasWeChatCredentialNewerThanProcess(), false);
+  } finally {
+    fs.rmSync(accountsDir, { recursive: true, force: true });
+  }
+});
+

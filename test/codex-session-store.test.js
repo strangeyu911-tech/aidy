@@ -271,3 +271,135 @@ test("legacy sessions without provable runtime metadata never default to Codex",
   assert.equal(migrated.legacySessions[0].runtimeId, "");
   assert.equal(migrated.legacySessions[0].readOnly, true);
 });
+
+/**
+ * Re-scan survival: a WeChat re-login mints a new accountId, which changes the
+ * bindingKey and orphans every thread the old account had accumulated. The
+ * runtime's transcript store keeps the threads keyed by threadId, so pointing
+ * the new account's bindings back at the old threadIds restores memory without
+ * any data migration.
+ */
+function bindingFixture(overrides = {}) {
+  return {
+    accountId: "old-acct",
+    senderId: "wxid_user",
+    activeWorkspaceRoot: "D:\\Ws",
+    threadIdByWorkspaceRootByRuntime: {
+      codebuddy: { "D:\\Ws": "legacy-thread" },
+    },
+    runtimeParamsByWorkspaceRootByRuntime: {
+      codebuddy: { "D:\\Ws": { model: "hy3", modelProvider: "compatibility" } },
+    },
+    ...overrides,
+  };
+}
+
+function createBindingStore(name, bindings) {
+  const filePath = createTempFile(name);
+  fs.writeFileSync(filePath, JSON.stringify({ bindings }, null, 2));
+  return new SessionStore({ filePath, runtimeId: "codebuddy" });
+}
+
+test("inheritThreadBindingsFromPriorAccounts creates the new account's bindings from the prior account", () => {
+  const store = createBindingStore("inherit-create.json", {
+    "default:old-acct:wxid_user": bindingFixture(),
+  });
+
+  const migrated = store.inheritThreadBindingsFromPriorAccounts({
+    accountId: "new-acct",
+    senderId: "wxid_user",
+  });
+
+  assert.deepEqual(migrated, ["default:new-acct:wxid_user"]);
+  const inherited = store.getBinding("default:new-acct:wxid_user");
+  assert.equal(inherited.accountId, "new-acct");
+  assert.equal(inherited.senderId, "wxid_user");
+  assert.equal(inherited.threadIdByWorkspaceRootByRuntime.codebuddy["D:\\Ws"], "legacy-thread");
+  assert.ok(inherited.legacyAccountIds.includes("old-acct"), "the prior accountId is recorded for forensics");
+});
+
+test("inheritThreadBindingsFromPriorAccounts keeps the ::system scope variant separate", () => {
+  const store = createBindingStore("inherit-system.json", {
+    "default:old-acct:wxid_user::system": bindingFixture({
+      threadIdByWorkspaceRootByRuntime: { codebuddy: { "D:\\Ws": "system-thread" } },
+    }),
+  });
+
+  const migrated = store.inheritThreadBindingsFromPriorAccounts({
+    accountId: "new-acct",
+    senderId: "wxid_user",
+  });
+
+  assert.deepEqual(migrated, ["default:new-acct:wxid_user::system"]);
+  assert.equal(
+    store.getBinding("default:new-acct:wxid_user::system").threadIdByWorkspaceRootByRuntime.codebuddy["D:\\Ws"],
+    "system-thread",
+  );
+  assert.equal(store.getBinding("default:new-acct:wxid_user"), null,
+    "the user-facing binding must not be created from the ::system variant");
+});
+
+test("inheritThreadBindingsFromPriorAccounts resolves conflicts in favor of the prior account's thread", () => {
+  // The target binding's thread is the artifact of the post-re-scan reset; the
+  // source thread is the older, longer conversation, so it wins the pointer.
+  const store = createBindingStore("inherit-conflict.json", {
+    "default:old-acct:wxid_user": bindingFixture(),
+    "default:new-acct:wxid_user": bindingFixture({
+      accountId: "new-acct",
+      threadIdByWorkspaceRootByRuntime: { codebuddy: { "D:\\Ws": "reset-thread" } },
+    }),
+  });
+
+  const migrated = store.inheritThreadBindingsFromPriorAccounts({
+    accountId: "new-acct",
+    senderId: "wxid_user",
+  });
+
+  assert.deepEqual(migrated, ["default:new-acct:wxid_user"]);
+  assert.equal(
+    store.getBinding("default:new-acct:wxid_user").threadIdByWorkspaceRootByRuntime.codebuddy["D:\\Ws"],
+    "legacy-thread",
+  );
+  assert.ok(store.getBinding("default:new-acct:wxid_user").legacyAccountIds.includes("old-acct"));
+});
+
+test("inheritThreadBindingsFromPriorAccounts is idempotent", () => {
+  const store = createBindingStore("inherit-idempotent.json", {
+    "default:old-acct:wxid_user": bindingFixture(),
+  });
+  const args = { accountId: "new-acct", senderId: "wxid_user" };
+
+  const first = store.inheritThreadBindingsFromPriorAccounts(args);
+  assert.equal(first.length, 1);
+  const snapshot = JSON.stringify(store.state);
+
+  const second = store.inheritThreadBindingsFromPriorAccounts(args);
+  assert.deepEqual(second, [], "the second run must not write anything");
+  assert.equal(JSON.stringify(store.state), snapshot);
+});
+
+test("inheritThreadBindingsFromPriorAccounts ignores the current account and other senders", () => {
+  const store = createBindingStore("inherit-scope.json", {
+    "default:new-acct:wxid_user": bindingFixture({ accountId: "new-acct" }),
+    "default:old-acct:wxid_other": bindingFixture({ senderId: "wxid_other" }),
+  });
+
+  assert.deepEqual(
+    store.inheritThreadBindingsFromPriorAccounts({ accountId: "new-acct", senderId: "wxid_user" }),
+    [],
+  );
+});
+
+test("inheritThreadBindingsFromPriorAccounts persists and survives a store reload", () => {
+  const filePath = createTempFile("inherit-reload.json");
+  fs.writeFileSync(filePath, JSON.stringify({
+    bindings: { "default:old-acct:wxid_user": bindingFixture() },
+  }, null, 2));
+
+  const store = new SessionStore({ filePath, runtimeId: "codebuddy" });
+  store.inheritThreadBindingsFromPriorAccounts({ accountId: "new-acct", senderId: "wxid_user" });
+
+  const reopened = new SessionStore({ filePath, runtimeId: "codebuddy" });
+  const inherited = reopened.getBinding("default:new-acct:wxid_user");
+  assert.equal(inherited.threadIdByWorkspaceRootByRuntime.codebuddy["D:\\Ws"], "legacy-thread");
+});

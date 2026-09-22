@@ -2,9 +2,18 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
 
 const { waitForWeixinLogin } = require("../src/adapters/channel/weixin/login");
+const {
+  listWeixinAccounts,
+  loadWeixinAccount,
+  retireWeixinAccount,
+  saveWeixinAccount,
+} = require("../src/adapters/channel/weixin/account-store");
 
 const QR_URL = "https://ilinkai.weixin.qq.com/ilink/bot/qrcode?qrcode=flow-test";
 
@@ -153,4 +162,39 @@ test("a failure to fetch a QR code is reported to the caller", async (t) => {
     waitForWeixinLogin({ apiBaseUrl: baseUrl, botType: "3", timeoutMs: 5_000, silent: true }),
     /Failed to fetch QR code: 500/,
   );
+});
+
+test("retireWeixinAccount removes a credential from rotation without destroying it", () => {
+  // A re-scan mints a new accountId and revokes the old token server-side. Deleting
+  // the file before the replacement credential is proven to work would turn a bad
+  // login into an unrecoverable one, so retiring must keep the file on disk.
+  const accountsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-retire-account-"));
+  const config = { accountsDir, weixinBaseUrl: "https://ilinkai.weixin.qq.com" };
+  try {
+    saveWeixinAccount(config, "old-acct", { token: "secret-token", userId: "wxid_user" });
+    assert.equal(listWeixinAccounts(config).length, 1);
+
+    assert.equal(retireWeixinAccount(config, "old-acct"), true);
+
+    assert.equal(listWeixinAccounts(config).length, 0, "a retired account must leave the .json rotation");
+    assert.equal(loadWeixinAccount(config, "old-acct"), null);
+
+    const leftovers = fs.readdirSync(accountsDir).filter((name) => name.startsWith("old-acct.json.retired-"));
+    assert.equal(leftovers.length, 1, "the retired file stays on disk for forensics");
+    const retired = JSON.parse(fs.readFileSync(path.join(accountsDir, leftovers[0]), "utf8"));
+    assert.equal(retired.token, "secret-token", "the retired file keeps the credential record");
+  } finally {
+    fs.rmSync(accountsDir, { recursive: true, force: true });
+  }
+});
+
+test("retireWeixinAccount returns false for unknown or invalid account ids", () => {
+  const accountsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-retire-account-"));
+  const config = { accountsDir, weixinBaseUrl: "https://ilinkai.weixin.qq.com" };
+  try {
+    assert.equal(retireWeixinAccount(config, "no-such-acct"), false);
+    assert.equal(retireWeixinAccount(config, ""), false);
+  } finally {
+    fs.rmSync(accountsDir, { recursive: true, force: true });
+  }
 });

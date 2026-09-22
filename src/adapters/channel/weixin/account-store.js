@@ -35,6 +35,33 @@ function deleteWeixinAccount(config, accountId) {
   }
 }
 
+/**
+ * Takes a credential out of rotation without destroying it.
+ *
+ * A re-scan mints a new accountId and the old token is revoked server-side, but
+ * the file is the only forensic record of "which identity was in use when" — and
+ * deleting it before the replacement credential is proven to work turns a bad
+ * login into an unrecoverable one. Renaming keeps the file out of
+ * `listWeixinAccounts()` (the `.json` glob) while preserving it on disk.
+ */
+function retireWeixinAccount(config, accountId) {
+  const normalized = normalizeAccountId(accountId);
+  if (!normalized) {
+    return false;
+  }
+  try {
+    const filePath = resolveAccountPath(config, normalized);
+    if (!fs.existsSync(filePath)) {
+      return false;
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.renameSync(filePath, `${filePath}.retired-${stamp}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function saveWeixinAccount(config, rawAccountId, update) {
   ensureAccountsDir(config);
   const accountId = normalizeAccountId(rawAccountId);
@@ -123,5 +150,6 @@ module.exports = {
   normalizeAccountId,
   resolveAccountPath,
   resolveSelectedAccount,
+  retireWeixinAccount,
   saveWeixinAccount,
 };

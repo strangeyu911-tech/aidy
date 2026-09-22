@@ -280,6 +280,74 @@ class SessionStore {
     return results;
   }
 
+  /**
+   * Re-login survival: a WeChat re-scan mints a new `ilink_bot_id`, so the
+   * bindingKey (`default:<accountId>:<senderId>`) changes and the old binding —
+   * with all of its threadIds — is orphaned. The transcripts themselves live in
+   * the runtime's project directory keyed by threadId, independent of accountId,
+   * so the memory is not lost; it is merely unreferenced.
+   *
+   * This walks every binding that belongs to the same senderId under a *different*
+   * accountId and re-attaches its threadIds to the new account's bindings, so a
+   * re-scan continues the same conversations instead of starting from zero.
+   *
+   * Rules:
+   * - Only bindings whose `senderId` matches and whose `accountId` differs are
+   *   considered. A re-login under the same accountId is a no-op.
+   * - Target bindings are keyed by the source key with the accountId segment
+   *   replaced, which preserves the `::system` scope split.
+   * - A missing target binding is created wholesale from the source.
+   * - When both sides have a thread for the same (runtime, workspaceRoot), the
+   *   *prior* account's thread wins: it is the older, longer conversation, and
+   *   the target's thread is usually the artifact of the reset being repaired.
+   *   The displaced thread stays in the runtime's transcript store; only the
+   *   pointer changes.
+   * - Never removes anything. Idempotent: after the first run the prior bindings
+   *   still exist but every threadId already matches, so nothing is written.
+   */
+  inheritThreadBindingsFromPriorAccounts({ accountId, senderId } = {}) {
+    const normalizedAccountId = normalizeValue(accountId);
+    const normalizedSenderId = normalizeValue(senderId);
+    if (!normalizedAccountId || !normalizedSenderId) {
+      return [];
+    }
+    const bindings = this.state.bindings || {};
+    const changedKeys = new Set();
+    for (const [sourceKey, source] of Object.entries(bindings)) {
+      if (!source || typeof source !== "object") continue;
+      if (normalizeValue(source.senderId) !== normalizedSenderId) continue;
+      if (normalizeValue(source.accountId) === normalizedAccountId) continue;
+      const parts = sourceKey.split(":");
+      if (parts.length < 3) continue;
+      parts[1] = normalizedAccountId;
+      const targetKey = parts.join(":");
+      if (targetKey === sourceKey) continue;
+      const target = bindings[targetKey];
+      if (!target) {
+        const inherited = normalizeBinding({
+          ...source,
+          accountId: normalizedAccountId,
+          legacyAccountIds: uniqueNonEmpty([
+            ...(Array.isArray(source.legacyAccountIds) ? source.legacyAccountIds : []),
+            normalizeValue(source.accountId),
+          ]),
+        });
+        if (!inherited) continue;
+        bindings[targetKey] = inherited;
+        changedKeys.add(targetKey);
+        continue;
+      }
+      if (mergeThreadBindings({ target, source, fromAccountId: normalizeValue(source.accountId) })) {
+        changedKeys.add(targetKey);
+      }
+    }
+    if (!changedKeys.size) {
+      return [];
+    }
+    this.save();
+    return [...changedKeys];
+  }
+
   setActiveWorkspaceRoot(bindingKey, workspaceRoot) {
     const normalizedWorkspaceRoot = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
@@ -493,6 +561,105 @@ function normalizeBinding(binding) {
     normalized.legacySessionMigrationByThreadId,
   );
   return normalized;
+}
+
+function uniqueNonEmpty(values) {
+  return [...new Set(values.map((value) => normalizeValue(value)).filter(Boolean))];
+}
+
+/**
+ * Re-attach the source (prior account) binding's threads onto the target binding.
+ *
+ * Conflict rule: the prior account's threadId wins for a (runtime, workspaceRoot)
+ * the target also has — the prior thread is the older, longer conversation and the
+ * target's is usually the artifact of the post-re-scan reset. Everything the target
+ * already has and the source lacks is left untouched, so the operation is
+ * idempotent once the pointer has been moved.
+ */
+function mergeThreadBindings({ target, source, fromAccountId }) {
+  let changed = false;
+
+  for (const [field, getMap, isByRuntime] of [
+    ["threadIdByWorkspaceRootByRuntime", (current) => getThreadRuntimeMap(current), true],
+    ["threadIdByWorkspaceRoot", (current) => getLegacyThreadMap(current), false],
+  ]) {
+    const sourceMap = getMap(source) || {};
+    if (!Object.keys(sourceMap).length) continue;
+    const targetMap = { ...getMap(target) };
+    let fieldChanged = false;
+    for (const [runtimeOrWorkspace, value] of Object.entries(sourceMap)) {
+      if (isByRuntime) {
+        const sourceWorkspaceMap = value && typeof value === "object" ? value : {};
+        const targetWorkspaceMap = { ...(targetMap[runtimeOrWorkspace] || {}) };
+        for (const [workspaceRoot, threadId] of Object.entries(sourceWorkspaceMap)) {
+          if (!normalizeThreadValue(threadId)) continue;
+          if (targetWorkspaceMap[workspaceRoot] === threadId) continue;
+          targetWorkspaceMap[workspaceRoot] = threadId;
+          fieldChanged = true;
+        }
+        if (fieldChanged) {
+          targetMap[runtimeOrWorkspace] = targetWorkspaceMap;
+        }
+      } else if (normalizeThreadValue(value) && targetMap[runtimeOrWorkspace] !== value) {
+        targetMap[runtimeOrWorkspace] = value;
+        fieldChanged = true;
+      }
+    }
+    if (fieldChanged) {
+      target[field] = targetMap;
+      changed = true;
+    }
+  }
+
+  const sourceScopes = source.threadScopes || {};
+  if (Object.keys(sourceScopes).length) {
+    const targetScopes = { ...(target.threadScopes || {}) };
+    let scopesChanged = false;
+    for (const [scopeKey, record] of Object.entries(sourceScopes)) {
+      if (targetScopes[scopeKey]) continue;
+      targetScopes[scopeKey] = record;
+      scopesChanged = true;
+    }
+    if (scopesChanged) {
+      target.threadScopes = targetScopes;
+      changed = true;
+    }
+  }
+
+  for (const [field, getMap, isByRuntime] of [
+    ["runtimeParamsByWorkspaceRootByRuntime", (current) => current?.runtimeParamsByWorkspaceRootByRuntime || {}, true],
+    ["codexParamsByWorkspaceRoot", (current) => current?.codexParamsByWorkspaceRoot || {}, false],
+  ]) {
+    const sourceMap = getMap(source) || {};
+    if (!Object.keys(sourceMap).length) continue;
+    const targetMap = { ...getMap(target) };
+    let paramsChanged = false;
+    for (const [runtimeOrWorkspace, value] of Object.entries(sourceMap)) {
+      if (targetMap[runtimeOrWorkspace]) continue;
+      if (isByRuntime) {
+        if (!value || typeof value !== "object") continue;
+      } else if (!value || typeof value !== "object") {
+        continue;
+      }
+      targetMap[runtimeOrWorkspace] = value;
+      paramsChanged = true;
+    }
+    if (paramsChanged) {
+      target[field] = targetMap;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    const legacy = uniqueNonEmpty([
+      ...(Array.isArray(target.legacyAccountIds) ? target.legacyAccountIds : []),
+      fromAccountId,
+    ]);
+    if (legacy.length) {
+      target.legacyAccountIds = legacy;
+    }
+  }
+  return changed;
 }
 
 function normalizeThreadScopes(value) {

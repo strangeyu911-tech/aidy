@@ -1,7 +1,7 @@
 const qrcodeTerminal = require("qrcode-terminal");
 const {
-  deleteWeixinAccount,
   listWeixinAccounts,
+  retireWeixinAccount,
   saveWeixinAccount,
 } = require("./account-store");
 const { clearPersistedContextTokens } = require("./context-token-store");
@@ -106,9 +106,13 @@ function cleanupStaleAccountsForUserId(config, activeAccount) {
     && account.userId.trim() === activeUserId
   ));
   for (const staleAccount of staleAccounts) {
-    deleteWeixinAccount(config, staleAccount.accountId);
+    // Retired, not deleted: the token is already revoked server-side, but the
+    // file is the only record of which identity was live when, and destroying it
+    // before the new credential is proven to work is unrecoverable. The rename
+    // also keeps `resolveSelectedAccount` single-account.
+    retireWeixinAccount(config, staleAccount.accountId);
     clearPersistedContextTokens(config, staleAccount.accountId);
-    console.log(`[cyberboss] removed stale account ${staleAccount.accountId} for userId ${activeUserId}`);
+    console.log(`[cyberboss] retired stale account ${staleAccount.accountId} for userId ${activeUserId}`);
   }
   return staleAccounts;
 }
