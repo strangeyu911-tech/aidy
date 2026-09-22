@@ -238,6 +238,11 @@ class CyberbossApp {
    * transcripts live in the runtime's store keyed by threadId, so nothing is gone
    * — the new binding just has to be pointed back at them. Runs once per bridge
    * process, after the account is resolved and before subscriptions are restored.
+   *
+   * Since the identity-key change the binding key is derived from the stable
+   * openid, so after the one-time migration this walk becomes a no-op (every
+   * prior binding for the same sender already shares the identity key); it is
+   * kept as a self-healing convergence for stores that predate the migration.
    */
   inheritPriorAccountThreadBindings(account) {
     try {
@@ -292,11 +297,39 @@ class CyberbossApp {
     return false;
   }
 
+  /**
+   * The workspace root is the runtime's working directory and, with the
+   * identity-key change, a stable memory coordinate. The default now points at
+   * a per-user directory under the state dir instead of process.cwd() (the
+   * packaged install path), which previously split the transcript store across
+   * one directory per install location. Create it on use so a fresh install or
+   * a migrated environment has a valid working directory before the runtime
+   * session is opened.
+   */
+  ensureWorkspaceRootAvailable() {
+    const workspaceRoot = this.config?.workspaceRoot;
+    if (!workspaceRoot) {
+      return;
+    }
+    try {
+      fs.mkdirSync(workspaceRoot, { recursive: true });
+    } catch (error) {
+      // Best effort: the runtime will surface a clearer error if the directory
+      // is truly unusable; never block the bridge bootstrap on this.
+      console.error(`[cyberboss] could not create workspaceRoot ${workspaceRoot}: ${formatErrorMessage(error)}`);
+    }
+  }
+
   async start() {
     await this.ensureRuntimeAdapter();
     const account = this.channelAdapter.resolveAccount();
     this.activeAccountId = account.accountId;
-    this.inheritPriorAccountThreadBindings(account);
+    this.activeIdentityKey = identityKeyFromAccount(account);
+    this.ensureWorkspaceRootAvailable();
+    this.inheritPriorAccountThreadBindings({
+      accountId: this.activeIdentityKey,
+      userId: account.userId,
+    });
     this.systemMessageDispatcher = new SystemMessageDispatcher({
       queueStore: this.systemMessageQueue,
       config: this.config,
@@ -585,12 +618,12 @@ class CyberbossApp {
     const sessionStore = this.runtimeAdapter.getSessionStore();
     const senderId = resolvePreferredSenderId({
       config: this.config,
-      accountId: this.activeAccountId,
+      accountId: this.activeIdentityKey || this.activeAccountId,
       sessionStore,
     });
     const workspaceRoot = resolvePreferredWorkspaceRoot({
       config: this.config,
-      accountId: this.activeAccountId,
+      accountId: this.activeIdentityKey || this.activeAccountId,
       senderId,
       sessionStore,
     });
@@ -725,7 +758,7 @@ class CyberbossApp {
     }
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     this.streamDelivery.setDeferredReplyPrefix(bindingKey, formatDeferredSystemReplyBatch(pendingReplies));
@@ -750,7 +783,7 @@ class CyberbossApp {
     normalized = { ...normalized, turnCorrelation };
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     this.streamDelivery.setReplyTarget(bindingKey, {
@@ -1342,7 +1375,7 @@ class CyberbossApp {
     };
     current.messages.push({
       workspaceId: prepared.workspaceId,
-      accountId: prepared.accountId,
+      accountId: this.activeIdentityKey || prepared.accountId,
       senderId: prepared.senderId,
       turnCorrelation: prepared.turnCorrelation,
       messageId: prepared.messageId,
@@ -1644,7 +1677,7 @@ class CyberbossApp {
   resolveReminderWorkspaceRoot(reminder) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: this.config.workspaceId,
-      accountId: reminder.accountId,
+      accountId: this.activeIdentityKey || reminder.accountId,
       senderId: reminder.senderId,
     });
     return this.runtimeAdapter.getSessionStore().getActiveWorkspaceRoot(bindingKey) || this.config.workspaceRoot;
@@ -1665,7 +1698,7 @@ class CyberbossApp {
     }
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: prepared.workspaceId,
-      accountId: prepared.accountId,
+      accountId: this.activeIdentityKey || prepared.accountId,
       senderId: prepared.senderId,
     });
     const workspaceRoot = prepared.workspaceRoot || this.resolveWorkspaceRoot(bindingKey);
@@ -1776,7 +1809,7 @@ class CyberbossApp {
 
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     this.runtimeAdapter.getSessionStore().setActiveWorkspaceRoot(bindingKey, workspaceRoot);
@@ -1790,7 +1823,7 @@ class CyberbossApp {
   async handleStatusCommand(normalized) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
@@ -1829,7 +1862,7 @@ class CyberbossApp {
   async handleNewCommand(normalized) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
@@ -1847,7 +1880,7 @@ class CyberbossApp {
   async handleRereadCommand(normalized) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
@@ -1887,7 +1920,7 @@ class CyberbossApp {
   async handleCompactCommand(normalized) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
@@ -1949,7 +1982,7 @@ class CyberbossApp {
 
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
@@ -1976,7 +2009,7 @@ class CyberbossApp {
   async handleStopCommand(normalized) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
@@ -2092,7 +2125,7 @@ class CyberbossApp {
   async handleApprovalCommand(normalized, command) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
-      accountId: normalized.accountId,
+      accountId: this.activeIdentityKey || normalized.accountId,
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
@@ -2763,7 +2796,7 @@ function safeEndpointHost(value) {
   try { return new URL(text).hostname; } catch { return "invalid"; }
 }
 
-module.exports = { CyberbossApp };
+module.exports = { CyberbossApp, identityKeyFromAccount };
 
 function parseChannelCommand(text) {
   const normalized = typeof text === "string" ? text.trim() : "";
@@ -3265,6 +3298,27 @@ function withUsageProfile(event, profileId) {
       profileId: normalizeText(profileId),
     },
   };
+}
+
+/**
+ * The stable Aidy identity is derived from the WeChat openid (`account.userId`),
+ * which survives re-scans. The bot instance id (`account.accountId`) changes on
+ * every scan and must never serve as an identity key. Legacy account files
+ * without a userId fall back to the bot id with a warning so the bridge keeps
+ * running; the one-time migration backfills the openid.
+ */
+function identityKeyFromAccount(account) {
+  const userId = normalizeText(account?.userId);
+  if (userId) {
+    return userId;
+  }
+  const accountId = normalizeText(account?.accountId);
+  if (accountId) {
+    console.warn(
+      `[cyberboss] account ${accountId} has no WeChat userId; falling back to the bot id as the identity key. Re-scan to backfill a stable identity.`,
+    );
+  }
+  return accountId;
 }
 
 function resolveGlobalActiveProfile(app, { sessionStore = null, bindingKey = "", workspaceRoot = "" } = {}) {

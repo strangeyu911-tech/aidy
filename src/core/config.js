@@ -11,7 +11,14 @@ function readConfig() {
     argv,
     stateDir,
     workspaceId: readTextEnv("CYBERBOSS_WORKSPACE_ID") || "default",
-    workspaceRoot: readTextEnv("CYBERBOSS_WORKSPACE_ROOT") || process.cwd(),
+    // The runtime working directory must NOT default to process.cwd(): for the
+    // packaged app the cwd is the install directory (e.g.
+    // `dist/win-unpacked/resources`), which changes on every rebuild/reinstall
+    // and split the transcript store (and the thread-pointer workspace axis)
+    // across one directory per install location. A stable per-user directory
+    // keeps both the runtime working directory and the memory coordinate
+    // constant across updates. CYBERBOSS_WORKSPACE_ROOT still wins when set.
+    workspaceRoot: readTextEnv("CYBERBOSS_WORKSPACE_ROOT") || path.join(stateDir, "workspace"),
     userName: readTextEnv("CYBERBOSS_USER_NAME") || "User",
     userGender: readTextEnv("CYBERBOSS_USER_GENDER") || "female",
     allowedUserIds: readListEnv("CYBERBOSS_ALLOWED_USER_IDS"),
