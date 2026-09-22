@@ -3,7 +3,7 @@
 - **日期**：2026-09-22
 - **上游计划**：`docs/audits/2026-09-22-Kimi-K2.8-plan-v2.md`（v2.1，第 3 步 = A2；§3 路线 A 两条配套）
 - **裁决**：用户确认「先做 A2，完成后再走路线 A 根治」，并要求新代码必须落到包与开始菜单快捷方式。
-- **提交**：`0ca2bba`（A2 缓解）、`2251ee3`（路线 A 根治）
+- **提交**：`0ca2bba`（A2 缓解）、`2251ee3`（路线 A 根治）；重建轮另含 `01e41da`（codebuddy 传输层与权限模式）、`d738413`（微信重扫码恢复）、`ae046a1`（分块上传脚本）、`52a7b0d`（审计文档入库）
 - **性质**：已执行，含打包。**真实微信链路未验证**（见 §6）。
 
 ---
@@ -60,17 +60,31 @@ const runtimeBindingKey = prepared.provider === "system"
 
 ## 2. 证据
 
+> **重建轮次（2026-09-22 14:35–14:52）**：先在 4 个提交里记录既有改动，再重打包。
+> 下表 `app.asar` 的值与重建前**逐字节一致**，这证明提交只是**记录**了已进包的内容。
+
 | 项 | 结果 |
 |---|---|
 | 全量单测 | `728 tests / 727 pass / 0 fail / 1 skip`（基线 711，本次 +17） |
-| `verify:release-names` | `[release-check] ok`，`app.asar sha256=870F51EE4329209D3BD0F9B90F02B2265C6CD428D44022EB2A9F685626D61C2F` bytes=133462648 |
-| `verify:artifacts` | `packaged=true` exit=0，`packagedExe=D:\CyberBoss\dist\win-unpacked\Aidy.exe` |
+| `verify:release-names` | `[release-check] ok` exit=0，`app.asar sha256=870F51EE4329209D3BD0F9B90F02B2265C6CD428D44022EB2A9F685626D61C2F` bytes=133462648 mtime=2026-09-22T06:48:03Z |
+| `verify:artifacts` | `packaged=true` exit=0，`packagedExe=D:\CyberBoss\dist\win-unpacked\Aidy.exe`，`packagedResourceEntries=6263` |
 | `verify:desktop-boot` | `[desktop-smoke] ok` exit=0，`heartbeatUntouched=true` |
-| 产物 | `dist/Aidy-Setup-v0.1.0.exe`（127,082,402 B, 02:39）、`dist/Aidy-0.1.0-x64.exe`（103,674,970 B, 02:42） |
-| 开始菜单 | `C:\Users\23159\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Aidy.lnk` → `D:\CyberBoss\dist\win-unpacked\Aidy.exe`，工作目录 `D:\CyberBoss\dist\win-unpacked`，脚本自带校验 exit=0 |
-| 包内容（新代码在不在） | `系统查岗（你自己的主动触达回合` = 1、`本日已发出的主动消息` = 1、`onSystemReplyDelivered` = 6、`proactiveDeliveryLog` = 7 |
-| 包内容（旧代码走了没） | 五条旧命令体实现行在 asar 中**全部 = 0**（`Do any timeline/diary/reminder/whereabouts work…`、`No markdown fences…`、`If you act, end with send_message…`、`Return exactly one JSON object…`、`SYSTEM ACTION MODE: internal trigger…`） |
-| 并发/残留 | 构建前后 `Aidy.exe` / `electron.exe` / `signtool` / `sleep.exe` 残留计数均为 **0**；未并发 electron-builder；旧 `win-unpacked` 先 `mv` 后单独删除（81 个文件） |
+| 产物（重建后） | `dist/Aidy-Setup-v0.1.0.exe`（127,082,402 B, 06:39:57）、`dist/Aidy-0.1.0-x64.exe`（103,675,158 B, 06:50:38）、`dist/win-unpacked`（80 文件） |
+| 开始菜单 | `%APPDATA%\…\Start Menu\Programs\Aidy.lnk` → `D:\CyberBoss\dist\win-unpacked\Aidy.exe`，StartIn 同目录，Icon `…Aidy.exe,0`；脚本自带 `$verify` 校验 exit=0 |
+| 包内容（新代码在不在） | 字节级搜索：`系统查岗（你自己的主动触达回合`=1、`本日已发出的主动消息`=1、`不要把本轮当成初次接触`=1、`onSystemReplyDelivered`=6、`proactiveDeliveryLog`=7、`createWechatLoginRecovery`=4、`--permission-mode`=3、`httpStatusFailure`=3 |
+| 包内容（旧代码走了没） | `SYSTEM ACTION MODE: internal trigger`=0、`Do any timeline/diary/reminder/whereabouts work`=0、`No markdown fences`=0 |
+| 并发/残留 | 构建前后 `Aidy.exe`/`electron.exe`/`electron-builder`/`signtool`/`7za` 残留计数均为 **0**；未并发 electron-builder；旧产物 `mv` 到 `D:/cyberboss-old-build-20260922/` 后单独删除 |
+
+**过程中踩到并修复的一处真实故障**：第一次裸跑 `build-portable.js`（未加 `--prepackaged`）时，它与 NSIS 共用
+`appOutDir=dist/win-unpacked`，需要 `emptyDir` 掉 68 个文件 → 撞 safe-delete 的 50 次预算
+（`SAFE_DELETE_BULK_CONFIRM_REQUIRED count:68`）→ exit 1，**且把 NSIS 刚产出的 `win-unpacked` 清成了残骸（`app.asar` 消失）**。
+处置：`mv` 走残骸 → 让便携版从「不存在的目录」开始重跑（删除次数变为 0）→ 成功。
+正解已写入 `.workbuddy/memory/PITFALLS.md` §2.1（NSIS 先建、portable 用 `--prepackaged` 复用）。
+
+**两处方法论错误也已记录**：① 用 `buf.toString('latin1')` 搜中文字符串得到**假的 count=0**，差点误判「新代码没进包」
+（实际 UTF-8 字节存在，须用 `Buffer.from(needle,'utf8')` 做字节级搜索）；② `win-unpacked` 的 81→80 文件差异是
+`resources/app-update.yml` —— `nsis` 产出而 `portable` 不产，且本仓库 `build.publish=null` 且 src 零引用 `autoUpdater`，
+属**无读者的遗留死文件**，缺失无害。
 
 **唯一一处 `SYSTEM ACTION MODE` 命中来自 `src/core/system-message-dispatcher.js:51` 的注释**
 （说明旧框架为何被替换），不是运行时代码。为不让刚冻结的产物失效，该注释保留未改。
@@ -115,17 +129,33 @@ v2 review）**逐轮引用并确认**，却始终是错的。根因不是「审�
 
 ## 4. 已知边界与遗留
 
-1. **路线 A 配套之三「定期换本会话」未实施**。当前共享转录会持续累积日志体行（每 20–40 分钟一行，一行约 100 字）。
-   计划中的做法是每 1–2 周主动 `session/new` 并在首条 prompt 放「搬家摘要」，把「永久污染」变为「周期性清零」。
-   **障碍**：Aidy 侧不持有用户对话转录（历史在 runtime），要写「最近聊了什么」的摘要，必须先落地
-   **入站用户消息的本地留存**（新存储），这属于隐私决策，需要用户明确同意后再做。
+1. **路线 A 配套之三「定期换本会话」— 已由用户裁决取消，不再是遗留项**（2026-09-22 14:20）。
+   原设计：每 1–2 周主动 `session/new` 并在首条 prompt 放「搬家摘要」，把「永久污染」变为「周期性清零」。
+
+   **否决理由（产品级，非技术级）**：用户要的产品形态就是「**模型侧记忆永不清零，这样它才能越来越懂用户**」。
+   周期性换会话会主动摧毁这一点 —— 换句话说，本条的代价分析一开始就建立在错误的取舍前提上：
+   把「转录里累积日志体行」当成必须清除的污染，而用户根本不认为那是污染。
+
+   **连带结论**：既然不换会话，为写「搬家摘要」而需要的「入站用户消息本地留存」也随之取消 →
+   **新增的隐私面不存在了**。这正是「不做那个功能，就不用保护那个功能」。
+
+   **⚠️ 更正本文件先前的表述**：原文写「Aidy 侧不持有用户对话转录（历史在 runtime），要写摘要必须先落地本地留存」——
+   **不准确**。转录**就在本机磁盘上、明文可读**：
+   `~/.codebuddy/projects/d-codebuddy-dist-win-unpacked-resources/`
+   下有 `71b17216-….jsonl`（78,553 B，用户回合会话）与 `5cac11a4-….jsonl`（43,242 B，主动回合会话，13 行明文 JSONL）。
+   Aidy 只是**不读**它，不是读不到。⇒ 将来真要做「搬家摘要」，**直接读这份 jsonl 即可，无需新建任何留存**。
+
+   **唯一真实风险随之从「隐私」变为「上下文窗口上限」**：共享会话会越长越大，某个时刻运行时会被迫压缩或失败。
+   codebuddy 侧的压缩策略**尚未查证**，是本条真正需要跟进的技术问题。
+   （隐私 / ACL 的完整结论见 `.workbuddy/memory/PITFALLS.md` §12。）
 2. **延迟后补发的主动消息未进日志**：只有 `system_reply` 真正送达才记录；走
    `deferredSystemReplyQueue` 后被拼进用户回复的那批不计入。占比小，已在代码注释中知悉。
-3. **工作区里存在本次未提交的既有改动**，它们被打进了这个包：
-   `src/adapters/runtime/codebuddy/{client,process-host}.js`、`src/desktop/main.js`、
-   `src/desktop/renderer/*`、`src/desktop/wechat-login-recovery.js`（新文件）及对应测试。
-   **若现在把它们 commit，会把新鲜度基准推到构建之后 → 三个产物立刻判 stale**，故未提交。
-4. 存量 `<bindingKey>::system` binding 会留在 `sessions.json` 里成为孤儿（无害，未清理运行时数据）。
+3. ~~工作区里存在本次未提交的既有改动，它们被打进了这个包……若现在把它们 commit，会把新鲜度基准推到构建之后 → 三个产物立刻判 stale，故未提交。~~
+   **已解决（2026-09-22 14:35）**：这批改动已按主题拆成 4 个提交入库
+   （`01e41da` codebuddy 传输层与权限模式 / `d738413` 微信重扫码恢复 / `ae046a1` 分块上传脚本 / `52a7b0d` 11 份审计文档），
+   随后按「先 commit、再打包」重打了包。原顾虑的成因是**顺序错了**（先构建、后考虑提交），
+   正确顺序下新鲜度基准天然落在构建之前 —— 这是我上一轮给出的判断错误，记录在此以免重犯。
+4. 存量 `<bindingKey>::system` binding 会留在 `sessions.json` 里成为孤儿（无害，未清理运行时数据；因「定期换会话」已取消，清理它的必要性进一步降低）。
 
 ## 5. 复现/复查手法
 
