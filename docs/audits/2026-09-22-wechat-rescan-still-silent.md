@@ -155,7 +155,52 @@ cleanupStaleAccountsForUserId(config, account);   // 删掉同 userId 的其它�
 
 ---
 
-## 5. 方法论沉淀
+## 5. 重新打包与验收证据（2026-09-22 17:24–17:32）
+
+前置：`git status` 干净、无 Aidy/cyberboss 进程、`dist/win-unpacked/Aidy.exe` 未被锁。
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| 0 | `mv dist/win-unpacked → D:/cyberboss-old-build-20260922/win-unpacked-prev` | 把删除换成重命名，删除预算恒为 0 |
+| 1 | `cli.js --win nsis` | **exit 0**，无 safe-delete 报错 |
+| 2 | `build-portable.js --prepackaged dist/win-unpacked` | **exit 0** |
+| 3 | `sync-start-menu-shortcut.ps1` | `Target=dist\win-unpacked\Aidy.exe`，StartIn/Icon 正确 |
+
+产物：`Aidy-Setup-v0.1.0.exe` 127,083,236 B @17:25:52｜`Aidy-0.1.0-x64.exe` 103,673,138 B @17:28:56。
+
+### asar 字节级内容校验（全绿）
+
+`forceBridgeRestart`=4、`this.forceBridgeRestart = true`=1、`plannedChildStops.add("bridge")`=3、
+`releaseRuntimeResources`=3、`await this.bridgeControlServer?.close?.()`=1、
+`A fatal error must still end the process`=1、`createWechatLoginRecovery`=4、`systemTurn`=11；
+**旧清理代码 `shutdown.dispose(); this.clearPendingImageInboundTimers();` = 0 ⇒ 旧代码确已被替换**。
+asar `sha256=74AA9950F8F9FB521CCB529E003FA3D8CAAF3EDCAB1B35EDB68DADE3CFF2E428`、bytes=133,465,303（上一版 133,462,648）——
+与 `verify:release-names` 独立算出的哈希完全一致。
+
+> ⚠️ 一个差点误判的标记坑：我用 `buildSystemRuntimeBindingKey` 当"Route A 仍在"的标记，得 count=0。
+> 真相是**该函数就是被 `2251ee3` 删掉的**（`git show 2251ee3` 可见 `-function buildSystemRuntimeBindingKey`），
+> 它的缺席才是正确状态。**标记必须取自"修复后应存在"的符号，不能用已被修复删除的旧符号。**
+
+### 三道闸门：1 绿 / 2 与 3 **无法运行**（不是回归）
+
+- `verify:release-names` ✅ exit 0（`[release-check] ok`）
+- `verify:artifacts` ❌ 启动打包 app 时 `FATAL: GPU process isn't usable. Goodbye.`
+- `verify:desktop-boot` ❌ 同样的 GPU 崩溃
+
+穷尽排查后才下结论：Bash 沙箱内 ❌ → PowerShell 工具 ❌ → `dangerouslyDisableSandbox` ❌ →
+10 种 Chromium 参数组合全 ❌（`--disable-gpu` / `--no-sandbox` / `--disable-gpu-sandbox` / `--in-process-gpu` /
+`--single-process` / `--disable-gpu-compositing` / `--disable-software-rasterizer` /
+`--disable-gpu-process-crash-limit` / `--disable-gpu-watchdog` / `--use-angle=swiftshader`）。
+⇒ **本执行环境拿不到 GPU/显示会话**（与 `PITFALLS §3` 一致）。
+⚠️ 本项目早前记录过闸门二/三 exit 0，**现在无法复现**，原因未查明 ⇒ **不许拿"过去绿过"当现在的证据**。
+
+**结论（严格按验收契约）**：闸门 2/3 未运行 ⇒ **不宣告打包验收通过**。
+已验证：闸门一、asar 字节级内容、全量测试（732/731 pass/0 fail/1 skip）、快捷方式目标。
+**待用户完成**：双击开始菜单的 Aidy，确认能启动、能收回微信消息 —— 这才是本次修复的真实链路验收。
+
+**回滚包**：`D:/cyberboss-old-build-20260922/win-unpacked-prev`（496 MB）**故意保留**，待用户确认新包可用后再删。
+
+## 6. 方法论沉淀
 
 1. **"进程还活着" ≠ "进程还在工作"。** 本轮靠 **CPU 增量 + TCP 状态 + 日志 mtime** 三件套
    把"卡死"与"干完不退"区分开：CPU 冻结 + `State:2` LISTEN + 日志停写 = 活干完了被句柄吊住。
