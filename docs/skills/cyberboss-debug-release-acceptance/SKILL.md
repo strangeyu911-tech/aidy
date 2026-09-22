@@ -27,9 +27,19 @@ Use this order for a production-behavior change:
    unproven historical momentary cause.
 4. Update the source, run the relevant tests and checks, and inspect the
    packaged artifact.
-5. Start the executable from the real user launch surface and perform the
+5. **Land the work in commits before building.** The artifact freshness check
+   derives its baseline from the newest commit that touched a packaged path, so a
+   commit made *after* a build pushes the baseline past it and marks every
+   artifact stale. Committing first and packaging second leaves the baseline
+   before the artifacts, which is the state the gate wants. This also covers work
+   that was already sitting uncommitted in the tree: the build packs the tree, so
+   that work is inside the artifacts either way — record it in a commit *before*
+   packaging rather than leaving it uncommitted.
+   A docs-only or test-only commit does not touch a packaged path and therefore
+   does not move the baseline; verify that by re-running the gate after committing.
+6. Start the executable from the real user launch surface and perform the
    acceptance path that matches the changed chain.
-6. Apply the wording gate before reporting a result.
+7. Apply the wording gate before reporting a result.
 
 Do not skip a gate because a symptom looks familiar. If the evidence gate is
 not met, stop at the lower confidence label.
@@ -203,6 +213,53 @@ CyberBoss, rebuild, start the new packaged executable, and verify its actual
 path. Do not stop WorkBuddy without independent evidence that it is the lock
 holder or must be stopped. Do not create a collection of long-lived backup
 `dist` directories just to evade a lock.
+
+### Target order (both targets share one `appOutDir`)
+
+`nsis` and `portable` both pack into `appOutDir=dist/win-unpacked`, so whichever
+runs second must clear the first one's output. That clearing is subject to the
+host's bulk-delete guard (50 deletions per tool call), and the guard failure is
+destructive: it aborts the target *and* leaves `dist/win-unpacked` gutted —
+`resources/app.asar` disappears, so the directory looks present but is unusable.
+
+Run them in the one order that needs no deletions at all — make each target start
+from an absent `win-unpacked`:
+
+1. If `dist/win-unpacked` exists, **move it aside** (rename, not delete).
+2. `node ./node_modules/electron-builder/out/cli/cli.js --win nsis`
+3. `node ./scripts/build-portable.js --prepackaged dist/win-unpacked`
+   — `--prepackaged` reuses the step-2 directory and skips the second `emptyDir`.
+   `build-portable.js` patches `NsisTarget.js` before forwarding its arguments.
+4. Re-run the Start Menu sync separately (`scripts/sync-start-menu-shortcut.ps1`
+   is self-verifying and throws on a target mismatch); a `&&` chain that breaks
+   early skips it silently.
+
+Never run `build-portable.js` without `--prepackaged` while `dist/win-unpacked`
+exists. If portable genuinely must repack the directory, move it aside first.
+
+Leftover directories used by this dance are rebuildable artifacts: remove them
+after the build succeeds, and confirm the removal independently (an `fs.exists`
+check, not just the deleting command's exit code).
+
+### Byte-level content checks
+
+To decide whether a packaged build contains a given change, count the marker
+strings in `dist/win-unpacked/resources/app.asar`. Search **bytes**, not a decoded
+string: a `latin1` decode followed by `split()` can never match a non-ASCII
+marker and yields a false zero.
+
+```js
+const buf = fs.readFileSync("dist/win-unpacked/resources/app.asar");
+const count = (needle) => { const nb = Buffer.from(needle, "utf8"); let c = 0, i = 0;
+  while ((i = buf.indexOf(nb, i)) !== -1) { c++; i += nb.length; } return c; };
+```
+
+`app.asar`'s SHA-256 is the cheap way to tell "the rebuild just repacked the same
+content" from "the rebuild changed something". An identical hash after committing
+work that was already in the tree is the expected, healthy result. A file-count
+difference between the two targets is also expected: `nsis` emits
+`resources/app-update.yml` and `portable` does not. That file is dead metadata
+here (`build.publish` is null, nothing reads `autoUpdater`) — not a regression.
 
 ## Launch surface
 
