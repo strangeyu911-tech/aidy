@@ -44,6 +44,7 @@ class RuntimeSupervisor extends EventEmitter {
     this.intentionalStop = false;
     this.restartTimes = [];
     this.plannedChildStops = new Set();
+    this.forceBridgeRestart = false;
     this.retryTimer = null;
     this.bridgeClient = null;
     this.bridgeControlToken = "";
@@ -317,7 +318,18 @@ class RuntimeSupervisor extends EventEmitter {
 
   async startBridge(profile) {
     const existing = this.children.get("bridge");
-    if (existing && existing.exitCode == null) return;
+    if (existing && existing.exitCode == null) {
+      if (!this.forceBridgeRestart) return;
+      // A forced restart has to genuinely replace the process. Keeping the old one
+      // is only correct for an ordinary start: `createWeixinChannelAdapter`
+      // memoizes the account for the lifetime of the process, so a surviving
+      // bridge keeps polling with the credential that the new scan just
+      // invalidated. Mark the stop as planned so `handleExit` does not read it as
+      // a crash and schedule yet another restart on top of this one.
+      this.plannedChildStops.add("bridge");
+      await stopChild(existing, 10_000);
+      this.children.delete("bridge");
+    }
     const executable = process.execPath;
     assertElectronNodeRuntimeAvailable({ executable });
     this.bridgeControlToken = crypto.randomBytes(32).toString("base64url");
@@ -474,11 +486,27 @@ class RuntimeSupervisor extends EventEmitter {
     }, delay);
   }
 
+  /**
+   * Restart the runtime, replacing the bridge process even when one is still alive.
+   *
+   * `startBridge` keeps an already-running bridge, which is the right default. It is
+   * wrong here. Scanning the QR code writes a fresh credential to disk and revokes
+   * the previous one a few seconds later, but the running bridge memoized the old
+   * account at startup. Without a respawn the newly saved token is never read: the
+   * bridge keeps polling with the revoked credential until it dies with
+   * `rpcCode -14`, which is exactly the "scan succeeded but WeChat went silent"
+   * failure this recovery exists to prevent.
+   */
   async retry() {
     this.restartTimes = [];
     this.phase = "stopped";
     this.lastError = null;
-    await this.start();
+    this.forceBridgeRestart = true;
+    try {
+      await this.start();
+    } finally {
+      this.forceBridgeRestart = false;
+    }
   }
 
   async stop() {

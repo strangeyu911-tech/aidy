@@ -265,11 +265,7 @@ class CyberbossApp {
     }
 
     const shutdown = createShutdownController(async () => {
-      this.clearPendingImageInboundTimers();
-      await this.bridgeControlServer?.close?.();
-      await this.closeLocationServer();
-      await this.zhijiantimeDailySupervisor.close();
-      await this.runtimeAdapter.close();
+      await this.releaseRuntimeResources();
     });
 
     try {
@@ -452,11 +448,28 @@ class CyberbossApp {
       }
     } finally {
       shutdown.dispose();
-      this.clearPendingImageInboundTimers();
-      await this.closeLocationServer();
-      await this.zhijiantimeDailySupervisor.close();
-      await this.runtimeAdapter.close();
+      await this.releaseRuntimeResources();
     }
+  }
+
+  /**
+   * Release everything `run()` acquired.
+   *
+   * Both exit paths must call exactly this one method: the graceful shutdown signal
+   * and the fatal `WECHAT_SESSION_EXPIRED` throw out of the poll loop. When the two
+   * lists were separate copies they drifted, and the fatal path lost
+   * `bridgeControlServer`. Its listening socket then held the event loop open, so the
+   * bridge process survived with nothing polling WeChat. The supervisor only
+   * recognises failures through the child `exit` event, so it kept reporting
+   * "connected" and the control center showed a healthy channel while every message
+   * went unanswered.
+   */
+  async releaseRuntimeResources() {
+    this.clearPendingImageInboundTimers();
+    await this.bridgeControlServer?.close?.();
+    await this.closeLocationServer();
+    await this.zhijiantimeDailySupervisor.close();
+    await this.runtimeAdapter.close();
   }
 
   async ensureLocationServerStarted() {
