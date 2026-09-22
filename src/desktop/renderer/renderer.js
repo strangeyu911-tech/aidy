@@ -229,11 +229,17 @@ function renderError(error) {
   if (!error) { card.classList.add("hidden"); card.textContent = ""; return; }
   const view = connectionStatusView.resolveErrorView(error);
   card.classList.remove("hidden");
-  card.innerHTML = `<strong>${escapeHtml(view.summary)}</strong><p>受影响：${escapeHtml(view.capabilityLabel)}。建议：${escapeHtml(view.repairAction)}</p><small>诊断代码：${escapeHtml(view.code)}</small>${view.buttonLabel ? `<button id="error-action-button" type="button">${escapeHtml(view.buttonLabel)}</button>` : ""}`;
+  const primary = view.buttonLabel ? `<button id="error-action-button" type="button">${escapeHtml(view.buttonLabel)}</button>` : "";
+  const secondary = view.secondaryLabel ? `<button id="error-secondary-button" type="button">${escapeHtml(view.secondaryLabel)}</button>` : "";
+  const actions = primary || secondary ? `<div class="error-actions">${primary}${secondary}</div>` : "";
+  card.innerHTML = `<strong>${escapeHtml(view.summary)}</strong><p>受影响：${escapeHtml(view.capabilityLabel)}。建议：${escapeHtml(view.repairAction)}</p><small>诊断代码：${escapeHtml(view.code)}</small>${actions}`;
   if (view.buttonAction === "retry") {
     $("#error-action-button").addEventListener("click", async () => renderSnapshot(await api.retry()));
   } else if (view.buttonAction === "wechat_login") {
     $("#error-action-button").addEventListener("click", () => openWeChatLogin());
+  }
+  if (view.secondaryAction === "retry") {
+    $("#error-secondary-button").addEventListener("click", async () => renderSnapshot(await api.retry()));
   }
 }
 

@@ -73,3 +73,49 @@ test("hero card claims WeChat only when the channel reports it connected", () =>
     assert.equal(unknown.short, "连接中");
   }
 });
+
+// "Re-scan the QR code" used to be the only button on a WECHAT_SESSION_EXPIRED
+// card. A user whose scan had succeeded but whose background was still parked in
+// the error phase therefore re-scanned forever, because the one action that would
+// actually restart the bridge was never rendered.
+test("a session-expired card offers a restart next to the re-scan", () => {
+  const view = resolveErrorView({
+    code: "WECHAT_SESSION_EXPIRED",
+    capability: "wechat",
+    summary: "微信连接已过期。",
+    repairAction: "点击“连接微信”，重新扫码登录。",
+    nextAction: "wechat_login",
+  });
+
+  assert.equal(view.buttonLabel, "连接微信");
+  assert.equal(view.buttonAction, "wechat_login");
+  assert.equal(view.secondaryLabel, "重试启动");
+  assert.equal(view.secondaryAction, "retry");
+});
+
+test("a card that already restarts does not duplicate the action", () => {
+  const view = resolveErrorView({
+    code: "BRIDGE_NOT_READY",
+    capability: "bridge",
+    summary: "连接服务未就绪",
+    repairAction: "重试",
+    nextAction: "retry",
+  });
+
+  assert.equal(view.buttonAction, "retry");
+  assert.equal(view.secondaryAction, "");
+  assert.equal(view.secondaryLabel, "");
+});
+
+test("a card that only wants a restart_app keeps offering no button", () => {
+  const view = resolveErrorView({
+    code: "BRIDGE_RUNTIME_FILES_MISSING",
+    capability: "bridge",
+    nextAction: "restart_app",
+  });
+
+  assert.equal(view.buttonAction, "");
+  assert.equal(view.buttonLabel, "");
+  assert.equal(view.secondaryAction, "");
+  assert.equal(view.secondaryLabel, "");
+});

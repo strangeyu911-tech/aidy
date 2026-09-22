@@ -41,13 +41,21 @@
     if (!error) return null;
     const capability = normalizeText(error.capability) || "runtime";
     const nextAction = normalizeText(error.nextAction) || "inspect_logs";
+    const buttonAction = nextAction === "wechat_login" ? "wechat_login" : nextAction === "retry" ? "retry" : "";
+    // "Re-scan the QR code" used to be a dead end. When the scan succeeded but the
+    // background was still parked in the error phase, the card offered only
+    // 连接微信 — so the user re-scanned forever, because the one action that would
+    // actually help (restart the background) was never rendered. Offer it too.
+    const secondaryAction = buttonAction === "wechat_login" ? "retry" : "";
     return {
       code: normalizeText(error.code) || "UNKNOWN_ERROR",
       capabilityLabel: ["bridge", "wechat"].includes(capability) ? "微信连接" : capability === "runtime" ? "后台服务" : capability,
       summary: normalizeText(error.summary) || "无法确定具体故障原因。",
       repairAction: normalizeText(error.repairAction) || "请打开“数据与诊断”查看最近日志，记录诊断代码后再重试。",
-      buttonAction: nextAction === "wechat_login" ? "wechat_login" : nextAction === "retry" ? "retry" : "",
-      buttonLabel: nextAction === "wechat_login" ? "连接微信" : nextAction === "retry" ? "重试启动" : "",
+      buttonAction,
+      buttonLabel: buttonAction === "wechat_login" ? "连接微信" : buttonAction === "retry" ? "重试启动" : "",
+      secondaryAction,
+      secondaryLabel: secondaryAction === "retry" ? "重试启动" : "",
     };
   }
 

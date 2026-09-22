@@ -45,6 +45,7 @@ const { prepareElectronWorkingDirectory } = require("./electron-working-director
 const { resolveWechatStatus } = require("./connection-diagnostics");
 const channelHealthView = require("./channel-health-view");
 const { WeixinLoginRunner } = require("./weixin-login-runner");
+const { createWechatLoginRecovery } = require("./wechat-login-recovery");
 const { BRAND, configureElectronBranding } = require("./brand");
 
 const rootDir = path.resolve(__dirname, "..", "..");
@@ -75,9 +76,20 @@ const personaPackStore = new PersonaPackStore({
 const wechatActivityStore = new WechatActivityStore({ stateDir });
 const profileStore = new ProviderProfileStore({ filePath: config.providerProfilesFile });
 const supervisor = new RuntimeSupervisor({ rootDir, stateDir, logger, profileStore });
+// A successful scan has to revive the background as well. After an expired
+// session the supervisor parks in `error` and deliberately never auto-restarts,
+// so without this hook the credential the scan just wrote would sit unused and
+// the card would keep claiming the session was expired.
+const wechatLoginRecovery = createWechatLoginRecovery({ supervisor, logger });
 // Login runs in this process so the QR code can be drawn in the control center
 // instead of a detached terminal window.
-const weixinLoginRunner = new WeixinLoginRunner({ config, onUpdate: () => publishSnapshot() });
+const weixinLoginRunner = new WeixinLoginRunner({
+  config,
+  onUpdate: (state) => {
+    void wechatLoginRecovery.handleStatus(state?.status);
+    publishSnapshot();
+  },
+});
 const credentialVault = new CredentialVault({ filePath: config.credentialVaultFile });
 const diagnosticCapture = new DiagnosticCapture({ filePath: config.diagnosticCaptureFile });
 const providerCatalog = new ProviderCatalog();
