@@ -58,7 +58,7 @@ const ERROR_GUIDANCE = Object.freeze({
   RUNTIME_VERIFIER_UNAVAILABLE: guidance("runtime", "当前兼容运行时还不能完成安全验证。", "检查本机运行时安装；也可以先选择内置 API 或 OpenCode。"),
   CODEBUDDY_BINARY_NOT_FOUND: guidance("setup", "没有找到 WorkBuddy。", "安装并登录 WorkBuddy 后重新打开艾迪。"),
   CODEBUDDY_LOGIN_REQUIRED: guidance("login", "还没有检测到可用的 WorkBuddy 登录。", "先在 WorkBuddy 中登录，然后回到这里再次测试。"),
-  CODEBUDDY_AUTH_FAILED: guidance("connection", "无法建立本机模型连接。", "重新测试；艾迪会自动管理本机连接所需的安全凭据。"),
+  CODEBUDDY_AUTH_FAILED: guidance("connection", "本机模型网关拒绝了登录凭据（多见于 WorkBuddy 更新后）。", "重启艾迪后再测试连接；艾迪会重新协商本机网关的安全凭据。"),
   CODEBUDDY_API_INCOMPATIBLE: guidance("compatibility", "当前 WorkBuddy 版本暂时不兼容。", "升级或更换兼容版本后，再次测试连接。"),
   CODEBUDDY_MODEL_UNAVAILABLE: guidance("model", "WorkBuddy 当前无法使用这个模型。", "刷新模型目录并选择当前可用的模型；显示名称不一定是模型 ID。"),
   CODEBUDDY_SESSION_FAILED: guidance("connection", "WorkBuddy 无法创建模型会话。", "确认 WorkBuddy 已登录且网络正常，然后再次测试。"),

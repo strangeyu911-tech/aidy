@@ -570,10 +570,21 @@ async function checkCodeBuddyEnvironment() {
   publishSnapshot();
   try {
     const distribution = await locateCodeBuddyDistribution();
+    // distribution.version is the bundled CLI version (e.g. 2.137.1) — showing
+    // it as the WorkBuddy app version misled users into thinking their app was
+    // outdated. The app version comes from install-manifest.json (e.g. 5.5.6);
+    // standalone CLI installs have no manifest and fall back to the CLI number,
+    // labeled as such.
+    const cliVersion = distribution.version || "";
+    const appVersion = distribution.appVersion || "";
     codeBuddyStatus = {
       state: "installed",
       label: "已检测到 WorkBuddy",
-      detail: distribution.version ? `版本 ${distribution.version}。登录状态和模型可用性会在连接测试中确认。` : "已检测到可用安装。登录状态和模型可用性会在连接测试中确认。",
+      detail: appVersion
+        ? `WorkBuddy ${appVersion}（内置 CLI ${cliVersion || "未知"}）。登录状态和模型可用性会在连接测试中确认。`
+        : cliVersion
+          ? `CLI 版本 ${cliVersion}。登录状态和模型可用性会在连接测试中确认。`
+          : "已检测到可用安装。登录状态和模型可用性会在连接测试中确认。",
     };
   } catch (error) {
     codeBuddyStatus = {

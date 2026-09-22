@@ -71,7 +71,12 @@ class CodeBuddyProcessHost {
       ];
       const child = this.spawnImpl(selected.command, args, {
         cwd,
-        env: { ...process.env, CODEBUDDY_GATEWAY_AUTH: "password" },
+        // CLI 2.137.1+ persists a machine-level gateway password on its own
+        // first `--serve` run and then ignores the `--settings` overlay's
+        // `gateway.password` entirely. The documented auth precedence is
+        // env > CLI args > config, so the only durable way to keep the vault
+        // password authoritative is to inject it through the environment.
+        env: { ...process.env, CODEBUDDY_GATEWAY_AUTH: "password", CODEBUDDY_GATEWAY_PASSWORD: password },
         shell: false,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -81,8 +86,10 @@ class CodeBuddyProcessHost {
       }
       this.child = child;
       let startupTail = "";
+      let bannerPassword = "";
       const collectStartupOutput = (chunk) => {
         startupTail = `${startupTail}${String(chunk || "")}`.slice(-8 * 1024);
+        bannerPassword = bannerPassword || extractBannerPassword(startupTail);
       };
       child.stdout?.on?.("data", collectStartupOutput);
       child.stderr?.on?.("data", collectStartupOutput);
@@ -104,11 +111,20 @@ class CodeBuddyProcessHost {
           ));
         });
       });
-      const health = await Promise.race([
-        this.healthProbe({ endpoint, servicePassword: password, child, timeoutMs: this.startTimeoutMs }),
+      const healthProbeResult = await Promise.race([
+        this.healthProbe({ endpoint, servicePassword: password, child, timeoutMs: this.startTimeoutMs, getBannerPassword: () => bannerPassword }),
         earlyExit,
       ]);
-      return { endpoint, port, health, overlayPath, mcpConfigPath, pid: Number(child.pid) || 0 };
+      // Injectable probes may return the health object directly; the default
+      // probe returns { health, servicePassword } so the caller can adopt a
+      // banner fallback credential when the vault password was rejected.
+      const health = healthProbeResult && typeof healthProbeResult === "object" && "health" in healthProbeResult
+        ? healthProbeResult.health
+        : healthProbeResult;
+      const effectiveServicePassword = healthProbeResult && typeof healthProbeResult === "object" && "servicePassword" in healthProbeResult
+        ? healthProbeResult.servicePassword
+        : password;
+      return { endpoint, port, health, overlayPath, mcpConfigPath, pid: Number(child.pid) || 0, effectiveServicePassword };
     } catch (error) {
       await this.stop();
       if (error?.code) throw error;
@@ -137,20 +153,47 @@ class CodeBuddyProcessHost {
   }
 }
 
-async function defaultHealthProbe({ endpoint, servicePassword, child, timeoutMs }) {
+async function defaultHealthProbe({ endpoint, servicePassword, child, timeoutMs, getBannerPassword = null }) {
   const deadline = Date.now() + positiveInteger(timeoutMs, DEFAULT_START_TIMEOUT_MS);
   let lastError = null;
   while (Date.now() < deadline) {
     if (child?.exitCode != null) throw hostError("CODEBUDDY_START_TIMEOUT", "Managed CodeBuddy exited before readiness.");
     try {
-      return await new CodeBuddyClient({ endpoint, servicePassword, timeoutMs: 1_000 }).probeCompatibility();
+      const health = await new CodeBuddyClient({ endpoint, servicePassword, timeoutMs: 1_000 }).probeCompatibility();
+      return { health, servicePassword };
     } catch (error) {
       lastError = error;
-      if (error?.code === "CODEBUDDY_API_INCOMPATIBLE" || error?.code === "CODEBUDDY_AUTH_FAILED") throw error;
+      if (error?.code === "CODEBUDDY_API_INCOMPATIBLE") throw error;
+      if (error?.code === "CODEBUDDY_AUTH_FAILED") {
+        // Auth-contract regression fallback: if this CLI ignores the env
+        // override and generated its own password, adopt the banner credential
+        // for this process instead of failing the whole runtime start.
+        const bannerPassword = getBannerPassword?.() || "";
+        if (bannerPassword && bannerPassword !== servicePassword) {
+          try {
+            const health = await new CodeBuddyClient({ endpoint, servicePassword: bannerPassword, timeoutMs: 1_000 }).probeCompatibility();
+            return { health, servicePassword: bannerPassword };
+          } catch (bannerError) {
+            lastError = bannerError;
+          }
+        }
+        throw error;
+      }
     }
     await delay(HEALTH_RETRY_MS);
   }
   throw hostError("CODEBUDDY_START_TIMEOUT", lastError ? "Managed CodeBuddy did not become healthy." : "Managed CodeBuddy readiness timed out.");
+}
+
+// Fallback for the auth-contract regression: older/newer CLIs that ignore the
+// env override print the generated password on the startup banner. If the
+// vault password is rejected but the banner password is accepted, the banner
+// credential keeps the gateway usable for this process; the host reports it
+// back via `effectiveServicePassword` so the client adopts it transparently.
+// It is process-local only — never persisted, never logged.
+function extractBannerPassword(tail) {
+  const match = String(tail || "").match(/Password[=:\s]+([^\s"']{20,})/i);
+  return match ? match[1] : "";
 }
 
 function reserveLoopbackPort() {

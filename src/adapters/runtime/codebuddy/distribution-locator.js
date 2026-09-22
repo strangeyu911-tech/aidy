@@ -64,6 +64,8 @@ async function probeCodeBuddyCandidate(candidate, { fsImpl = fs, execFileImpl = 
       source: normalized.source,
       sourceLabel: normalized.sourceLabel,
       version,
+      appVersion: await readWorkBuddyAppVersion(normalized.executablePath, fsImpl),
+      staticModels: Object.freeze(parseStaticModels(helpOutput)),
       executablePath: normalized.executablePath,
       command: normalized.command,
       argsPrefix: Object.freeze([...normalized.argsPrefix]),
@@ -83,8 +85,48 @@ function sanitizeCodeBuddyDistribution(value) {
     source: normalizeText(source.source),
     sourceLabel: normalizeText(source.sourceLabel),
     version: normalizeText(source.version),
+    appVersion: normalizeText(source.appVersion),
+    staticModels: Array.isArray(source.staticModels) ? Object.freeze(source.staticModels.map((model) => ({
+      id: normalizeText(model?.id),
+      name: normalizeText(model?.name) || normalizeText(model?.id),
+    })).filter((model) => model.id)) : Object.freeze([]),
     executablePath: normalizeText(source.executablePath),
   });
+}
+
+/**
+ * The `--help` `--model` line statically lists every supported model ID —
+ * e.g. "Currently supported: (fast-model, balanced-model, ..., hy4-preview,
+ * hy3, ...)" — independent of any gateway auth. When live catalog discovery
+ * fails (auth regressions, gateway unavailability), this keeps the model
+ * dropdown populated instead of collapsing to the empty-catalog fallback.
+ */
+function parseStaticModels(helpOutput) {
+  const match = String(helpOutput || "").match(/--model[^]*?Currently supported:\s*\(([^)]*)\)/);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .map((id) => ({ id, name: id }));
+}
+
+/**
+ * The CLI's `--version` reports the bundled CLI (e.g. 2.137.1), not the desktop
+ * app the user installed (e.g. 5.5.6). The app version lives in
+ * `resources/install-manifest.json` next to the bundled CLI — three levels up
+ * from `<resources>/app.asar.unpacked/cli/bin/<entry>`. Standalone CLI
+ * installs have no manifest and report "".
+ */
+async function readWorkBuddyAppVersion(cliEntryPath, fsImpl) {
+  try {
+    const resourcesDir = path.resolve(path.dirname(cliEntryPath), "..", "..", "..");
+    const manifestPath = path.join(resourcesDir, "install-manifest.json");
+    const parsed = JSON.parse(await fsImpl.promises.readFile(manifestPath, "utf8"));
+    return normalizeText(parsed?.appVersion);
+  } catch {
+    return "";
+  }
 }
 
 function standaloneCandidate(executablePath, source) {

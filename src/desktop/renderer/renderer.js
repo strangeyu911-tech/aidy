@@ -966,6 +966,9 @@ function friendlyUiError(error) {
   if (code === "CODEBUDDY_LOGIN_REQUIRED") {
     return "还没有检测到 WorkBuddy 登录。请先登录后再刷新模型。";
   }
+  if (code === "CODEBUDDY_AUTH_FAILED") {
+    return "本机模型网关拒绝了登录凭据（多见于 WorkBuddy 更新后）。请重启艾迪再试；仍失败请到连接诊断查看日志。";
+  }
   if (code === "CODEBUDDY_API_INCOMPATIBLE") {
     return "当前 WorkBuddy 版本不支持模型发现。请更新后重试，或在高级设置中填写真实模型 ID。";
   }

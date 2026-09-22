@@ -135,6 +135,8 @@ test("probe returns a frozen safe invocation and always uses bounded shell-free 
     source: "explicit",
     sourceLabel: "CodeBuddy",
     version: "2.115.0",
+    appVersion: "",
+    staticModels: [],
     executablePath,
     command: executablePath,
     argsPrefix: [],
@@ -142,6 +144,7 @@ test("probe returns a frozen safe invocation and always uses bounded shell-free 
   });
   assert.equal(Object.isFrozen(result), true);
   assert.equal(Object.isFrozen(result.argsPrefix), true);
+  assert.equal(Object.isFrozen(result.staticModels), true);
   assert.equal(harness.opens.filter((value) => value === executablePath).length, 2);
   for (const execution of harness.executions) {
     assert.equal(execution.options.shell, false);
@@ -232,7 +235,42 @@ test("sanitizer exposes only approved UI metadata", () => {
     source: "workbuddy-bundled",
     sourceLabel: "WorkBuddy / CodeBuddy",
     version: "2.115.0",
+    appVersion: "",
+    staticModels: [],
     executablePath: "C:\\WorkBuddy\\resources\\codebuddy\\cli.js",
   });
   assert.equal(Object.isFrozen(sanitized), true);
+});
+
+test("probe parses the --help static model list as a catalog fallback", async () => {
+  const executablePath = "C:\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+  const helpOutput = [
+    "Usage: codebuddy [options]",
+    "  --model <model>  Model for the current session. Currently supported: (fast-model, hy4-preview, hy3, glm-5.3)",
+    "  --serve",
+  ].join("\n");
+  const harness = createHarness({
+    files: [
+      executablePath,
+      "C:\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\node.exe",
+      "C:\\WorkBuddy\\resources\\install-manifest.json",
+    ],
+    responses: bundledResponses("C:\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\node.exe", executablePath, "2.137.1", helpOutput),
+  });
+  harness.fsImpl.promises.readFile = async (filePath) => {
+    if (String(filePath).endsWith("install-manifest.json")) return JSON.stringify({ appVersion: "5.5.6" });
+    throw new Error("unexpected read");
+  };
+
+  const result = await probeCodeBuddyCandidate({
+    source: "workbuddy-bundled",
+    sourceLabel: "WorkBuddy / CodeBuddy",
+    executablePath,
+    command: "C:\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\node.exe",
+    argsPrefix: [executablePath],
+    shell: false,
+  }, harness);
+
+  assert.deepEqual(result.staticModels.map((model) => model.id), ["fast-model", "hy4-preview", "hy3", "glm-5.3"]);
+  assert.equal(result.appVersion, "5.5.6");
 });

@@ -9,6 +9,102 @@ const path = require("node:path");
 
 const { CodeBuddyClient } = require("../src/adapters/runtime/codebuddy/client");
 const { CodeBuddyProcessHost } = require("../src/adapters/runtime/codebuddy/process-host");
+const http = require("node:http");
+
+class BannerAuthServer {
+  // Mimics the CLI 2.137.1 auth-contract regression: the gateway only accepts
+  // the machine-generated password it printed on its startup banner and
+  // rejects the vault password the overlay carries.
+  constructor({ acceptedPassword }) {
+    this.acceptedPassword = acceptedPassword;
+    this.seen = [];
+    this.server = http.createServer((request, response) => {
+      const auth = String(request.headers.authorization || "");
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      this.seen.push(token);
+      if (token !== this.acceptedPassword) {
+        response.statusCode = 401;
+        response.end(JSON.stringify({ error: "AUTH_REQUIRED" }));
+        return;
+      }
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ status: "ok", version: "2.137.1" }));
+    });
+  }
+
+  listen() {
+    return new Promise((resolve) => this.server.listen(0, "127.0.0.1", () => resolve(this.server.address().port)));
+  }
+
+  close() {
+    return new Promise((resolve) => this.server.close(resolve));
+  }
+}
+
+test("when the vault password is rejected the banner credential is adopted for this process", async (t) => {
+  const BANNER_PASSWORD = "banner-generated-password-0123456789abcdef";
+  const auth = new BannerAuthServer({ acceptedPassword: BANNER_PASSWORD });
+  const port = await auth.listen();
+  t.after(() => auth.close());
+
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-banner-"));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+
+  const host = new CodeBuddyProcessHost({
+    stateDir,
+    reservePort: async () => port,
+    protectDirectory: async () => {},
+    spawnImpl() {
+      const child = new FakeChild(4403);
+      queueMicrotask(() => child.stdout.emit("data", `Managed gateway ready. Password ${BANNER_PASSWORD}\n`));
+      return child;
+    },
+    // No healthProbe injection: exercise the real probe and its banner fallback.
+  });
+
+  const started = await host.start({
+    distribution: distribution(),
+    workspaceRoot: stateDir,
+    servicePassword: "vault-password-rejected-by-cli",
+  });
+
+  assert.equal(started.effectiveServicePassword, BANNER_PASSWORD);
+  assert.equal(started.health.ok, true);
+  assert.equal(auth.seen.includes("vault-password-rejected-by-cli"), true, "the vault credential is tried first");
+  assert.equal(auth.seen.includes(BANNER_PASSWORD), true, "the banner credential is the fallback");
+  await host.stop();
+});
+
+test("a gateway that rejects both passwords still fails the start", async (t) => {
+  const auth = new BannerAuthServer({ acceptedPassword: "some-other-credential-entirely" });
+  const port = await auth.listen();
+  t.after(() => auth.close());
+
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-banner-"));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+
+  const host = new CodeBuddyProcessHost({
+    stateDir,
+    reservePort: async () => port,
+    protectDirectory: async () => {},
+    startTimeoutMs: 1_500,
+    spawnImpl() {
+      const child = new FakeChild(4404);
+      queueMicrotask(() => child.stdout.emit("data", "Password banner-generated-password-0123456789abcdef\n"));
+      return child;
+    },
+  });
+
+  await assert.rejects(
+    host.start({
+      distribution: distribution(),
+      workspaceRoot: stateDir,
+      servicePassword: "vault-password-rejected-by-cli",
+    }),
+    (error) => error.code === "CODEBUDDY_AUTH_FAILED",
+  );
+  await host.stop();
+});
 const {
   buildCodeBuddyProjectMcpServerConfig,
   SUPERVISOR_PROJECT_TOOL_ALLOWLIST,
@@ -98,7 +194,11 @@ test("managed serve uses loopback, a protected file overlay, and no command-line
   assert.equal(spawns[0].args.includes("44123"), true);
   assert.equal(spawns[0].args.includes("--auth"), false);
   assert.equal(spawns[0].options.env.CODEBUDDY_GATEWAY_AUTH, "password");
-  assert.equal("CODEBUDDY_GATEWAY_PASSWORD" in spawns[0].options.env, false);
+  // The gateway password MUST be injected via env: CLI 2.137.1+ persists its
+  // own machine-level password and ignores the --settings overlay credential,
+  // and the documented auth precedence is env > CLI args > config. The
+  // password must still never appear on the command line (asserted below).
+  assert.equal(spawns[0].options.env.CODEBUDDY_GATEWAY_PASSWORD, "not-on-command-line");
   assert.equal(spawns[0].args.join(" ").includes("not-on-command-line"), false);
   assert.deepEqual(spawns[0].args.slice(-2), [
     "--allowedTools", "mcp__cyberboss_verifier__cyberboss_capability_echo",

@@ -196,7 +196,12 @@ function createCodeBuddyRuntimeAdapter({
       });
       client = clientFactory({
         endpoint: started.endpoint,
-        servicePassword,
+        // Normally the vault password; only when the managed CLI rejected it
+        // did the host adopt the banner credential for this process (see
+        // process-host defaultHealthProbe). Keeping the client on the same
+        // credential the gateway actually accepts avoids a split-brain where
+        // the host health check passes but every client call 401s.
+        servicePassword: started.effectiveServicePassword || servicePassword,
         timeoutMs: positiveInteger(config.codebuddyRequestTimeoutMs, 120_000),
         logger,
         runtimeInstanceId,
@@ -634,21 +639,39 @@ function createCodeBuddyRuntimeAdapter({
     },
     initialize,
     async listModels({ signal } = {}) {
-      await initialize({ signal });
-      await ensureTransportConnected(signal);
-      await verifyLiveIdentity(signal);
-      if (typeof client?.listModels !== "function") {
-        throw runtimeError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy model discovery is unavailable.");
+      try {
+        await initialize({ signal });
+        await ensureTransportConnected(signal);
+        await verifyLiveIdentity(signal);
+        if (typeof client?.listModels !== "function") {
+          throw runtimeError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy model discovery is unavailable.");
+        }
+        const result = await client.listModels({ workingDirectory: defaultWorkspaceRoot, signal });
+        return {
+          models: Array.isArray(result?.models) ? result.models.map((model) => ({
+            id: normalizeText(model?.id),
+            name: normalizeText(model?.name) || normalizeText(model?.id),
+          })).filter((model) => model.id) : [],
+          source: "codebuddy-acp-session-new",
+          currentModelId: normalizeText(result?.currentModelId),
+        };
+      } catch (error) {
+        // Gateway auth regressions and similar outages must not empty the model
+        // dropdown. The locator already parsed the CLI `--help` static list, so
+        // surface that instead — clearly labeled — and rethrow only when even
+        // the static list is unavailable. Cancellations and input errors are
+        // never masked by the fallback.
+        const fallbackEligible = ["CODEBUDDY_AUTH_FAILED", "CODEBUDDY_START_TIMEOUT", "CODEBUDDY_CONNECTION_LOST", "CODEBUDDY_API_INCOMPATIBLE", "CODEBUDDY_LOGIN_REQUIRED", "CODEBUDDY_BINARY_NOT_FOUND"]
+          .includes(String(error?.code || ""));
+        const staticModels = fallbackEligible && Array.isArray(distribution?.staticModels) ? distribution.staticModels : [];
+        if (!staticModels.length) throw error;
+        return {
+          models: staticModels.map((model) => ({ id: model.id, name: model.name })),
+          source: "codebuddy-cli-help-fallback",
+          currentModelId: normalizedProfile.modelId,
+          fallbackReason: error?.code || "",
+        };
       }
-      const result = await client.listModels({ workingDirectory: defaultWorkspaceRoot, signal });
-      return {
-        models: Array.isArray(result?.models) ? result.models.map((model) => ({
-          id: normalizeText(model?.id),
-          name: normalizeText(model?.name) || normalizeText(model?.id),
-        })).filter((model) => model.id) : [],
-        source: "codebuddy-acp-session-new",
-        currentModelId: normalizeText(result?.currentModelId),
-      };
     },
     async sendTextTurn(args) {
       return this.sendTurn(args);
