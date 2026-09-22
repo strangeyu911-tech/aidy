@@ -10,6 +10,9 @@ const { CodeBuddyClient } = require("./client");
 
 const DEFAULT_START_TIMEOUT_MS = 45_000;
 const HEALTH_RETRY_MS = 250;
+const DEFAULT_PERMISSION_MODE = "default";
+// Mirrors the managed CLI's own `--permission-mode` choices.
+const PERMISSION_MODES = Object.freeze(["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]);
 
 class CodeBuddyProcessHost {
   constructor({
@@ -37,10 +40,11 @@ class CodeBuddyProcessHost {
     this.closing = false;
   }
 
-  async start({ distribution, workspaceRoot, servicePassword, model = "", mcpServers = {}, allowedTools = null } = {}) {
+  async start({ distribution, workspaceRoot, servicePassword, model = "", mcpServers = {}, allowedTools = null, permissionMode = DEFAULT_PERMISSION_MODE } = {}) {
     if (this.child) throw hostError("CODEBUDDY_START_TIMEOUT", "Managed CodeBuddy is already running.");
     const selected = requireDistribution(distribution);
     const password = requireText(servicePassword, "CODEBUDDY_AUTH_FAILED", "CodeBuddy service password is required.");
+    const requestedPermissionMode = normalizePermissionMode(permissionMode);
     const cwd = path.resolve(requireText(workspaceRoot, "CODEBUDDY_START_TIMEOUT", "CodeBuddy workspace is required."));
     const port = await this.reservePort();
     const endpoint = `http://127.0.0.1:${port}`;
@@ -59,6 +63,10 @@ class CodeBuddyProcessHost {
         "--settings", overlayPath,
         "--strict-mcp-config", "--mcp-config", mcpConfigPath,
         ...(normalizeText(model) ? ["--model", normalizeText(model)] : []),
+        // Resolving permission decisions inside the managed process avoids the
+        // interactive approval round trip, which can be lost mid-flight and
+        // strand the gateway run in `waiting_for_permission`.
+        ...(requestedPermissionMode === DEFAULT_PERMISSION_MODE ? [] : ["--permission-mode", requestedPermissionMode]),
         ...buildToolRestrictionArgs(allowedTools),
       ];
       const child = this.spawnImpl(selected.command, args, {
@@ -218,6 +226,14 @@ function normalizeMcpServers(value) {
     result[name] = { type: "stdio", command, args, ...(Object.keys(env).length ? { env } : {}) };
   }
   return result;
+}
+
+function normalizePermissionMode(value) {
+  const mode = normalizeText(value) || DEFAULT_PERMISSION_MODE;
+  if (!PERMISSION_MODES.includes(mode)) {
+    throw hostError("CODEBUDDY_API_INCOMPATIBLE", "CodeBuddy permission mode is invalid.");
+  }
+  return mode;
 }
 
 function buildToolRestrictionArgs(value) {

@@ -230,9 +230,10 @@ test("ACP timeout remains active while the SSE response body is streaming", asyn
   await assert.rejects(client.initialize(), (error) => error.code === "CODEBUDDY_START_TIMEOUT");
 });
 
-test("a transport loss aborts another in-flight prompt without waiting for its timeout", async () => {
+test("a rejected request keeps the transport, while a real transport failure aborts in-flight work", async () => {
   const encoder = new TextEncoder();
   let call = 0;
+  let failureMode = "http";
   let promptStartedResolve;
   const promptStarted = new Promise((resolve) => { promptStartedResolve = resolve; });
   const client = new CodeBuddyClient({
@@ -261,12 +262,26 @@ test("a transport loss aborts another in-flight prompt without waiting for its t
           }) },
         };
       }
-      return { ok: false, status: 503, async text() { return ""; } };
+      if (failureMode === "http") return { ok: false, status: 503, async text() { return ""; } };
+      throw new Error("socket hang up");
     },
   });
   await client.connect();
   const prompt = client.prompt({ sessionId: "s", text: "hello" });
   await promptStarted;
+
+  // A server-side rejection answers the request; it is not transport death.
+  // Tearing the connection down here is what previously aborted the permission
+  // response the gateway was waiting for and wedged the run forever.
+  await assert.rejects(client.getIdentityFingerprint(), (error) => error.code === "CODEBUDDY_CONNECTION_LOST");
+  assert.equal(client.isConnected(), true);
+  let promptSettled = false;
+  prompt.then(() => { promptSettled = true; }, () => { promptSettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(promptSettled, false, "a rejected request must not abort the in-flight prompt");
+
+  // A genuine transport failure still aborts everything on that transport.
+  failureMode = "transport";
   await assert.rejects(client.getIdentityFingerprint(), (error) => error.code === "CODEBUDDY_CONNECTION_LOST");
   await assert.rejects(prompt, (error) => error.code === "CODEBUDDY_CONNECTION_LOST");
   assert.equal(client.isConnected(), false);

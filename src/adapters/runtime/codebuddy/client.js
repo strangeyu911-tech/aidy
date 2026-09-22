@@ -381,7 +381,7 @@ class CodeBuddyClient {
         throw protocolError("CODEBUDDY_AUTH_FAILED", "CodeBuddy rejected the managed gateway credentials.");
       }
       if (!response.ok) {
-        throw protocolError("CODEBUDDY_CONNECTION_LOST", `CodeBuddy public API returned HTTP ${Number(response.status) || 0}.`);
+        throw httpStatusFailure(response.status);
       }
       return await readBoundedJson(response);
     } catch (error) {
@@ -389,7 +389,7 @@ class CodeBuddyClient {
         throw controller.signal.reason;
       }
       if (error?.code) {
-        if (error.code === "CODEBUDDY_CONNECTION_LOST") this.markDisconnected("connection_lost", error);
+        if (error.code === "CODEBUDDY_CONNECTION_LOST" && !isHttpStatusFailure(error)) this.markDisconnected("connection_lost", error);
         throw error;
       }
       if (controller.signal.aborted) {
@@ -477,7 +477,7 @@ class CodeBuddyClient {
       }
       onResponse?.(response);
       if (response.status === 401 || response.status === 403) throw protocolError("CODEBUDDY_AUTH_FAILED", "CodeBuddy rejected the managed gateway credentials.");
-      if (!response.ok) throw protocolError("CODEBUDDY_CONNECTION_LOST", `CodeBuddy public API returned HTTP ${Number(response.status) || 0}.`);
+      if (!response.ok) throw httpStatusFailure(response.status);
       return typeof readResponse === "function" ? await readResponse(response) : response;
     } catch (error) {
       if (trace) {
@@ -523,7 +523,7 @@ class CodeBuddyClient {
         throw timeoutError;
       }
       if (error?.code) {
-        if (error.code === "CODEBUDDY_CONNECTION_LOST") this.markDisconnected("connection_lost", error);
+        if (error.code === "CODEBUDDY_CONNECTION_LOST" && !isHttpStatusFailure(error)) this.markDisconnected("connection_lost", error);
         throw error;
       }
       if (controller.signal.aborted) {
@@ -917,6 +917,22 @@ function summarizeDiagnosticError(error) {
     ...(diagnostic.lastEventType ? { lastEventType: normalizeText(diagnostic.lastEventType) } : {}),
     ...(diagnostic.protocolFailure ? { protocolFailure: normalizeText(diagnostic.protocolFailure) } : {}),
   };
+}
+
+// A single rejected request is not transport death. Tearing the transport down
+// aborts every in-flight request, including a permission response that the
+// gateway is actively waiting for, and strands the run in
+// `waiting_for_permission` — after which every later prompt is queued and never
+// executed. Keep the transport and let the caller decide.
+function httpStatusFailure(status) {
+  const numericStatus = Number(status) || 0;
+  const error = protocolError("CODEBUDDY_CONNECTION_LOST", `CodeBuddy public API returned HTTP ${numericStatus}.`);
+  return attachDiagnostic(error, { httpStatus: numericStatus });
+}
+
+function isHttpStatusFailure(error) {
+  const status = error?.diagnostic?.httpStatus;
+  return Number.isSafeInteger(status) && status > 0;
 }
 
 function attachDiagnostic(error, diagnostic) {

@@ -419,6 +419,47 @@ test("supervisor CodeBuddy denies permission requests without emitting an approv
   assert.equal(calls.find(([name]) => name === "permission.response")[1].observability.phase, "automatic_denial");
   const start = calls.find(([name]) => name === "host.start")[1];
   assert.deepEqual(start.allowedTools, ["mcp__cyberboss_supervisor__disabled"]);
+  // Supervisor mode denies tool use by policy, so the managed process must
+  // resolve that itself. Asking and waiting is what wedged the channel.
+  assert.equal(start.permissionMode, "dontAsk");
+  await adapter.close();
+});
+
+test("a dropped permission response is retried before the run is abandoned", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-retry-"));
+  let permissionAttempts = 0;
+  const { adapter, calls } = createHarness({
+    sessionsFile: path.join(root, "sessions.json"),
+    clientOverrides: {
+      async prompt(input) {
+        calls.push(["prompt", { sessionId: input.sessionId, text: input.text }]);
+        input.onRequest({
+          jsonrpc: "2.0",
+          id: "permission-1",
+          method: "session/request_permission",
+          params: {
+            sessionId: input.sessionId,
+            toolCall: { title: "Read", rawInput: { filePath: "C:\\Users\\23159\\.cyberboss\\Strange-profile.md" } },
+            options: [
+              { optionId: "allow-once", kind: "allow_once" },
+              { optionId: "reject", kind: "reject_once" },
+            ],
+          },
+        });
+        return { text: "done", stopReason: "end_turn" };
+      },
+      async respondPermission(input) {
+        permissionAttempts += 1;
+        calls.push(["permission.response", input]);
+        if (permissionAttempts === 1) throw new Error("socket hang up");
+      },
+    },
+  });
+
+  await adapter.sendTurn({ bindingKey: "binding", workspaceRoot: "D:\\CyberBoss", text: "read it" });
+  await waitFor(() => permissionAttempts >= 2);
+  assert.equal(permissionAttempts, 2);
+  assert.equal(calls.filter(([name]) => name === "permission.response").length, 2);
   await adapter.close();
 });
 
@@ -456,6 +497,9 @@ test("developer CodeBuddy keeps explicit approval handling available", async () 
   await adapter.respondApproval({ requestId: "permission-dev", decision: "accept", result: { remember: true } });
   assert.equal(calls.find(([name]) => name === "permission.response")[1].outcome, "allow-always");
   assert.equal(calls.find(([name]) => name === "host.start")[1].allowedTools, null);
+  // Developer mode is the one that genuinely wants the control center to answer
+  // approval prompts, so it keeps the interactive permission mode.
+  assert.equal(calls.find(([name]) => name === "host.start")[1].permissionMode, "default");
   await adapter.close();
 });
 

@@ -269,3 +269,46 @@ test("health compatibility probe accepts documented envelope and rejects malform
   });
   await assert.rejects(malformed.probeCompatibility(), (error) => error.code === "CODEBUDDY_API_INCOMPATIBLE");
 });
+
+test("managed serve resolves permission decisions in-process when a non-default mode is requested", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-codebuddy-permission-mode-"));
+  const spawns = [];
+  const host = new CodeBuddyProcessHost({
+    stateDir,
+    reservePort: async () => 44131,
+    protectDirectory: async () => {},
+    spawnImpl(command, args) { spawns.push({ command, args }); return new FakeChild(4403); },
+    healthProbe: async () => ({ ok: true, status: "ok" }),
+  });
+
+  await host.start({
+    distribution: distribution(),
+    workspaceRoot: stateDir,
+    servicePassword: "secret",
+    permissionMode: "dontAsk",
+  });
+  const args = spawns[0].args;
+  assert.equal(args.includes("--permission-mode"), true);
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");
+  await host.stop();
+
+  // The default mode stays implicit so the managed process keeps its own default.
+  await host.start({
+    distribution: distribution(),
+    workspaceRoot: stateDir,
+    servicePassword: "secret",
+  });
+  assert.equal(spawns[1].args.includes("--permission-mode"), false);
+  await host.stop();
+
+  await assert.rejects(
+    host.start({
+      distribution: distribution(),
+      workspaceRoot: stateDir,
+      servicePassword: "secret",
+      permissionMode: "yolo",
+    }),
+    (error) => error.code === "CODEBUDDY_API_INCOMPATIBLE",
+  );
+  assert.equal(spawns.length, 2);
+});
