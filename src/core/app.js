@@ -117,7 +117,10 @@ class CyberbossApp {
       filePath: config.systemMessageQueueFile,
       resolveSupervisionKey: (message) => this.resolveLegacySupervisionKey(message),
     });
-    this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
+    this.deferredSystemReplyQueue = new DeferredSystemReplyStore({
+      filePath: config.deferredSystemReplyQueueFile,
+      maxAgeMs: config.deferredSystemReplyMaxAgeMs,
+    });
     this.proactiveDeliveryLog = config.proactiveDeliveryLogFile
       ? new ProactiveDeliveryLog({ filePath: config.proactiveDeliveryLogFile })
       : null;
@@ -361,6 +364,14 @@ class CyberbossApp {
       accountId: account.accountId,
       userId: account.userId,
     });
+    // Anything that went stale while the process was down (or while the user
+    // was offline) is dropped here rather than left to be delivered on the next
+    // inbound turn. A proactive check-in that old is a false statement, not a
+    // late reminder.
+    const expiredDeferred = this.deferredSystemReplyQueue.pruneExpired();
+    if (expiredDeferred) {
+      console.warn(`[cyberboss] dropped ${expiredDeferred} expired deferred repl(ies) at startup`);
+    }
     this.systemMessageDispatcher = new SystemMessageDispatcher({
       queueStore: this.systemMessageQueue,
       config: this.config,
@@ -784,6 +795,15 @@ class CyberbossApp {
       return;
     }
     const pendingReplies = this.deferredSystemReplyQueue.drainForSender(normalized.accountId, normalized.senderId);
+    // Expired replies are dropped inside the store as part of the drain. Log it:
+    // a silent discard is how the pre-6c8a72e failure mode stayed invisible for
+    // a whole morning, and "the queue said nothing" must never again be
+    // indistinguishable from "nothing happened".
+    if (this.deferredSystemReplyQueue.discardedCount) {
+      console.warn(
+        `[cyberboss] dropped expired deferred replies sender=${normalized.senderId} count=${this.deferredSystemReplyQueue.discardedCount}`
+      );
+    }
     if (!pendingReplies.length) {
       return;
     }

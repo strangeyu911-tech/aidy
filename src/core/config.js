@@ -37,6 +37,10 @@ function readConfig() {
     systemMessageQueueFile: path.join(stateDir, "system-message-queue.json"),
     proactiveDeliveryLogFile: path.join(stateDir, "proactive-delivery-log.json"),
     deferredSystemReplyQueueFile: path.join(stateDir, "deferred-system-replies.json"),
+    // A proactive check-in stops being true quickly: "8 点了，指尖时光还没动过"
+    // sent at lunchtime is a false statement, not a late reminder. Deferred
+    // replies older than this are dropped rather than delivered late.
+    deferredSystemReplyMaxAgeMs: readIntEnv("CYBERBOSS_DEFERRED_REPLY_MAX_AGE_MS"),
     checkinConfigFile: path.join(stateDir, "checkin-config.json"),
     timelineScreenshotQueueFile: path.join(stateDir, "timeline-screenshot-queue.json"),
     projectToolContextFile: path.join(stateDir, "project-tool-runtime-context.json"),
