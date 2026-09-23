@@ -616,7 +616,14 @@ class StreamDelivery {
     if (typeof this.onDeferredSystemReply !== "function") {
       return false;
     }
-    if (!isSystemReplyContextFailure(error)) {
+    // Previously this only deferred on a context-token failure (ret=-2), so a
+    // generic transport failure fell through to `throw` and the message was
+    // lost with nothing but a log line. Eleven of the twelve `sender.failed`
+    // events in the live bridge log are exactly that shape (channel=system,
+    // SEND_FAILED, apiStatus all null), which is why proactive messages
+    // vanished without the UI reporting anything. Anything not explicitly
+    // permanent is now worth retrying later.
+    if (!isDeferrableSystemReplyFailure(error)) {
       return false;
     }
     const target = state?.replyTarget || {};
@@ -1188,6 +1195,38 @@ function isSystemReplyContextFailure(error) {
     || errcode === -2
     || message.includes("sendMessage ret=-2")
     || message.includes("errcode=-2");
+}
+
+/**
+ * Permanent failures are the only ones worth dropping. Everything else —
+ * including a bare transport error with no numeric code at all — is deferred
+ * so a later turn can try again.
+ *
+ * Deliberately conservative: when in doubt, defer. A message that is retried
+ * and succeeds is strictly better than one that is silently discarded, and the
+ * deferred queue already caps its own growth.
+ */
+const PERMANENT_SEND_FAILURE_CODES = new Set([
+  "WEIXIN_INVALID_TARGET",
+  "WEIXIN_ACCOUNT_UNAVAILABLE",
+  "WEIXIN_CONTENT_REJECTED",
+  "INVALID_CREDENTIALS",
+  "UNSUPPORTED_TARGET",
+]);
+
+function isDeferrableSystemReplyFailure(error) {
+  const code = normalizeText(error?.code);
+  if (code && PERMANENT_SEND_FAILURE_CODES.has(code)) {
+    return false;
+  }
+  const ret = normalizeNumericErrorCode(error?.ret);
+  const errcode = normalizeNumericErrorCode(error?.errcode);
+  // Known permanent numeric codes: -1 is a generic upstream rejection that a
+  // retry will reproduce; anything else is assumed transient.
+  if (ret === -1 || errcode === -1) {
+    return false;
+  }
+  return true;
 }
 
 function normalizeNumericErrorCode(value) {

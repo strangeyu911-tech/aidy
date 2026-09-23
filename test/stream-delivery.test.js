@@ -593,6 +593,77 @@ test("system send_message is deferred after retry exhaustion", async () => {
   assert.equal(deferred[0].text, "等等我");
 });
 
+test("generic system send failure is deferred instead of silently dropped", async () => {
+  // Mirrors the live bridge log: channel=system, SEND_FAILED, no ret/errcode.
+  // This used to fall through both the retry path and the defer path and be
+  // discarded with nothing but a log line.
+  const deferred = [];
+  const { sent, streamDelivery } = createHarness({
+    async sendText() {
+      const error = new Error("sendMessage failed");
+      error.code = "SEND_FAILED";
+      throw error;
+    },
+    getKnownContextTokens() {
+      return {};
+    },
+  });
+  streamDelivery.onDeferredSystemReply = async (payload) => {
+    deferred.push(payload);
+  };
+  streamDelivery.queueReplyTargetForThread("thread-generic", {
+    userId: "user-generic",
+    contextToken: "ctx-1",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-generic",
+    turnId: "turn-generic",
+    itemId: "item-generic",
+    text: "{\"action\":\"send_message\",\"message\":\"该吃饭了\"}",
+  });
+
+  assert.deepEqual(sent, []);
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0].text, "该吃饭了");
+  assert.equal(deferred[0].userId, "user-generic");
+});
+
+test("permanent system send failure is not deferred", async () => {
+  // A permanent failure must not enter the deferred queue, or it would be
+  // retried forever. It is still swallowed by the send-chain catch in
+  // sendSystemReply (only logged), which is a separate pre-existing gap.
+  const deferred = [];
+  const sent = [];
+  const { streamDelivery } = createHarness({
+    async sendText(payload) {
+      sent.push(payload);
+      const error = new Error("target no longer valid");
+      error.code = "WEIXIN_INVALID_TARGET";
+      throw error;
+    },
+  });
+  streamDelivery.onDeferredSystemReply = async (payload) => {
+    deferred.push(payload);
+  };
+  streamDelivery.queueReplyTargetForThread("thread-perm", {
+    userId: "user-perm",
+    contextToken: "ctx-1",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-perm",
+    turnId: "turn-perm",
+    itemId: "item-perm",
+    text: "{\"action\":\"send_message\",\"message\":\"永远发不出\"}",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(deferred, []);
+});
+
 test("plain reply prepends deferred prefix to the next reply", async () => {
   const { sent, streamDelivery, bindingByThreadId } = createHarness();
   bindingByThreadId.set("thread-7", { bindingKey: "binding-7" });
