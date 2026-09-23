@@ -133,14 +133,29 @@ class SupervisionDispatcher {
     const existing = this.planStore.list({ state: "pending" }).find((item) => item.source === "random");
     if (existing) return existing;
     const range = this.checkinConfig.getRange(resolveDefaultCheckinRange());
-    const delay = pickRandomDelay(range.minIntervalMs, range.maxIntervalMs);
-    return this.planStore.add({
+    // A night the user never answered must not be rewritten as another night of
+    // the same cadence. Every random checkpoint is re-created the moment the
+    // previous one leaves "pending", so without this the interval is a constant
+    // 15-45 min regardless of whether anyone replied -- that is how 2026-09-23
+    // produced eight unanswered check-ins between 23:43 and 07:57, and why the
+    // 15-45 min "standard" preset was in practice a nonstop knock.
+    const backoff = resolveRandomBackoff(this.planStore.list({ includeRandom: true }).filter((item) => item.source === "random"), now);
+    const delay = pickRandomDelay(range.minIntervalMs, range.maxIntervalMs) * backoff.multiplier;
+    const checkpoint = this.planStore.add({
       id: `random:${crypto.randomUUID()}`,
       canonicalTaskId: "random:current",
       source: "random",
       dueAt: new Date(now.getTime() + delay).toISOString(),
       prompt: "The user comes to mind again. Review recent context and decide whether a useful, non-repetitive check-in is appropriate.",
     });
+    if (backoff.multiplier > 1) {
+      this.logger?.info("supervision.random_backoff", {
+        multiplier: backoff.multiplier,
+        unansweredStreak: backoff.streak,
+        delayMs: delay,
+      });
+    }
+    return checkpoint;
   }
 
   /**
@@ -198,8 +213,66 @@ function pickRandomDelay(min, max) {
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 
+// How many consecutive unanswered random check-ins are required before the
+// interval starts stretching, and where it stops. Two is deliberate: a single
+// missed window is normal (the user is in a meeting, or the model judged a
+// check-in unnecessary), so the first one must not change anything.
+const RANDOM_BACKOFF_FREE_STREAK = 2;
+const RANDOM_BACKOFF_MAX_MULTIPLIER = 8;
+
+/**
+ * Escalating multiplier for the random check-in interval, derived purely from
+ * the plan itself so no new state file is needed.
+ *
+ * "Unanswered" is measured from the checkpoint lifecycle, not from whether a
+ * message left the machine: a random checkpoint that reached "completed" was
+ * handed to the model, and an all-night run of those produced silent replies.
+ * Treating queued-but-ignored as unanswered is exactly the feedback loop we
+ * want to break. Checkpoints the dispatcher itself dropped (`skipped`, e.g.
+ * quiet hours or newly arrived user activity) say nothing about the user's
+ * responsiveness, so they neither extend nor reset the streak.
+ *
+ * Half-open on purpose: the streak starts at the newest blocker and stops at
+ * the first entry that is not a blocker, so old traffic cannot inflate it.
+ */
+function resolveRandomBackoff(checkpoints, now = new Date()) {
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  const ordered = (Array.isArray(checkpoints) ? checkpoints : [])
+    .filter((item) => item?.source === "random")
+    .sort((left, right) => {
+      const leftTime = Date.parse(left?.updatedAt || left?.createdAt || "") || 0;
+      const rightTime = Date.parse(right?.updatedAt || right?.createdAt || "") || 0;
+      return rightTime - leftTime;
+    });
+
+  let streak = 0;
+  for (const checkpoint of ordered) {
+    const blocked = isBlockingOutcome(checkpoint);
+    if (!blocked) break;
+    streak += 1;
+  }
+
+  if (!Number.isFinite(nowMs) || streak <= RANDOM_BACKOFF_FREE_STREAK) {
+    return { multiplier: 1, streak, capped: false };
+  }
+  const steps = streak - RANDOM_BACKOFF_FREE_STREAK;
+  const multiplier = Math.min(2 ** steps, RANDOM_BACKOFF_MAX_MULTIPLIER);
+  return { multiplier, streak, capped: multiplier >= RANDOM_BACKOFF_MAX_MULTIPLIER };
+}
+
+function isBlockingOutcome(checkpoint) {
+  const state = normalizeText(checkpoint?.state);
+  if (state === "completed") return true;
+  if (state !== "failed") return false;
+  const outcome = normalizeText(checkpoint?.outcome);
+  // target_unavailable means there is nobody to reach at all; that is an
+  // infrastructure problem, not the user ignoring check-ins, so it must not be
+  // counted as an unanswered knock.
+  return outcome !== "target_unavailable";
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-module.exports = { SupervisionDispatcher, pickRandomDelay };
+module.exports = { SupervisionDispatcher, pickRandomDelay, resolveRandomBackoff };

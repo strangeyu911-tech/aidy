@@ -13,7 +13,7 @@ const {
   resolveDueCheckpointAction,
   shouldSupersede,
 } = require("../src/core/supervision-policy");
-const { SupervisionDispatcher } = require("../src/desktop/supervision-dispatcher");
+const { SupervisionDispatcher, resolveRandomBackoff } = require("../src/desktop/supervision-dispatcher");
 
 function makeStore() {
   return new SupervisionPlanStore({
@@ -367,5 +367,152 @@ test("prune removes expired pending when keepPending is false", () => {
   const removed = store.prune({ keepDays: 30, keepPending: false, now: new Date("2026-08-23T12:00:00.000Z") });
   assert.equal(removed, 1);
   assert.equal(store.list().some((item) => item.id === "sp"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Random check-in backoff. A night of unanswered check-ins used to be
+// re-scheduled at the same 15-45 min cadence forever, because every random
+// checkpoint is replaced the instant the previous one leaves "pending".
+// ---------------------------------------------------------------------------
+
+function randomHistory(entries, now = new Date("2026-09-23T08:00:00.000Z")) {
+  return entries.map((entry, index) => ({
+    source: "random",
+    state: entry.state,
+    outcome: entry.outcome,
+    updatedAt: new Date(now.getTime() - (index + 1) * 30 * 60_000).toISOString(),
+    createdAt: new Date(now.getTime() - (index + 1) * 30 * 60_000).toISOString(),
+  }));
+}
+
+test("random backoff leaves the interval alone for a single missed window", () => {
+  const now = new Date("2026-09-23T08:00:00.000Z");
+  assert.deepEqual(resolveRandomBackoff([], now), { multiplier: 1, streak: 0, capped: false });
+  assert.deepEqual(
+    resolveRandomBackoff(randomHistory([{ state: "completed", outcome: "queued" }], now), now),
+    { multiplier: 1, streak: 1, capped: false },
+  );
+  // The free streak is 2, so the second one still must not stretch anything.
+  assert.deepEqual(
+    resolveRandomBackoff(randomHistory([
+      { state: "completed", outcome: "queued" },
+      { state: "completed", outcome: "queued" },
+    ], now), now),
+    { multiplier: 1, streak: 2, capped: false },
+  );
+});
+
+test("random backoff stretches exponentially once check-ins go unanswered", () => {
+  const now = new Date("2026-09-23T08:00:00.000Z");
+  const run = (count) => resolveRandomBackoff(
+    randomHistory(Array.from({ length: count }, () => ({ state: "completed", outcome: "queued" })), now),
+    now,
+  );
+  assert.equal(run(3).multiplier, 2);
+  assert.equal(run(4).multiplier, 4);
+  assert.equal(run(8).multiplier, 8);
+  assert.deepEqual(run(20), { multiplier: 8, streak: 20, capped: true });
+});
+
+test("dispatcher-dropped checkpoints neither extend nor reset the streak", () => {
+  const now = new Date("2026-09-23T08:00:00.000Z");
+  // A pending arrival means real user activity, so the streak is over.
+  assert.equal(resolveRandomBackoff(randomHistory([
+    { state: "skipped", outcome: "pending_activity" },
+    { state: "completed", outcome: "queued" },
+    { state: "completed", outcome: "queued" },
+    { state: "completed", outcome: "queued" },
+  ], now), now).multiplier, 1);
+  // Quiet hours are the dispatcher's own decision, not the user ignoring us.
+  assert.equal(resolveRandomBackoff(randomHistory([
+    { state: "skipped", outcome: "suppressed_quiet_hours" },
+    { state: "completed", outcome: "queued" },
+    { state: "completed", outcome: "queued" },
+    { state: "completed", outcome: "queued" },
+  ], now), now).multiplier, 1);
+});
+
+test("an unreachable target is not treated as an unanswered check-in", () => {
+  const now = new Date("2026-09-23T08:00:00.000Z");
+  // No account configured is an infrastructure problem; backing off on it
+  // would silently slow the cadence down for a reason the user never caused.
+  assert.equal(resolveRandomBackoff(randomHistory([
+    { state: "failed", outcome: "target_unavailable" },
+    { state: "failed", outcome: "target_unavailable" },
+    { state: "failed", outcome: "target_unavailable" },
+  ], now), now).multiplier, 1);
+  // A generic failure is a real unanswered knock.
+  assert.equal(resolveRandomBackoff(randomHistory([
+    { state: "failed", outcome: "" },
+    { state: "failed", outcome: "" },
+    { state: "failed", outcome: "" },
+  ], now), now).multiplier, 2);
+});
+
+test("the scheduler applies the backoff multiplier to the configured interval", async () => {
+  const now = new Date("2026-09-23T08:00:00.000Z");
+  const finished = randomHistory(Array.from({ length: 6 }, () => ({ state: "completed", outcome: "queued" })), now);
+  const added = [];
+  const planStore = {
+    due: () => [],
+    list({ state } = {}) {
+      const all = finished.concat(added);
+      return state ? all.filter((item) => item.state === state) : all;
+    },
+    add(item) {
+      const created = { id: item.id, state: "pending", ...item };
+      added.push(created);
+      return created;
+    },
+    update: () => null,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-supervision-backoff-"));
+  const dispatcher = new SupervisionDispatcher({
+    config: {
+      systemMessageQueueFile: path.join(dir, "queue.json"),
+      checkinConfigFile: path.join(dir, "checkin.json"),
+    },
+    desktopStateStore: { get: () => ({ desiredState: "running", randomCheckinsEnabled: true }) },
+    planStore,
+  });
+
+  dispatcher.ensureRandomCheckpoint(now);
+
+  // "standard" runs 15-45 min, so six unanswered check-ins must land far
+  // outside that band -- this is the assertion the old code failed.
+  assert.equal(added.length, 1);
+  const delayMinutes = (Date.parse(added[0].dueAt) - now.getTime()) / 60_000;
+  assert.ok(delayMinutes >= 15 * 8, `expected >= 120 min, got ${delayMinutes}`);
+  assert.ok(delayMinutes <= 45 * 8, `expected <= 360 min, got ${delayMinutes}`);
+});
+
+test("a fresh streak keeps the plain configured interval", async () => {
+  const now = new Date("2026-09-23T08:00:00.000Z");
+  const added = [];
+  const planStore = {
+    due: () => [],
+    list: () => added,
+    add(item) {
+      const created = { id: item.id, state: "pending", ...item };
+      added.push(created);
+      return created;
+    },
+    update: () => null,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-supervision-nobackoff-"));
+  const dispatcher = new SupervisionDispatcher({
+    config: {
+      systemMessageQueueFile: path.join(dir, "queue.json"),
+      checkinConfigFile: path.join(dir, "checkin.json"),
+    },
+    desktopStateStore: { get: () => ({ desiredState: "running", randomCheckinsEnabled: true }) },
+    planStore,
+  });
+
+  dispatcher.ensureRandomCheckpoint(now);
+
+  assert.equal(added.length, 1);
+  const delayMinutes = (Date.parse(added[0].dueAt) - now.getTime()) / 60_000;
+  assert.ok(delayMinutes >= 15 && delayMinutes <= 45, `expected 15-45 min, got ${delayMinutes}`);
 });
 
