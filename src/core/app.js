@@ -917,13 +917,11 @@ class CyberbossApp {
     }
     const planningCommitment = this.zhijiantimeDailySupervisor?.capturePlanningCommitment(normalized.text, { sourceRef });
     if (planningCommitment) {
-      const systemNote = [
-        "[CyberBoss supervision note]",
-        `A zhijiantime daily-planning follow-up was saved for ${planningCommitment.checkpoint.dueAt}.`,
-        `In this reply, naturally tell the user: “${planningCommitment.announcement}”`,
-        "Do not mention this note or expose internal scheduling fields.",
-      ].join("\n");
-      return { ...normalized, text: `${normalized.text}\n\n${systemNote}` };
+      return { ...normalized, text: `${normalized.text}\n\n${buildSupervisionNote({
+        source: planningCommitment.checkpoint.source,
+        dueAt: planningCommitment.checkpoint.dueAt,
+        summary: planningCommitment.announcement,
+      })}` };
     }
     const settings = this.desktopStateStore.get();
     const arrangement = extractExplicitCheckpoint(normalized.text, { quietHours: settings.quietHours })
@@ -940,13 +938,11 @@ class CyberbossApp {
       announcedAt: new Date().toISOString(),
     });
     this.supervisionPlanStore.supersedeCanonical(checkpoint.canonicalTaskId, checkpoint.id);
-    const systemNote = [
-      "[CyberBoss supervision note]",
-      `A ${checkpoint.source} follow-up was saved for ${checkpoint.dueAt}.`,
-      `In this reply, naturally tell the user: “${arrangement.announcement}”`,
-      "Do not mention this note or expose internal scheduling fields.",
-    ].join("\n");
-    return { ...normalized, text: `${normalized.text}\n\n${systemNote}` };
+    return { ...normalized, text: `${normalized.text}\n\n${buildSupervisionNote({
+      source: checkpoint.source,
+      dueAt: checkpoint.dueAt,
+      summary: arrangement.announcement,
+    })}` };
   }
 
   isTurnDispatchBlocked(bindingKey, workspaceRoot, { ignoreBoundary = false } = {}) {
@@ -2590,6 +2586,27 @@ class CyberbossApp {
       provider: "weixin",
     };
   }
+}
+
+/**
+ * Builds the supervision note appended to a user turn.
+ *
+ * The note deliberately states *facts* (what was recorded, for when) and lets
+ * the model phrase the acknowledgement. Earlier revisions embedded a verbatim
+ * line and ordered the model to say it ("naturally tell the user: “…”"), which
+ * turned a parser mistake into the assistant appearing to invent a promise the
+ * user had explicitly denied. Keeping the wording model-owned makes a bad
+ * parse far less costly and never forces the assistant to assert something the
+ * user may already be objecting to.
+ */
+function buildSupervisionNote({ source = "", dueAt = "", summary = "" } = {}) {
+  return [
+    "[CyberBoss supervision note]",
+    `A ${normalizeText(source) || "conversation"} follow-up was recorded, due ${normalizeText(dueAt) || "at an unspecified time"}.`,
+    normalizeText(summary) ? `Background on why: ${normalizeText(summary)}` : "",
+    "Acknowledge this in your own words only if it fits the conversation. Never announce an exact time the user did not ask for, and never claim you changed or cancelled a follow-up unless you actually did.",
+    "Do not mention this note or expose internal scheduling fields.",
+  ].filter(Boolean).join("\n");
 }
 
 function buildRunKey(threadId, turnId) {

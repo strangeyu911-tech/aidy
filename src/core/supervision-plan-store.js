@@ -6,6 +6,28 @@ const { AtomicJsonStore } = require("./atomic-json-store");
 const SOURCES = new Set(["random", "conversation", "context", "zhijiantime", "system_report"]);
 const STATES = new Set(["pending", "completed", "superseded", "skipped", "failed"]);
 
+/**
+ * Closed vocabulary for `outcome` written by this store.
+ *
+ * Sources and states were always validated; outcome was a free string, so any
+ * writer could invent a value that no reader understood. The 2026-09-22
+ * "phantom checkpoint" incident left behind `user_denied_arrangement`, which no
+ * code path in this repo can emit or interpret. Unknown values already on disk
+ * are preserved verbatim (see normalizeCheckpoint) so a legacy file never loses
+ * data, but `update()` refuses to write a value outside this set.
+ */
+const OUTCOMES = new Set([
+  "",
+  "queued",
+  "newer_arrangement",
+  "suppressed_quiet_hours",
+  "pending_activity",
+  "target_unavailable",
+  "planning_created",
+  "external_rescheduled",
+  "archived",
+]);
+
 class SupervisionPlanStore {
   constructor({ stateDir, filePath } = {}) {
     this.store = new AtomicJsonStore({
@@ -37,6 +59,13 @@ class SupervisionPlanStore {
   }
 
   update(id, patch) {
+    const requestedOutcome = normalizeText(patch?.outcome);
+    if (requestedOutcome && !OUTCOMES.has(requestedOutcome)) {
+      // Refuse rather than persist a value no reader understands. A silent
+      // write here is exactly how the phantom-checkpoint record became
+      // impossible to attribute.
+      throw new Error(`unsupported supervision outcome: ${requestedOutcome}`);
+    }
     let updated = null;
     this.store.update((plan) => ({
       ...plan,
@@ -131,6 +160,9 @@ function normalizeCheckpoint(value) {
     dueAt,
     timezone: normalizeText(value.timezone) || "Asia/Shanghai",
     state,
+    // Historical files may carry outcomes written before the vocabulary was
+    // closed; keep them verbatim so a round-trip never destroys forensic
+    // evidence. New writes are gated in update().
     outcome: normalizeText(value.outcome),
     // Must survive a round-trip: an explicit request ("明天23:30提醒我") is
     // honoured even inside quiet hours, and the dispatcher reads this flag back

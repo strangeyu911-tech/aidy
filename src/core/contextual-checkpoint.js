@@ -1,13 +1,17 @@
 const { DEFAULT_QUIET_HOURS, isWithinQuietHours } = require("./supervision-policy");
+const { resolveArrangementIntent } = require("./explicit-checkpoint");
 
 const ACTIVITY_PATTERNS = [
   { key: "meal", title: "吃饭", pattern: /(去|要|准备|正在)?(吃饭|吃个饭|吃东西|用餐|午饭|晚饭|早饭)/ },
   { key: "shower", title: "洗澡", pattern: /(去|要|准备|正在)?(洗澡|冲澡|洗个澡)/ },
 ];
 
-function inferContextualCheckpoint(text, { now = new Date(), durations = { meal: 30, shower: 30 }, quietHours = DEFAULT_QUIET_HOURS } = {}) {
+function inferContextualCheckpoint(text, { now = new Date(), durations = { meal: 30, shower: 30 }, quietHours = DEFAULT_QUIET_HOURS, requireIntent = true } = {}) {
   const normalized = typeof text === "string" ? text.trim() : "";
   if (!normalized || hasExplicitTime(normalized)) return null;
+  // Same denial/quotation gate as the explicit parser: "我没让你催我吃饭"
+  // must not become an inferred follow-up either.
+  if (requireIntent && !resolveArrangementIntent(normalized).ok) return null;
   const activity = ACTIVITY_PATTERNS.find((item) => item.pattern.test(normalized));
   if (!activity) return null;
   const minutes = normalizeMinutes(durations?.[activity.key], 30);

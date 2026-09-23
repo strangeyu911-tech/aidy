@@ -20,9 +20,100 @@ const RELATIVE_UNIT_MINUTES = Object.freeze({
   刻钟: 15,
 });
 
-function extractExplicitCheckpoint(text, { now = new Date(), quietHours = DEFAULT_QUIET_HOURS } = {}) {
+/**
+ * Denial / quoting vocabulary. A message that *mentions* a time is not the same
+ * as a message that *asks for a follow-up at* that time. Users routinely write
+ * about the clock while complaining ("我没让你明天17:45来找我"), quoting a
+ * schedule ("今天下午开会开到5点"), or referring to the past ("我8点起的").
+ * Treating any of those as an arrangement produces a checkpoint that fires
+ * later and cannot be withdrawn, which reads to the user as the assistant
+ * inventing a promise they explicitly denied.
+ *
+ * Keep these anchored on first-person denial / quotation shapes so that a
+ * genuine request that merely contains a negation still schedules (e.g.
+ * "别忘了一小时后提醒我" must keep working).
+ */
+const DENIAL_PATTERNS = [
+  /没\s*让\s*你/,
+  /又\s*没\s*(让|叫)/,
+  /谁\s*(让|叫)\s*你/,
+  /(别|不要|不用|不必)\s*(再\s*)?(来|找|催|问|提醒|叫|喊)/,
+  /(取消|删掉|删除|撤销|反悔|作废)\s*(掉)?\s*(这|那|刚才|之前)?\s*(条|个|次)?\s*(提醒|跟进|约定|安排|计划)?/,
+  /我\s*(什么|啥)\s*时候\s*(让|说|要)\s*你/,
+  /哪\s*(让|叫)\s*你/,
+  /我\s*(没|并\s*没)\s*(说|约定|答应|同意)/,
+];
+
+/** Per-request vocabulary: the user is clearly asking for a future touch. */
+const REQUEST_PATTERNS = [
+  /(提醒|通知|叫|喊|催|问|查|找|监督|盯)\s*我/,
+  /(我)?\s*(到|过)\s*(时候|会|点)?\s*(再)?\s*(说|看)/,
+  /(记得|别忘|帮我)\s*(提醒|叫|问|看|查)/,
+  /(找|问|查|提醒)\s*(一下)?\s*我/,
+];
+
+/** Past-tense or stative shapes: the user is describing, not arranging. */
+const RETROSPECTIVE_PATTERNS = [
+  /我\s*[0-9一二两三四五六七八九十]{1,2}\s*(点|[:：][0-9]{1,2})\s*(就)?\s*(起|醒|睡|下班|回来|到|走|出门)/,
+  /(已经|早就|刚刚|刚才)\s*[^，。！？,.!?]{0,12}(点|[:：][0-9]{1,2})/,
+  /(开|上|考|忙)\s*(会|课|班|试)\s*(开)?\s*到\s*[0-9一二两三四五六七八九十]{1,2}\s*点/,
+];
+
+/**
+ * Clock announcers: "现在下午5:45了" / "都十点多了". The user is telling the
+ * time to make a point, not asking for anything at that time. Left unguarded,
+ * "现在下午5:45了，怎么还刚醒" became a 17:45 follow-up the next day.
+ */
+const CLOCK_ANNOUNCEMENT_PATTERNS = [
+  /^(现在|都|已经|这都)\s*[^，。！？,.!?]{0,6}[0-9一二两三四五六七八九十]{1,2}\s*(点|[:：][0-9]{1,2})/,
+  /(现在|都|已经)\s*(上?午|下午|晚上|早上|凌晨)?\s*[0-9一二两三四五六七八九十]{1,2}\s*(点|[:：][0-9]{1,2})\s*(多|半)?\s*了/,
+];
+
+/**
+ * Decides whether a message is an arrangement worth scheduling a follow-up for.
+ * Returns { ok: true } when scheduling is allowed, otherwise { ok: false, reason }.
+ *
+ * Design note — this gate is deliberately *narrow*. Chinese rarely marks an
+ * arrangement with an imperative verb: "我去吃饭了" and "上午8点半做计划" are
+ * statements that still imply a follow-up, so requiring a request verb would
+ * break the feature outright. What actually hurt users was a small, specific
+ * set of shapes: denying/quoting the assistant ("我没让你…"), complaining
+ * about the clock, and describing the past. Those are what we block.
+ * Everything else keeps its previous behaviour, so recall is preserved.
+ *
+ * Order matters: denial beats a bare request verb, because "我没让你来找我"
+ * contains "找我" and would otherwise pass the request test.
+ */
+function resolveArrangementIntent(text) {
+  const normalized = typeof text === "string" ? text : "";
+  if (!normalized) return { ok: false, reason: "empty" };
+
+  for (const pattern of DENIAL_PATTERNS) {
+    if (pattern.test(normalized)) return { ok: false, reason: "denied" };
+  }
+
+  const requested = REQUEST_PATTERNS.some((pattern) => pattern.test(normalized));
+  if (requested) return { ok: true };
+
+  for (const pattern of RETROSPECTIVE_PATTERNS) {
+    if (pattern.test(normalized)) return { ok: false, reason: "retrospective" };
+  }
+
+  for (const pattern of CLOCK_ANNOUNCEMENT_PATTERNS) {
+    if (pattern.test(normalized)) return { ok: false, reason: "clock_announcement" };
+  }
+
+  return { ok: true };
+}
+
+function extractExplicitCheckpoint(text, { now = new Date(), quietHours = DEFAULT_QUIET_HOURS, requireIntent = true } = {}) {
   const normalized = typeof text === "string" ? text.trim() : "";
   if (!normalized) return null;
+
+  if (requireIntent) {
+    const intent = resolveArrangementIntent(normalized);
+    if (!intent.ok) return null;
+  }
 
   let dueAt = null;
   let matchedText = "";
@@ -198,4 +289,10 @@ function truncate(value, length) {
   return value.length > length ? `${value.slice(0, length - 1)}…` : value;
 }
 
-module.exports = { extractExplicitCheckpoint, formatDueTime, normalizeCanonicalTitle, parseChineseNumber };
+module.exports = {
+  extractExplicitCheckpoint,
+  formatDueTime,
+  normalizeCanonicalTitle,
+  parseChineseNumber,
+  resolveArrangementIntent,
+};

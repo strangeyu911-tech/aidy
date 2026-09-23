@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const { inferContextualCheckpoint } = require("../src/core/contextual-checkpoint");
-const { extractExplicitCheckpoint } = require("../src/core/explicit-checkpoint");
+const { extractExplicitCheckpoint, resolveArrangementIntent } = require("../src/core/explicit-checkpoint");
 const { SupervisionPlanStore } = require("../src/core/supervision-plan-store");
 const {
   isStaleTimeSensitiveCheckpoint,
@@ -247,6 +247,65 @@ test("Chinese half-hour input persists and becomes due at 08:30 Asia/Shanghai", 
   assert.equal(store.due(new Date(2026, 7, 29, 8, 29, 59)).length, 0);
   assert.deepEqual(store.due(new Date(2026, 7, 29, 8, 30, 0)).map((item) => item.id), [persisted.id]);
   assert.match(checkpoint.announcement, /08:30/);
+});
+
+test("denial and quotation shapes never create checkpoints", () => {
+  const now = new Date("2026-09-22T09:46:00.000Z");
+  // Every line below is either a real user message from the 2026-09-22
+  // "phantom checkpoint" incident or a close paraphrase. All of them used to
+  // schedule a follow-up, which the user could not withdraw.
+  const blocked = [
+    "我没让你明天17:45来找我，你有带脑子吗",
+    "现在下午5:45了，怎么还刚醒啊？是你刚醒脑子不清醒吧",
+    "今天下午开会开到5点，累死了",
+    "我8点起的",
+    "我又没让你来找我",
+    "谁让你半夜给我发消息的",
+    "别再来找我了",
+    "取消掉刚才那个提醒",
+    "我没说过要你7点催我",
+    "我没让你催我吃饭",
+    "都十点多了，计划还没影",
+  ];
+  for (const text of blocked) {
+    assert.equal(extractExplicitCheckpoint(text, { now }), null, `should not schedule: ${text}`);
+    assert.equal(inferContextualCheckpoint(text, { now }), null, `should not infer: ${text}`);
+  }
+});
+
+test("genuine arrangements still schedule after the intent gate", () => {
+  const now = new Date("2026-09-22T09:46:00.000Z");
+  const cases = [
+    ["20分钟后提醒我继续写简历", "2026-09-22T10:06:00.000Z"],
+    ["21:30问我做完没有", "2026-09-22T13:30:00.000Z"],
+    ["[敲打]上午8点半做计划，待会马上睡觉了", "2026-09-23T00:30:00.000Z"],
+    ["一小时后叫我", "2026-09-22T10:46:00.000Z"],
+    ["我8点起的，十点提醒我一下", "2026-09-23T00:00:00.000Z"],
+    ["明天下午3点叫我", "2026-09-22T19:00:00.000Z"],
+  ];
+  for (const [text, dueAt] of cases) {
+    const checkpoint = extractExplicitCheckpoint(text, { now });
+    assert.ok(checkpoint, `should schedule: ${text}`);
+    assert.equal(checkpoint.dueAt, dueAt, `wrong due time for: ${text}`);
+  }
+  // Inferred activity follow-ups must survive the gate too, otherwise the
+  // meal/shower feature silently dies.
+  assert.equal(inferContextualCheckpoint("我去吃饭了", { now })?.dueAt, "2026-09-22T10:16:00.000Z");
+  assert.equal(inferContextualCheckpoint("我去洗澡了", { now })?.dueAt, "2026-09-22T10:16:00.000Z");
+});
+
+test("intent gate reports why a message was rejected", () => {
+  assert.equal(resolveArrangementIntent("我没让你明天来找我").reason, "denied");
+  assert.equal(resolveArrangementIntent("今天下午开会开到5点").reason, "retrospective");
+  assert.equal(resolveArrangementIntent("现在下午5:45了").reason, "clock_announcement");
+  assert.equal(resolveArrangementIntent("20分钟后提醒我").ok, true);
+  assert.equal(resolveArrangementIntent("").ok, false);
+});
+
+test("opted-out callers can still parse a raw time expression", () => {
+  const now = new Date("2026-09-22T09:46:00.000Z");
+  assert.equal(extractExplicitCheckpoint("我没让你明天17:45来找我", { now }), null);
+  assert.ok(extractExplicitCheckpoint("我没让你明天17:45来找我", { now, requireIntent: false }));
 });
 
 test("latest explicit and external arrangements supersede inferred context", () => {
