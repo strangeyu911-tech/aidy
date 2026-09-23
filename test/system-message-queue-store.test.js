@@ -83,6 +83,50 @@ test("enqueue then drain preserves messages and remains valid JSON on disk", () 
   assert.equal(fs.readdirSync(path.dirname(store.filePath)).filter((n) => n.includes(".tmp")).length, 0);
 });
 
+test("messages enqueued under a replaced account are adopted by the current one", () => {
+  // Mirrors the live incident: three manual check-ins sat undrained for three
+  // days because a re-scan had minted a new accountId and drainForAccount
+  // matches on accountId exactly.
+  const store = makeStore();
+  store.enqueue({ ...sampleMessage("stale"), accountId: "old-bot" });
+  const adopted = store.inheritMessagesFromPriorAccounts({ accountId: "new-bot", senderId: "sender-1" });
+
+  assert.deepEqual(adopted, ["stale"]);
+  assert.equal(store.drainForAccount("new-bot").length, 1);
+  assert.equal(store.drainForAccount("old-bot").length, 0);
+});
+
+test("adoption only touches messages belonging to the same sender", () => {
+  const store = makeStore();
+  store.enqueue({ ...sampleMessage("mine"), accountId: "old-bot", senderId: "sender-1" });
+  store.enqueue({ ...sampleMessage("theirs"), accountId: "old-bot", senderId: "sender-2" });
+
+  const adopted = store.inheritMessagesFromPriorAccounts({ accountId: "new-bot", senderId: "sender-1" });
+
+  assert.deepEqual(adopted, ["mine"]);
+  assert.equal(store.drainForAccount("old-bot").length, 1);
+});
+
+test("adoption is a no-op when the account has not changed", () => {
+  const store = makeStore();
+  store.enqueue(sampleMessage("m"));
+  assert.deepEqual(store.inheritMessagesFromPriorAccounts({ accountId: "acc-1", senderId: "sender-1" }), []);
+  assert.deepEqual(store.inheritMessagesFromPriorAccounts({}), []);
+});
+
+test("adoption clears stale backoff so the new account can drain promptly", () => {
+  const store = makeStore();
+  store.enqueue({
+    ...sampleMessage("backed-off"),
+    accountId: "old-bot",
+    nextAttemptAt: "2099-01-01T00:00:00.000Z",
+  });
+  assert.equal(store.drainForAccount("new-bot").length, 0);
+
+  store.inheritMessagesFromPriorAccounts({ accountId: "new-bot", senderId: "sender-1" });
+  assert.equal(store.drainForAccount("new-bot").length, 1);
+});
+
 test("public interface and this.state shape are unchanged", () => {
   const store = makeStore();
   assert.ok(store.state && Array.isArray(store.state.messages));

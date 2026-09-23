@@ -107,6 +107,42 @@ class SystemMessageQueueStore {
     const normalizedAccountId = normalizeText(accountId);
     return this.state.messages.some((message) => message.accountId === normalizedAccountId);
   }
+
+  /**
+   * Re-points queued messages at the current account when the WeChat account id
+   * changed since they were enqueued.
+   *
+   * drainForAccount matches on accountId exactly, and a re-scan mints a new
+   * ilink_bot_id, so messages enqueued under the previous id became
+   * unreachable: they waited for an accountId that would never poll again.
+   * Three manual check-ins sat in exactly that state for three days. The
+   * senderId (WeChat openid) is stable across scans, so it is the reliable key
+   * for deciding what to adopt — same rule the session store uses.
+   */
+  inheritMessagesFromPriorAccounts({ accountId, senderId } = {}) {
+    const normalizedAccountId = normalizeText(accountId);
+    const normalizedSenderId = normalizeText(senderId);
+    if (!normalizedAccountId || !normalizedSenderId) {
+      return [];
+    }
+    this.load();
+    const adopted = [];
+    for (const message of this.state.messages) {
+      if (message.senderId !== normalizedSenderId) continue;
+      if (message.accountId === normalizedAccountId) continue;
+      adopted.push(message.id);
+      message.accountId = normalizedAccountId;
+      message.updatedAt = new Date().toISOString();
+      // The old account never drained this, so any backoff recorded against it
+      // is meaningless now. Reset so the new account can pick it up promptly.
+      message.nextAttemptAt = "";
+    }
+    if (!adopted.length) {
+      return [];
+    }
+    this.save();
+    return adopted;
+  }
 }
 
 function normalizeSystemMessage(message, resolveSupervisionKey = null) {

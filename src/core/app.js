@@ -266,6 +266,33 @@ class CyberbossApp {
   }
 
   /**
+   * Re-login survival for the pending-message queue.
+   *
+   * drainForAccount matches accountId exactly, so anything enqueued before a
+   * re-scan held a stale accountId and could never be drained again. Adopt it
+   * onto the account that is polling now, using the stable senderId to decide
+   * which messages are ours. Mirrors inheritPriorAccountThreadBindings.
+   */
+  inheritPriorAccountQueuedMessages({ accountId = "", userId = "" } = {}) {
+    try {
+      const adopted = this.systemMessageQueue?.inheritMessagesFromPriorAccounts?.({
+        accountId,
+        senderId: userId,
+      });
+      if (Array.isArray(adopted) && adopted.length) {
+        console.log(
+          `[cyberboss] adopted ${adopted.length} queued system message(s) from an earlier WeChat account into ${accountId}`,
+        );
+      }
+      return adopted || [];
+    } catch (error) {
+      // Adoption is an optimization over "drop the backlog"; never fatal.
+      console.error(`[cyberboss] queued message adoption skipped: ${formatErrorMessage(error)}`);
+      return [];
+    }
+  }
+
+  /**
    * Distinguishes "my token was revoked by a newer login" from "my token expired".
    *
    * The scan flow saves the new credential to `accounts/` and the platform revokes
@@ -328,6 +355,10 @@ class CyberbossApp {
     this.ensureWorkspaceRootAvailable();
     this.inheritPriorAccountThreadBindings({
       accountId: this.activeIdentityKey,
+      userId: account.userId,
+    });
+    this.inheritPriorAccountQueuedMessages({
+      accountId: account.accountId,
       userId: account.userId,
     });
     this.systemMessageDispatcher = new SystemMessageDispatcher({
