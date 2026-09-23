@@ -90,12 +90,22 @@ function normalizeDesktopState(value) {
   };
 }
 
+/**
+ * Quiet hours must describe a real window. `start === end` is not "all day" or
+ * "never" — it is degenerate, and supervision-policy silently falls back to
+ * 23:00-07:00 when it sees it, so the user's saved value has no effect while
+ * looking perfectly valid in the UI. Collapse it to the real default here so
+ * what is on disk is always what actually runs.
+ */
 function normalizeQuietHours(value) {
   const input = value && typeof value === "object" ? value : {};
+  const start = normalizeClockTime(input.start, DEFAULT_QUIET_HOURS.start);
+  const end = normalizeClockTime(input.end, DEFAULT_QUIET_HOURS.end);
+  const degenerate = start === end;
   return {
     enabled: normalizeBoolean(input.enabled, DEFAULT_QUIET_HOURS.enabled),
-    start: normalizeClockTime(input.start, DEFAULT_QUIET_HOURS.start),
-    end: normalizeClockTime(input.end, DEFAULT_QUIET_HOURS.end),
+    start: degenerate ? DEFAULT_QUIET_HOURS.start : start,
+    end: degenerate ? DEFAULT_QUIET_HOURS.end : end,
   };
 }
 
@@ -104,10 +114,10 @@ function normalizeDesiredState(value, fallback = "stopped") {
   return DESIRED_STATES.has(normalized) ? normalized : fallback;
 }
 
-function normalizeClockTime(value) {
+function normalizeClockTime(value, fallback = DEFAULT_DESKTOP_STATE.reportTime) {
   const normalized = normalizeText(value);
   const match = normalized.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
-  return match ? normalized : DEFAULT_DESKTOP_STATE.reportTime;
+  return match ? normalized : fallback;
 }
 
 function normalizeMinutes(value, fallback) {
